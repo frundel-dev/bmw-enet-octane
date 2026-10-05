@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "1.3"
+        versionCode = 15
+        versionName = "1.4"
     }
 }
 
-// BMW-native v1.3: verified read-only DME8FF_R mappings
+// BMW-native v1.4: optimized fast/slow read-only polling
