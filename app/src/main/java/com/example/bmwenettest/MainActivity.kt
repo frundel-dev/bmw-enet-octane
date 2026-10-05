@@ -1,6 +1,8 @@
 package com.example.bmwenettest
 
 import android.app.Activity
+import android.content.*
+import android.os.Build
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -28,13 +30,20 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET TEST v0.6"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(TextView(this).apply { text="G20 • B48 • ENET logger + capability scan • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(Button(this).apply { text="START LIVE LOGGER"; setOnClickListener {
-            if (!logging) { logging = true; text = "STOP LOGGER"; runLogger(this) }
-            else { logging = false; text = "START LIVE LOGGER" }
+        root.addView(TextView(this).apply { text="BMW ENET TEST v0.7"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="G20 • B48 • background ENET logger • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(Button(this).apply { text="START BACKGROUND LOGGER"; setOnClickListener {
+            if (!logging) {
+                logging=true; text="STOP LOGGER"
+                val i=Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_START)
+                startForegroundService(i)
+                status.text="Background logger started. You can turn the screen off."
+            } else {
+                logging=false; text="START BACKGROUND LOGGER"
+                startService(Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_STOP))
+            }
         } })
-        status = TextView(this).apply { text="Connect ENET → USB-C, ignition ON, then press the button."; textSize=15f; setPadding(0,24,0,0); setTextIsSelectable(true) }
+                status = TextView(this).apply { text="Connect ENET → USB-C, ignition ON, then press the button."; textSize=15f; setPadding(0,24,0,0); setTextIsSelectable(true) }
         root.addView(ScrollView(this).apply { addView(status) })
         setContentView(root)
     }
