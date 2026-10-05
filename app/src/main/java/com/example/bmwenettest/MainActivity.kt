@@ -31,9 +31,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.1"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(TextView(this).apply { text="G20 • B48 • fresh ECU profile manager • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(Button(this).apply { text="IMPORT BMW DME .PRG"; setOnClickListener {
+        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.2"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="G20 • B48 • embedded DME8FF_R profile • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(Button(this).apply { text="IMPORT/VERIFY BMW DME .PRG (OPTIONAL)"; setOnClickListener {
             val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE); type="application/octet-stream"
             }
@@ -44,13 +44,13 @@ class MainActivity : Activity() {
                 logging=true; text="STOP LOGGER"
                 val i=Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_START)
                 startForegroundService(i)
-                status.text="Background logger started. Screen may be off.\n\nTEST WINDOW is marked automatically at RPM ≥ 2000, load ≥ 70%, MAP ≥ 140 kPa abs.\n\nBMW-native profile: v1.1 prefers fresh DME8FF_R.PRG; DME_BX8.PRG is accepted as fallback. Unknown DIDs are never probed."
+                status.text="Background logger started. Screen may be off.\n\nTEST WINDOW is marked automatically at RPM ≥ 2000, load ≥ 70%, MAP ≥ 140 kPa abs.\n\nBMW-native profile: embedded DME8FF_R profile is active. PRG import is optional verification only. Unknown/unverified DIDs are never probed."
             } else {
                 logging=false; text="START BACKGROUND LOGGER"
                 startService(Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_STOP))
             }
         } })
-                status = TextView(this).apply { text="Connect ENET → USB-C, ignition ON, then press the button."; textSize=15f; setPadding(0,24,0,0); setTextIsSelectable(true) }
+                status = TextView(this).apply { text="Embedded profile: DME8FF_R (fresh ECU dataset) ✓\nPRG import is optional.\n\nConnect ENET → USB-C, ignition ON, then press START."; textSize=15f; setPadding(0,24,0,0); setTextIsSelectable(true) }
         root.addView(ScrollView(this).apply { addView(status) })
         setContentView(root)
     }
