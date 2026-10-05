@@ -1,22 +1,22 @@
 {
-  "schema": 1,
+  "schema": 2,
   "profile": "DME8FF_R",
   "vehicle_family": "BMW G-series B48",
-  "source": "fresh user ECU dataset",
   "reference_prg_size": 7458486,
+  "reference_prg_sha256": "f227991a7a5359751011660d3136de295c2511245ed9490bca4715fef07b0f20",
   "transport": {"protocol":"HSFZ","tcp_port":6801,"tester_address":"0xF4","dme_address":"0x12"},
   "mode": "read-only",
   "signals": [
-    {"name":"STATUS_SUPERKLOPFER","mapping":"pending_verified_sg_funktionen"},
-    {"name":"STAT_STATUS_KLOPFEN","mapping":"pending_verified_sg_funktionen"},
-    {"name":"STAT_KLOPFWERT_ZYL1_SPANNUNG_WERT","mapping":"pending_verified_sg_funktionen"},
-    {"name":"STAT_KLOPFWERT_ZYL2_SPANNUNG_WERT","mapping":"pending_verified_sg_funktionen"},
-    {"name":"STAT_KLOPFWERT_ZYL3_SPANNUNG_WERT","mapping":"pending_verified_sg_funktionen"},
-    {"name":"STAT_KLOPFWERT_ZYL4_SPANNUNG_WERT","mapping":"pending_verified_sg_funktionen"},
-    {"name":"STAT_ZUENDWINKEL_ZYL1_WERT","mapping":"pending_verified_sg_funktionen"},
-    {"name":"STAT_ZUENDWINKEL_ZYL2_WERT","mapping":"pending_verified_sg_funktionen"},
-    {"name":"STAT_ZUENDWINKEL_ZYL3_WERT","mapping":"pending_verified_sg_funktionen"},
-    {"name":"STAT_ZUENDWINKEL_ZYL4_WERT","mapping":"pending_verified_sg_funktionen"},
-    {"name":"STAT_INFOFOCTAN_*","mapping":"pending_verified_sg_funktionen"}
+    {"name":"STAT_STATUS_KLOPFEN","did":"4A36","type":"uint8"},
+    {"name":"STAT_KLOPFWERT_ZYL1_SPANNUNG_WERT","did":"4A37","type":"uint32be","mul":0.05,"div":65536.0,"unit":"Vms"},
+    {"name":"STAT_KLOPFWERT_ZYL2_SPANNUNG_WERT","did":"4A38","type":"uint32be","mul":0.05,"div":65536.0,"unit":"Vms"},
+    {"name":"STAT_KLOPFWERT_ZYL3_SPANNUNG_WERT","did":"4A39","type":"uint32be","mul":0.05,"div":65536.0,"unit":"Vms"},
+    {"name":"STAT_KLOPFWERT_ZYL4_SPANNUNG_WERT","did":"4A3A","type":"uint32be","mul":0.05,"div":65536.0,"unit":"Vms"},
+    {"name":"STAT_ZUENDWINKEL_ZYL1_WERT","did":"4A49","type":"int16be","div":10.0,"unit":"degKW"},
+    {"name":"STAT_ZUENDWINKEL_ZYL2_WERT","did":"4A4A","type":"int16be","div":10.0,"unit":"degKW"},
+    {"name":"STAT_ZUENDWINKEL_ZYL3_WERT","did":"4A4C","type":"int16be","div":10.0,"unit":"degKW"},
+    {"name":"STAT_ZUENDWINKEL_ZYL4_WERT","did":"4A4D","type":"int16be","div":10.0,"unit":"degKW"},
+    {"name":"STAT_BED_SUPERKLOPFER","did":"5728","type":"uint8"},
+    {"name":"STAT_INFOFOCTAN_0_19_WERT","did":"407F","type":"uint8_array","data_offsets":[200,219],"div":256.0,"poll":"slow"}
   ]
 }
