@@ -37,7 +37,7 @@ class EnetLoggerService : Service() {
         return START_STICKY
     }
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
-        .setContentTitle("BMW ENET Logger v1.2").setContentText(text)
+        .setContentTitle("BMW ENET Logger v1.3").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
 
     private fun startLogger() {
@@ -46,12 +46,12 @@ class EnetLoggerService : Service() {
         val pm=getSystemService(POWER_SERVICE) as PowerManager
         wakeLock=pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"BmwEnet:Logger").apply{acquire()}
         val dir=getExternalFilesDir(null)?:filesDir
-        logFile=File(dir,"bmw_enet_v12_${System.currentTimeMillis()}.csv")
+        logFile=File(dir,"bmw_enet_v13_${System.currentTimeMillis()}.csv")
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val profile=prefs.getString("prg_profile","DME8FF_R_EMBEDDED") ?: "DME8FF_R_EMBEDDED"
         val prgName=prefs.getString("prg_name","") ?: ""
         val prgSha=prefs.getString("prg_sha256","") ?: ""
-        logFile!!.writeText("# app=v1.2,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,test_window\n")
+        logFile!!.writeText("# app=v1.3,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window\n")
         executor.execute { loop() }
     }
     private fun stopLogger() {
@@ -69,7 +69,7 @@ class EnetLoggerService : Service() {
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(7,notification(s.take(100)))
     }
     private fun loop() {
-        val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0
+        val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0; val foctanCache=arrayOfNulls<Double>(20)
         while(running) {
             try {
                 val cm=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -95,9 +95,23 @@ class EnetLoggerService : Service() {
                     val throttle=obd(pid(0x11),0x11)?.let{(it[0].toInt()and 255)*100.0/255.0}
                     val stft1=obd(pid(0x06),0x06)?.let{((it[0].toInt()and 255)-128)*100.0/128.0}
                     val lambdaEq=obd(pid(0x44),0x44)?.takeIf{it.size>=2}?.let{(((it[0].toInt()and 255)*256)+(it[1].toInt()and 255))*2.0/65535.0}
-                    val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
+                    val knockStatus=udsData(0x4A36)?.firstOrNull()?.let{it.toInt() and 255}
+                    fun knock(did:Int)=udsData(did)?.takeIf{it.size>=4}?.let{
+                        val raw=((it[0].toLong()and 255) shl 24) or ((it[1].toLong()and 255) shl 16) or ((it[2].toLong()and 255) shl 8) or (it[3].toLong()and 255)
+                        raw*0.05/65536.0
+                    }
+                    fun ign(did:Int)=udsData(did)?.takeIf{it.size>=2}?.let{
+                        val u=((it[0].toInt()and 255) shl 8) or (it[1].toInt()and 255); val signed=if(u>=0x8000)u-0x10000 else u; signed/10.0
+                    }
+                    val kz1=knock(0x4A37); val kz2=knock(0x4A38); val kz3=knock(0x4A39); val kz4=knock(0x4A3A)
+                    val iz1=ign(0x4A49); val iz2=ign(0x4A4A); val iz3=ign(0x4A4C); val iz4=ign(0x4A4D)
+                    val superKnock=udsData(0x5728)?.firstOrNull()?.let{it.toInt() and 255}
+                    if(samples%25==0) {
+                        udsData(0x407F)?.let{data-> if(data.size>=220) for(x in 0..19) foctanCache[x]=(data[200+x].toInt()and 255)/256.0 }
+                    }
+                                        val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
                     val t=SystemClock.elapsedRealtime()-started
-                    FileOutputStream(logFile!!,true).bufferedWriter().use{it.appendLine(listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",if(testWindow)1 else 0).joinToString(","))}
+                    FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0)).joinToString(","))}
                     samples++
                     if(samples%10==0) emit("Logging • $samples • RPM ${r?.toInt()?:"—"} • load ${l?.let{"%.0f".format(it)}?:"—"}% • test ${if(testWindow)"ACTIVE" else "—"} • reconnects $reconnects")
                 }
@@ -108,6 +122,16 @@ class EnetLoggerService : Service() {
                 SystemClock.sleep(1500)
             }
         }
+    }
+    private fun udsData(did:Int):ByteArray? {
+        val s=socket ?: return null
+        val hi=((did ushr 8) and 255).toByte(); val lo=(did and 255).toByte()
+        val q=hsfz(byteArrayOf(0x22,hi,lo))
+        s.getOutputStream().write(q); s.getOutputStream().flush()
+        val p=readFrames(s.getInputStream()).mapNotNull{payload(it)}.firstOrNull{
+            it.size>=3 && it[0]==0x62.toByte() && it[1]==hi && it[2]==lo
+        } ?: return null
+        return p.copyOfRange(3,p.size)
     }
     data class D(val ip:String)
     private fun discover(n:Network,bs:List<String>):D? {
