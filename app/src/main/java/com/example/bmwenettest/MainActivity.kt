@@ -42,8 +42,15 @@ class MainActivity : Activity() {
                     out += "Ethernet: CONNECTED"
                     out += "Interface: ${lp?.interfaceName ?: "?"}"
                     out += "Android IP: ${lp?.linkAddresses?.joinToString { it.address.hostAddress ?: "?" } ?: "?"}"
-                    val d = discover(network)
-                    if (d == null) out += "\nBMW HSFZ discovery: NO REPLY" else {
+                    out += "Routes: " + (lp?.routes?.joinToString { it.toString() } ?: "?")
+                    val broadcasts = ipv4Broadcasts(lp)
+                    out += "IPv4 broadcasts: " + if (broadcasts.isEmpty()) "none" else broadcasts.joinToString()
+                    val d = discover(network, broadcasts)
+                    if (d == null) {
+                        out += "\nBMW HSFZ discovery: NO REPLY"
+                        out += probeTcpCandidates(network, broadcasts, 6801, "HSFZ TCP")
+                        out += probeDoip(network, broadcasts)
+                    } else {
                         out += "\nBMW: FOUND"
                         out += "Gateway: ${d.ip}"
                         out += "Discovery VIN: ${d.vin ?: "not parsed"}"
