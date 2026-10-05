@@ -30,8 +30,14 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET TEST v0.8"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(TextView(this).apply { text="G20 • B48 • octane research logger • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="BMW ENET TEST v0.9"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="G20 • B48 • BMW-native PRG preparation • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(Button(this).apply { text="IMPORT BMW DME .PRG"; setOnClickListener {
+            val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE); type="application/octet-stream"
+            }
+            startActivityForResult(i,901)
+        } })
         root.addView(Button(this).apply { text="START BACKGROUND LOGGER"; setOnClickListener {
             if (!logging) {
                 logging=true; text="STOP LOGGER"
@@ -46,6 +52,43 @@ class MainActivity : Activity() {
                 status = TextView(this).apply { text="Connect ENET → USB-C, ignition ON, then press the button."; textSize=15f; setPadding(0,24,0,0); setTextIsSelectable(true) }
         root.addView(ScrollView(this).apply { addView(status) })
         setContentView(root)
+    }
+
+
+    override fun onActivityResult(requestCode:Int, resultCode:Int, data:Intent?) {
+        super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode!=901 || resultCode!=RESULT_OK) return
+        val uri=data?.data ?: return
+        try {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } catch(_:Exception) {}
+        try {
+            val name=queryName(uri) ?: "dme.prg"
+            if(!name.lowercase().endsWith(".prg")) throw IllegalArgumentException("Select a BMW .PRG file")
+            val dst=File(filesDir,"ecu").apply{mkdirs()}.resolve(name)
+            contentResolver.openInputStream(uri)!!.use { input -> dst.outputStream().use { input.copyTo(it) } }
+            if(dst.length()<1024) { dst.delete(); throw IllegalArgumentException("PRG file is too small") }
+            getSharedPreferences("bmw_native",MODE_PRIVATE).edit().putString("prg_path",dst.absolutePath).putString("prg_name",name).apply()
+            status.text="""BMW DME PRG imported ✓
+File: $name
+Size: ${dst.length()} bytes
+
+Target STATUS_LESEN data:
+• STAT_KLOPFSIGNAL_ZYL1…4
+• STAT_KLOPFWERT_ZYL*_SPANNUNG
+• STAT_ZUENDWINKEL_ZYL1…4
+• STAT_INFOFOCTAN_*
+
+The file is stored privately inside the app.
+No write/coding/flashing commands are enabled."""
+        } catch(e:Exception) { status.text="PRG IMPORT ERROR: ${e.message}" }
+    }
+
+    private fun queryName(uri:android.net.Uri):String? {
+        contentResolver.query(uri,arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),null,null,null)?.use { c ->
+            if(c.moveToFirst()) return c.getString(0)
+        }
+        return null
     }
 
     private data class LiveSample(
