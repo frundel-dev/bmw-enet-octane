@@ -5,6 +5,9 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Bundle
+import android.os.SystemClock
+import java.io.File
+import java.io.FileOutputStream
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
@@ -18,16 +21,102 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private val executor = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
+    @Volatile private var logging = false
+    private var logFile: File? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET TEST v0.4"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(TextView(this).apply { text="G20 • B48 • ENET live data • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(Button(this).apply { text="CONNECT + LIVE DATA"; setOnClickListener { runTest() } })
+        root.addView(TextView(this).apply { text="BMW ENET TEST v0.5"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="G20 • B48 • ENET live logger • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(Button(this).apply { text="START LIVE LOGGER"; setOnClickListener {
+            if (!logging) { logging = true; text = "STOP LOGGER"; runLogger(this) }
+            else { logging = false; text = "START LIVE LOGGER" }
+        } })
         status = TextView(this).apply { text="Connect ENET → USB-C, ignition ON, then press the button."; textSize=15f; setPadding(0,24,0,0); setTextIsSelectable(true) }
         root.addView(ScrollView(this).apply { addView(status) })
         setContentView(root)
+    }
+
+    private data class LiveSample(
+        val t: Long, val rpm: Double?, val load: Double?, val map: Double?,
+        val iat: Double?, val ign: Double?
+    )
+
+    private fun runLogger(button: Button) {
+        status.text = "Connecting to BMW…"
+        executor.execute {
+            var socket: Socket? = null
+            try {
+                val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+                val network = cm.allNetworks.firstOrNull {
+                    cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
+                } ?: throw IllegalStateException("Ethernet not found")
+                val lp = cm.getLinkProperties(network)
+                val d = discover(network, ipv4Broadcasts(lp)) ?: throw IllegalStateException("BMW HSFZ discovery: no reply")
+                socket = network.socketFactory.createSocket() as Socket
+                socket.soTimeout = 1800
+                socket.connect(InetSocketAddress(d.ip, 6801), 2500)
+
+                val dir = getExternalFilesDir(null) ?: filesDir
+                logFile = File(dir, "bmw_enet_v05_${System.currentTimeMillis()}.csv")
+                FileOutputStream(logFile!!, false).bufferedWriter().use { w ->
+                    w.appendLine("time_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg")
+                }
+
+                val start = SystemClock.elapsedRealtime()
+                var count = 0
+                var rpmMin = Double.POSITIVE_INFINITY; var rpmMax = Double.NEGATIVE_INFINITY
+                var loadMax = Double.NEGATIVE_INFINITY
+                while (logging) {
+                    fun readPid(pid: Int): ByteArray? {
+                        val req = hsfzDiag(0xF4, 0x12, byteArrayOf(0x01, pid.toByte()))
+                        socket!!.getOutputStream().write(req); socket!!.getOutputStream().flush()
+                        return readFrames(socket!!.getInputStream(), 2).firstNotNullOfOrNull { payload(it) }
+                    }
+                    val rpm = readPid(0x0C)?.let { decodeObd(it,0x0C) }?.let { (((it[0].toInt() and 255)*256)+(it[1].toInt() and 255))/4.0 }
+                    val load = readPid(0x04)?.let { decodeObd(it,0x04) }?.let { (it[0].toInt() and 255)*100.0/255.0 }
+                    val map = readPid(0x0B)?.let { decodeObd(it,0x0B) }?.let { (it[0].toInt() and 255).toDouble() }
+                    val iat = readPid(0x0F)?.let { decodeObd(it,0x0F) }?.let { ((it[0].toInt() and 255)-40).toDouble() }
+                    val ign = readPid(0x0E)?.let { decodeObd(it,0x0E) }?.let { (it[0].toInt() and 255)/2.0-64.0 }
+                    val s = LiveSample(SystemClock.elapsedRealtime()-start,rpm,load,map,iat,ign)
+                    rpm?.let { rpmMin=kotlin.math.min(rpmMin,it); rpmMax=kotlin.math.max(rpmMax,it) }
+                    load?.let { loadMax=kotlin.math.max(loadMax,it) }
+                    FileOutputStream(logFile!!, true).bufferedWriter().use { w ->
+                        w.appendLine(listOf(s.t,s.rpm?:"",s.load?:"",s.map?:"",s.iat?:"",s.ign?:"").joinToString(","))
+                    }
+                    count++
+                    val hz = if (s.t > 0) count*1000.0/s.t else 0.0
+                    main.post {
+                        status.text = """BMW: CONNECTED  ${d.ip}:6801
+VIN: ${d.vin ?: "unknown"}
+Samples: $count   Effective rate: ${"%.2f".format(hz)} Hz
+
+RPM: ${rpm?.let{"%.0f".format(it)} ?: "—"}
+Load: ${load?.let{"%.1f %%".format(it)} ?: "—"}
+MAP: ${map?.let{"%.0f kPa abs".format(it)} ?: "—"}
+IAT: ${iat?.let{"%.1f °C".format(it)} ?: "—"}
+Ignition advance: ${ign?.let{"%.1f °".format(it)} ?: "—"}
+
+RPM min/max: ${if(rpmMin.isFinite()) "%.0f / %.0f".format(rpmMin,rpmMax) else "—"}
+Max load: ${if(loadMax.isFinite()) "%.1f %%".format(loadMax) else "—"}
+
+CSV: ${logFile!!.absolutePath}
+
+BMW knock/timing correction:
+waiting for validated B48 diagnostic mapping.
+READ-ONLY."""
+                    }
+                }
+            } catch (e: Exception) {
+                logging = false
+                main.post { status.text = "LOGGER ERROR ${e.javaClass.simpleName}: ${e.message}"; button.text="START LIVE LOGGER" }
+            } finally {
+                try { socket?.close() } catch (_: Exception) {}
+                logging = false
+                main.post { button.text="START LIVE LOGGER" }
+            }
+        }
     }
 
     private fun runTest() {
