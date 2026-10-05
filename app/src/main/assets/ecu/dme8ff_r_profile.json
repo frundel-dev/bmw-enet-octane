@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "profile": "DME8FF_R",
+  "vehicle_family": "BMW G-series B48",
+  "source": "fresh user ECU dataset",
+  "reference_prg_size": 7458486,
+  "transport": {"protocol":"HSFZ","tcp_port":6801,"tester_address":"0xF4","dme_address":"0x12"},
+  "mode": "read-only",
+  "signals": [
+    {"name":"STATUS_SUPERKLOPFER","mapping":"pending_verified_sg_funktionen"},
+    {"name":"STAT_STATUS_KLOPFEN","mapping":"pending_verified_sg_funktionen"},
+    {"name":"STAT_KLOPFWERT_ZYL1_SPANNUNG_WERT","mapping":"pending_verified_sg_funktionen"},
+    {"name":"STAT_KLOPFWERT_ZYL2_SPANNUNG_WERT","mapping":"pending_verified_sg_funktionen"},
+    {"name":"STAT_KLOPFWERT_ZYL3_SPANNUNG_WERT","mapping":"pending_verified_sg_funktionen"},
+    {"name":"STAT_KLOPFWERT_ZYL4_SPANNUNG_WERT","mapping":"pending_verified_sg_funktionen"},
+    {"name":"STAT_ZUENDWINKEL_ZYL1_WERT","mapping":"pending_verified_sg_funktionen"},
+    {"name":"STAT_ZUENDWINKEL_ZYL2_WERT","mapping":"pending_verified_sg_funktionen"},
+    {"name":"STAT_ZUENDWINKEL_ZYL3_WERT","mapping":"pending_verified_sg_funktionen"},
+    {"name":"STAT_ZUENDWINKEL_ZYL4_WERT","mapping":"pending_verified_sg_funktionen"},
+    {"name":"STAT_INFOFOCTAN_*","mapping":"pending_verified_sg_funktionen"}
+  ]
+}
