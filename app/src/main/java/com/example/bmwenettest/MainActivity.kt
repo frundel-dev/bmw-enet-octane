@@ -22,9 +22,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET TEST v0.2"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(TextView(this).apply { text="G20 • HSFZ • read-only DME test"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(Button(this).apply { text="SCAN + TEST DME"; setOnClickListener { runTest() } })
+        root.addView(TextView(this).apply { text="BMW ENET TEST v0.3"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="G20 • HSFZ / DoIP • network probe"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(Button(this).apply { text="NETWORK PROBE"; setOnClickListener { runTest() } })
         status = TextView(this).apply { text="Connect ENET → USB-C, ignition ON, then press the button."; textSize=15f; setPadding(0,24,0,0); setTextIsSelectable(true) }
         root.addView(ScrollView(this).apply { addView(status) })
         setContentView(root)
@@ -81,16 +81,60 @@ class MainActivity : Activity() {
 
     data class Discovery(val ip:String, val vin:String?, val bytes:Int)
 
-    private fun discover(network: Network): Discovery? {
+    private fun discover(network: Network, broadcasts: List<String>): Discovery? {
         val s=DatagramSocket(null); network.bindSocket(s); s.reuseAddress=true; s.broadcast=true; s.soTimeout=2500; s.bind(InetSocketAddress(0))
         val req=byteArrayOf(0,0,0,0,0,0x11)
-        listOf("169.254.255.255","255.255.255.255").forEach { try{s.send(DatagramPacket(req,req.size,InetAddress.getByName(it),6811))}catch(_:Exception){} }
+        (broadcasts + listOf("169.254.255.255","255.255.255.255")).distinct().forEach { try{s.send(DatagramPacket(req,req.size,InetAddress.getByName(it),6811))}catch(_:Exception){} }
         return try {
             val b=ByteArray(1024); val p=DatagramPacket(b,b.size); s.receive(p); val data=p.data.copyOf(p.length)
             val a=String(data,StandardCharsets.US_ASCII); val m="BMWVIN"; val x=a.indexOf(m)
             val vin=if(x>=0) a.substring(x+m.length).filter{it.isLetterOrDigit()}.take(17).takeIf{it.length==17} else null
             Discovery(p.address.hostAddress?:"?",vin,p.length)
         } catch(_:SocketTimeoutException){null} finally{s.close()}
+    }
+
+
+    private fun ipv4Broadcasts(lp: android.net.LinkProperties?): List<String> {
+        if (lp == null) return emptyList()
+        return lp.linkAddresses.mapNotNull { la ->
+            val a = la.address
+            if (a !is java.net.Inet4Address) return@mapNotNull null
+            val p = la.prefixLength
+            if (p !in 0..32) return@mapNotNull null
+            val raw = a.address
+            var ip = 0L
+            for (b in raw) ip = (ip shl 8) or (b.toInt() and 255).toLong()
+            val mask = if (p == 0) 0L else (0xFFFFFFFFL shl (32 - p)) and 0xFFFFFFFFL
+            val bc = (ip and mask) or (mask.inv() and 0xFFFFFFFFL)
+            listOf((bc shr 24) and 255, (bc shr 16) and 255, (bc shr 8) and 255, bc and 255).joinToString(".")
+        }.distinct()
+    }
+
+    private fun probeTcpCandidates(network: Network, broadcasts: List<String>, port: Int, label: String): String {
+        val candidates = mutableSetOf<String>()
+        // Default gateways are tested separately through LinkProperties routes in a future revision.
+        // Broadcast addresses themselves are not valid TCP peers, so this is informational only.
+        return "\\n$label $port: no discovered peer IP to test"
+    }
+
+    private fun probeDoip(network: Network, broadcasts: List<String>): String {
+        val targets = (broadcasts + listOf("169.254.255.255", "255.255.255.255")).distinct()
+        val req = byteArrayOf(0x02, 0xFD.toByte(), 0x00, 0x01, 0, 0, 0, 0)
+        val s = DatagramSocket(null)
+        return try {
+            network.bindSocket(s); s.reuseAddress = true; s.broadcast = true; s.soTimeout = 1200
+            s.bind(InetSocketAddress(0))
+            targets.forEach { t -> try { s.send(DatagramPacket(req, req.size, InetAddress.getByName(t), 13400)) } catch (_: Exception) {} }
+            val b = ByteArray(2048); val p = DatagramPacket(b, b.size); s.receive(p)
+            val data = p.data.copyOf(p.length)
+            val vin = if (data.size >= 25 && data[2] == 0x00.toByte() && data[3] == 0x04.toByte())
+                String(data.copyOfRange(8, 25), StandardCharsets.US_ASCII).filter { it.code in 32..126 } else null
+            "\\nDoIP UDP 13400: REPLY from ${p.address.hostAddress}, bytes=${p.length}" + (vin?.let { "\\nDoIP VIN: $it" } ?: "")
+        } catch (_: SocketTimeoutException) {
+            "\\nDoIP UDP 13400: NO REPLY"
+        } catch (e: Exception) {
+            "\\nDoIP UDP 13400: ERROR ${e.javaClass.simpleName}: ${e.message}"
+        } finally { s.close() }
     }
 
     private fun hsfzDiag(src:Int, dst:Int, uds:ByteArray):ByteArray {
