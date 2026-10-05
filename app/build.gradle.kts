@@ -20,3 +20,5 @@ android {
         versionName = "1.3"
     }
 }
+
+// BMW-native v1.3: verified read-only DME8FF_R mappings
