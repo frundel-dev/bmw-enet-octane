@@ -37,7 +37,7 @@ class EnetLoggerService : Service() {
         return START_STICKY
     }
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
-        .setContentTitle("BMW ENET Logger v0.7").setContentText(text)
+        .setContentTitle("BMW ENET Logger v0.8").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
 
     private fun startLogger() {
@@ -46,8 +46,8 @@ class EnetLoggerService : Service() {
         val pm=getSystemService(POWER_SERVICE) as PowerManager
         wakeLock=pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"BmwEnet:Logger").apply{acquire()}
         val dir=getExternalFilesDir(null)?:filesDir
-        logFile=File(dir,"bmw_enet_v07_${System.currentTimeMillis()}.csv")
-        logFile!!.writeText("time_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg\n")
+        logFile=File(dir,"bmw_enet_v08_${System.currentTimeMillis()}.csv")
+        logFile!!.writeText("time_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,test_window\n")
         executor.execute { loop() }
     }
     private fun stopLogger() {
@@ -87,10 +87,15 @@ class EnetLoggerService : Service() {
                     val m=obd(pid(0x0B),0x0B)?.let{(it[0].toInt()and 255).toDouble()}
                     val i=obd(pid(0x0F),0x0F)?.let{((it[0].toInt()and 255)-40).toDouble()}
                     val a=obd(pid(0x0E),0x0E)?.let{(it[0].toInt()and 255)/2.0-64.0}
+                    val coolant=obd(pid(0x05),0x05)?.let{((it[0].toInt()and 255)-40).toDouble()}
+                    val throttle=obd(pid(0x11),0x11)?.let{(it[0].toInt()and 255)*100.0/255.0}
+                    val stft1=obd(pid(0x06),0x06)?.let{((it[0].toInt()and 255)-128)*100.0/128.0}
+                    val lambdaEq=obd(pid(0x44),0x44)?.takeIf{it.size>=2}?.let{(((it[0].toInt()and 255)*256)+(it[1].toInt()and 255))*2.0/65535.0}
+                    val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
                     val t=SystemClock.elapsedRealtime()-started
-                    FileOutputStream(logFile!!,true).bufferedWriter().use{it.appendLine(listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"").joinToString(","))}
+                    FileOutputStream(logFile!!,true).bufferedWriter().use{it.appendLine(listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",if(testWindow)1 else 0).joinToString(","))}
                     samples++
-                    if(samples%10==0) emit("Logging • $samples samples • RPM ${r?.toInt()?:"—"} • reconnects $reconnects")
+                    if(samples%10==0) emit("Logging • $samples • RPM ${r?.toInt()?:"—"} • load ${l?.let{"%.0f".format(it)}?:"—"}% • test ${if(testWindow)"ACTIVE" else "—"} • reconnects $reconnects")
                 }
             } catch(e:Exception) {
                 if(!running) break
