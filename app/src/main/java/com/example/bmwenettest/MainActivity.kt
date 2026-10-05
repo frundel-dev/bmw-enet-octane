@@ -23,12 +23,13 @@ class MainActivity : Activity() {
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var logging = false
     private var logFile: File? = null
+    private var supportedPids: Set<Int> = emptySet()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET TEST v0.5"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(TextView(this).apply { text="G20 • B48 • ENET live logger • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="BMW ENET TEST v0.6"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="G20 • B48 • ENET logger + capability scan • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(Button(this).apply { text="START LIVE LOGGER"; setOnClickListener {
             if (!logging) { logging = true; text = "STOP LOGGER"; runLogger(this) }
             else { logging = false; text = "START LIVE LOGGER" }
@@ -59,9 +60,9 @@ class MainActivity : Activity() {
                 socket.connect(InetSocketAddress(d.ip, 6801), 2500)
 
                 val dir = getExternalFilesDir(null) ?: filesDir
-                logFile = File(dir, "bmw_enet_v05_${System.currentTimeMillis()}.csv")
+                logFile = File(dir, "bmw_enet_v06_${System.currentTimeMillis()}.csv")
                 FileOutputStream(logFile!!, false).bufferedWriter().use { w ->
-                    w.appendLine("time_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg")
+                    w.appendLine("time_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq")
                 }
 
                 val start = SystemClock.elapsedRealtime()
@@ -78,12 +79,17 @@ class MainActivity : Activity() {
                     val load = readPid(0x04)?.let { decodeObd(it,0x04) }?.let { (it[0].toInt() and 255)*100.0/255.0 }
                     val map = readPid(0x0B)?.let { decodeObd(it,0x0B) }?.let { (it[0].toInt() and 255).toDouble() }
                     val iat = readPid(0x0F)?.let { decodeObd(it,0x0F) }?.let { ((it[0].toInt() and 255)-40).toDouble() }
+                    if (supportedPids.isEmpty()) supportedPids = scanSupportedPids(socket!!)
                     val ign = readPid(0x0E)?.let { decodeObd(it,0x0E) }?.let { (it[0].toInt() and 255)/2.0-64.0 }
+                    val coolant = if (0x05 in supportedPids) readPid(0x05)?.let { decodeObd(it,0x05) }?.let { ((it[0].toInt() and 255)-40).toDouble() } else null
+                    val throttle = if (0x11 in supportedPids) readPid(0x11)?.let { decodeObd(it,0x11) }?.let { (it[0].toInt() and 255)*100.0/255.0 } else null
+                    val stft1 = if (0x06 in supportedPids) readPid(0x06)?.let { decodeObd(it,0x06) }?.let { ((it[0].toInt() and 255)-128)*100.0/128.0 } else null
+                    val lambdaEq = if (0x44 in supportedPids) readPid(0x44)?.let { decodeObd(it,0x44) }?.let { (((it[0].toInt() and 255)*256)+(it[1].toInt() and 255))*2.0/65535.0 } else null
                     val s = LiveSample(SystemClock.elapsedRealtime()-start,rpm,load,map,iat,ign)
                     rpm?.let { rpmMin=kotlin.math.min(rpmMin,it); rpmMax=kotlin.math.max(rpmMax,it) }
                     load?.let { loadMax=kotlin.math.max(loadMax,it) }
                     FileOutputStream(logFile!!, true).bufferedWriter().use { w ->
-                        w.appendLine(listOf(s.t,s.rpm?:"",s.load?:"",s.map?:"",s.iat?:"",s.ign?:"").joinToString(","))
+                        w.appendLine(listOf(s.t,s.rpm?:"",s.load?:"",s.map?:"",s.iat?:"",s.ign?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"").joinToString(","))
                     }
                     count++
                     val hz = if (s.t > 0) count*1000.0/s.t else 0.0
@@ -97,6 +103,11 @@ Load: ${load?.let{"%.1f %%".format(it)} ?: "—"}
 MAP: ${map?.let{"%.0f kPa abs".format(it)} ?: "—"}
 IAT: ${iat?.let{"%.1f °C".format(it)} ?: "—"}
 Ignition advance: ${ign?.let{"%.1f °".format(it)} ?: "—"}
+Coolant: ${coolant?.let{"%.1f °C".format(it)} ?: "—"}
+Throttle: ${throttle?.let{"%.1f %%".format(it)} ?: "—"}
+STFT Bank 1: ${stft1?.let{"%+.1f %%".format(it)} ?: "—"}
+Lambda eq.: ${lambdaEq?.let{"%.3f".format(it)} ?: "—"}
+Supported Mode 01 PIDs: ${supportedPids.size}
 
 RPM min/max: ${if(rpmMin.isFinite()) "%.0f / %.0f".format(rpmMin,rpmMax) else "—"}
 Max load: ${if(loadMax.isFinite()) "%.1f %%".format(loadMax) else "—"}
@@ -104,7 +115,7 @@ Max load: ${if(loadMax.isFinite()) "%.1f %%".format(loadMax) else "—"}
 CSV: ${logFile!!.absolutePath}
 
 BMW knock/timing correction:
-waiting for validated B48 diagnostic mapping.
+EDIABAS status_lesen path identified; raw UDS DID is not guessed.
 READ-ONLY."""
                     }
                 }
@@ -282,6 +293,25 @@ READ-ONLY."""
         return null
     }
 
+
+
+    private fun scanSupportedPids(socket: Socket): Set<Int> {
+        val result = mutableSetOf<Int>()
+        for (base in listOf(0x00, 0x20, 0x40, 0x60, 0x80, 0xA0)) {
+            val req = hsfzDiag(0xF4, 0x12, byteArrayOf(0x01, base.toByte()))
+            socket.getOutputStream().write(req); socket.getOutputStream().flush()
+            val p = readFrames(socket.getInputStream(), 2).firstNotNullOfOrNull { payload(it) } ?: break
+            val d = decodeObd(p, base) ?: break
+            if (d.size < 4) break
+            for (bit in 0 until 32) {
+                val byteIndex = bit / 8
+                val bitIndex = 7 - (bit % 8)
+                if (((d[byteIndex].toInt() ushr bitIndex) and 1) != 0) result += base + bit + 1
+            }
+            if ((base + 0x20) !in result) break
+        }
+        return result
+    }
 
     private fun decodeObd(p: ByteArray, pid: Int): ByteArray? {
         for (i in 0 until p.size - 1) {
