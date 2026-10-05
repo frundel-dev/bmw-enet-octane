@@ -22,9 +22,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET TEST v0.3"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(TextView(this).apply { text="G20 • HSFZ / DoIP • network probe"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(Button(this).apply { text="NETWORK PROBE"; setOnClickListener { runTest() } })
+        root.addView(TextView(this).apply { text="BMW ENET TEST v0.4"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="G20 • B48 • ENET live data • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(Button(this).apply { text="CONNECT + LIVE DATA"; setOnClickListener { runTest() } })
         status = TextView(this).apply { text="Connect ENET → USB-C, ignition ON, then press the button."; textSize=15f; setPadding(0,24,0,0); setTextIsSelectable(true) }
         root.addView(ScrollView(this).apply { addView(status) })
         setContentView(root)
@@ -66,19 +66,28 @@ class MainActivity : Activity() {
                         val vinFrames = readFrames(socket.getInputStream(), 2)
                         if (vinFrames.isEmpty()) out += "RX: timeout / no frame"
                         else vinFrames.forEachIndexed { i, f -> out += "RX${i+1}: ${hex(f)}"; decodeVin(f)?.let { out += "DME VIN: $it" } }
-                        val rpmReq = hsfzDiag(0xF4, 0x12, byteArrayOf(0x01, 0x0C))
-                        out += "\nDME 0x12 → OBD 01 0C (RPM, experimental)"
-                        out += "TX: ${hex(rpmReq)}"
-                        socket.getOutputStream().write(rpmReq); socket.getOutputStream().flush()
-                        val rpmFrames = readFrames(socket.getInputStream(), 2)
-                        if (rpmFrames.isEmpty()) out += "RX: timeout / no frame"
-                        else rpmFrames.forEachIndexed { i, f ->
-                            out += "RX${i+1}: ${hex(f)}"
-                            decodeRpm(f)?.let { out += "RPM: %.0f rpm".format(it) }
-                            decodeNegative(f)?.let { out += "UDS/OBD negative response: $it" }
+                        out += "\nLIVE DATA — standard OBD services through DME"
+                        val pids = listOf(
+                            Triple(0x0C, "RPM") { p: ByteArray -> decodeObd(p, 0x0C)?.let { (((it[0].toInt() and 255) * 256) + (it[1].toInt() and 255)) / 4.0 to "rpm" } },
+                            Triple(0x04, "Calculated load") { p: ByteArray -> decodeObd(p, 0x04)?.let { (it[0].toInt() and 255) * 100.0 / 255.0 to "%" } },
+                            Triple(0x0B, "MAP") { p: ByteArray -> decodeObd(p, 0x0B)?.let { (it[0].toInt() and 255).toDouble() to "kPa abs" } },
+                            Triple(0x0F, "IAT") { p: ByteArray -> decodeObd(p, 0x0F)?.let { ((it[0].toInt() and 255) - 40).toDouble() to "°C" } },
+                            Triple(0x0E, "Ignition advance") { p: ByteArray -> decodeObd(p, 0x0E)?.let { ((it[0].toInt() and 255) / 2.0 - 64.0) to "°" } }
+                        )
+                        for ((pid, name, decoder) in pids) {
+                            val req = hsfzDiag(0xF4, 0x12, byteArrayOf(0x01, pid.toByte()))
+                            socket.getOutputStream().write(req); socket.getOutputStream().flush()
+                            val frames = readFrames(socket.getInputStream(), 2)
+                            val diag = frames.firstNotNullOfOrNull { payload(it) }
+                            val value = diag?.let(decoder)
+                            out += if (value != null) "$name: %.2f %s".format(value.first, value.second)
+                                   else "$name: no decoded value"
+                            if (frames.isNotEmpty()) out += "  RX: " + frames.joinToString(" | ") { hex(it) }
                         }
+                        out += "\nBMW-specific knock/timing correction: DID mapping not enabled yet (no guessed identifiers)."
+                        out += "Transport/DME session is ready for validated B48 DIDs."
                         socket.close()
-                        out += "\nREAD-ONLY test complete. No coding, flashing or write service sent."
+                        out += "\nREAD-ONLY complete. No coding, flashing, security access or write service sent."
                     }
                 }
             } catch (e: Exception) { out += "\nERROR ${e.javaClass.simpleName}: ${e.message}" }
@@ -181,6 +190,15 @@ class MainActivity : Activity() {
         val p=payload(frame)?:return null
         if(p.size>=20 && p[0]==0x62.toByte() && p[1]==0xF1.toByte() && p[2]==0x90.toByte())
             return String(p.copyOfRange(3,20),StandardCharsets.US_ASCII).filter{it.code in 32..126}
+        return null
+    }
+
+
+    private fun decodeObd(p: ByteArray, pid: Int): ByteArray? {
+        for (i in 0 until p.size - 1) {
+            if (p[i] == 0x41.toByte() && (p[i + 1].toInt() and 255) == pid)
+                return p.copyOfRange(i + 2, p.size)
+        }
         return null
     }
 
