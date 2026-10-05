@@ -18,6 +18,7 @@ import java.io.InputStream
 import java.net.*
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
+import java.security.MessageDigest
 
 class MainActivity : Activity() {
     private lateinit var status: TextView
@@ -30,8 +31,8 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.0"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(TextView(this).apply { text="G20 • B48 • PRG-assisted octane logger • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.1"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="G20 • B48 • fresh ECU profile manager • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(Button(this).apply { text="IMPORT BMW DME .PRG"; setOnClickListener {
             val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE); type="application/octet-stream"
@@ -43,7 +44,7 @@ class MainActivity : Activity() {
                 logging=true; text="STOP LOGGER"
                 val i=Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_START)
                 startForegroundService(i)
-                status.text="Background logger started. Screen may be off.\n\nTEST WINDOW is marked automatically at RPM ≥ 2000, load ≥ 70%, MAP ≥ 140 kPa abs.\n\nBMW-native mode: import DME_BX8.PRG. v1.0 validates the PRG target set; unknown DIDs are never probed."
+                status.text="Background logger started. Screen may be off.\n\nTEST WINDOW is marked automatically at RPM ≥ 2000, load ≥ 70%, MAP ≥ 140 kPa abs.\n\nBMW-native profile: v1.1 prefers fresh DME8FF_R.PRG; DME_BX8.PRG is accepted as fallback. Unknown DIDs are never probed."
             } else {
                 logging=false; text="START BACKGROUND LOGGER"
                 startService(Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_STOP))
@@ -68,20 +69,52 @@ class MainActivity : Activity() {
             val dst=File(filesDir,"ecu").apply{mkdirs()}.resolve(name)
             contentResolver.openInputStream(uri)!!.use { input -> dst.outputStream().use { input.copyTo(it) } }
             if(dst.length()<1024) { dst.delete(); throw IllegalArgumentException("PRG file is too small") }
-            getSharedPreferences("bmw_native",MODE_PRIVATE).edit().putString("prg_path",dst.absolutePath).putString("prg_name",name).apply()
+            val lower=name.lowercase()
+            val profile=when {
+                lower=="dme8ff_r.prg" -> "DME8FF_R"
+                lower=="dme_bx8.prg" -> "DME_BX8"
+                else -> "UNVERIFIED"
+            }
+            val sha=sha256(dst)
+            val expectedSize=when(profile) {
+                "DME8FF_R" -> 7458486L
+                "DME_BX8" -> 4254857L
+                else -> -1L
+            }
+            val freshMatch=expectedSize==dst.length()
+            getSharedPreferences("bmw_native",MODE_PRIVATE).edit()
+                .putString("prg_path",dst.absolutePath).putString("prg_name",name)
+                .putString("prg_profile",profile).putString("prg_sha256",sha)
+                .putBoolean("fresh_ecu_match",freshMatch).apply()
             status.text="""BMW DME PRG imported ✓
 File: $name
+Profile: $profile
 Size: ${dst.length()} bytes
+Fresh ECU.zip size match: ${if(freshMatch)"YES ✓" else "NO / unknown"}
+SHA-256: $sha
 
-Target STATUS_LESEN data:
-• STAT_KLOPFSIGNAL_ZYL1…4
-• STAT_KLOPFWERT_ZYL*_SPANNUNG
-• STAT_ZUENDWINKEL_ZYL1…4
+v1.1 priority:
+1. DME8FF_R — preferred G20/B48 profile
+2. DME_BX8 — fallback/comparison profile
+
+Native target set:
+• STATUS_SUPERKLOPFER / STAT_STATUS_KLOPFEN
+• STAT_KLOPFWERT_ZYL1…4_SPANNUNG_WERT
+• STAT_ZUENDWINKEL_ZYL1…4_WERT
 • STAT_INFOFOCTAN_*
 
-The file is stored privately inside the app.
-No write/coding/flashing commands are enabled."""
+PRG is stored privately. READ-ONLY.
+Unknown DIDs are never probed."""
         } catch(e:Exception) { status.text="PRG IMPORT ERROR: ${e.message}" }
+    }
+
+    private fun sha256(file:File):String {
+        val md=MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val b=ByteArray(65536)
+            while(true) { val n=input.read(b); if(n<=0) break; md.update(b,0,n) }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun queryName(uri:android.net.Uri):String? {
