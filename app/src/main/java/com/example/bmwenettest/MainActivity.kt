@@ -30,8 +30,8 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET TEST v0.9"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(TextView(this).apply { text="G20 • B48 • BMW-native PRG preparation • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.0"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="G20 • B48 • PRG-assisted octane logger • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(Button(this).apply { text="IMPORT BMW DME .PRG"; setOnClickListener {
             val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE); type="application/octet-stream"
@@ -43,7 +43,7 @@ class MainActivity : Activity() {
                 logging=true; text="STOP LOGGER"
                 val i=Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_START)
                 startForegroundService(i)
-                status.text="Background logger started. Screen may be off.\n\nTEST WINDOW is marked automatically at RPM ≥ 2000, load ≥ 70%, MAP ≥ 140 kPa abs.\n\nBMW-native knock/FOCTAN: next layer requires the matching BMW DME PRG; no guessed DIDs are sent."
+                status.text="Background logger started. Screen may be off.\n\nTEST WINDOW is marked automatically at RPM ≥ 2000, load ≥ 70%, MAP ≥ 140 kPa abs.\n\nBMW-native mode: import DME_BX8.PRG. v1.0 validates the PRG target set; unknown DIDs are never probed."
             } else {
                 logging=false; text="START BACKGROUND LOGGER"
                 startService(Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_STOP))
