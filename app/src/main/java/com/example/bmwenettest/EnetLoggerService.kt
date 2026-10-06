@@ -17,6 +17,13 @@ class EnetLoggerService : Service() {
         const val ACTION_STOP = "enet.STOP"
         const val ACTION_STATUS = "enet.STATUS"
         const val EXTRA_STATUS = "status"
+        const val EXTRA_STATE = "state"
+        const val EXTRA_RPM = "rpm"
+        const val EXTRA_TRANSPORT = "transport"
+        const val EXTRA_RUN_ID = "run_id"
+        const val EXTRA_HZ = "hz"
+        const val EXTRA_RECONNECTS = "reconnects"
+        const val EXTRA_SUMMARY = "summary"
         const val CHANNEL = "enet_logger"
     }
     private val executor = Executors.newSingleThreadExecutor()
@@ -68,8 +75,11 @@ class EnetLoggerService : Service() {
         tone.release()
         super.onDestroy()
     }
-    private fun emit(s:String) {
-        sendBroadcast(Intent(ACTION_STATUS).setPackage(packageName).putExtra(EXTRA_STATUS,s))
+    private fun emit(s:String, state:String?=null, rpm:Double?=null, transport:String?=null, runId:Int?=null, hz:Double?=null, reconnects:Int?=null, summary:String?=null) {
+        val intent=Intent(ACTION_STATUS).setPackage(packageName).putExtra(EXTRA_STATUS,s)
+        state?.let{intent.putExtra(EXTRA_STATE,it)}; rpm?.let{intent.putExtra(EXTRA_RPM,it)}; transport?.let{intent.putExtra(EXTRA_TRANSPORT,it)}
+        runId?.let{intent.putExtra(EXTRA_RUN_ID,it)}; hz?.let{intent.putExtra(EXTRA_HZ,it)}; reconnects?.let{intent.putExtra(EXTRA_RECONNECTS,it)}; summary?.let{intent.putExtra(EXTRA_SUMMARY,it)}
+        sendBroadcast(intent)
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(7,notification(s.take(100)))
     }
     private fun loop() {
@@ -80,6 +90,7 @@ class EnetLoggerService : Service() {
         var slowSuperKnock:Int?=null; var lastSlow=0L; var lastFoctan=0L
         val sampleTimes=java.util.ArrayDeque<Long>(); var validOctaneSamples=0
         var captureActive=false; var captureTailUntil=0L; var runId=0; var armed2000=false; var signaled4500=false
+        var runStart=0L; var runStartRpm=0.0; var runMaxRpm=0.0; var runMaxLoad=0.0; var runMaxMap=0.0; var runSamples=0; var lastSummary=""
         while(running) {
             try {
                 val cm=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -143,7 +154,7 @@ class EnetLoggerService : Service() {
                                         val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
                     // v1.7.2 measurement assistant: keep polling continuously, persist only measurement segments.
                     if(r!=null && r>=1800.0 && !captureActive) {
-                        captureActive=true; runId++; armed2000=false; signaled4500=false
+                        captureActive=true; runId++; armed2000=false; signaled4500=false; runStart=now; runStartRpm=r; runMaxRpm=r; runMaxLoad=l?:0.0; runMaxMap=m?:0.0; runSamples=0; lastSummary=""
                         tone.startTone(ToneGenerator.TONE_PROP_BEEP,120)
                     }
                     if(captureActive && r!=null && r>=2000.0 && !armed2000) {
@@ -155,9 +166,10 @@ class EnetLoggerService : Service() {
                         Handler(Looper.getMainLooper()).postDelayed({ tone.startTone(ToneGenerator.TONE_PROP_ACK,120) },180)
                     }
                     if(captureActive) {
+                        if(r!=null) runMaxRpm=kotlin.math.max(runMaxRpm,r); if(l!=null) runMaxLoad=kotlin.math.max(runMaxLoad,l); if(m!=null) runMaxMap=kotlin.math.max(runMaxMap,m); runSamples++
                         if(r!=null && r<1800.0) {
                             if(captureTailUntil==0L) captureTailUntil=now+3000L
-                            if(now>=captureTailUntil) { captureActive=false; captureTailUntil=0L; armed2000=false; signaled4500=false }
+                            if(now>=captureTailUntil) { lastSummary="ЗАМЕР #$runId ЗАВЕРШЁН ✓\n${"%.0f".format(runStartRpm)} → ${"%.0f".format(runMaxRpm)} rpm • ${"%.1f".format((now-runStart)/1000.0)} s • $runSamples samples\nMax load ${"%.1f".format(runMaxLoad)}% • Max MAP ${"%.0f".format(runMaxMap)} kPa"; captureActive=false; captureTailUntil=0L; armed2000=false; signaled4500=false }
                         } else captureTailUntil=0L
                     }
                     val t=SystemClock.elapsedRealtime()-started
@@ -174,7 +186,7 @@ class EnetLoggerService : Service() {
                     val confidence=(validOctaneSamples*2).coerceAtMost(100)
                     if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects)).joinToString(","))}
                     samples++
-                    if(samples%10==0) emit("v1.7.2 • ${if(captureActive)"REC #$runId" else "WAIT ≥1800"} • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • RONeq ${ronEquiv?.let{"%.1f".format(java.util.Locale.US,it)}?:"—"} • confidence $confidence% • test ${if(testWindow)"ACTIVE" else "—"}")
+                    if(samples%4==0) { val state=if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.2 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()}) }
                 }
             } catch(e:Exception) {
                 if(!running) break
