@@ -37,7 +37,7 @@ class EnetLoggerService : Service() {
         return START_STICKY
     }
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
-        .setContentTitle("BMW ENET Logger v1.6").setContentText(text)
+        .setContentTitle("BMW ENET Logger v1.7").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
 
     private fun startLogger() {
@@ -46,12 +46,12 @@ class EnetLoggerService : Service() {
         val pm=getSystemService(POWER_SERVICE) as PowerManager
         wakeLock=pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"BmwEnet:Logger").apply{acquire()}
         val dir=getExternalFilesDir(null)?:filesDir
-        logFile=File(dir,"bmw_enet_v16_${System.currentTimeMillis()}.csv")
+        logFile=File(dir,"bmw_enet_v17_${System.currentTimeMillis()}.csv")
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val profile=prefs.getString("prg_profile","DME8FF_R_EMBEDDED") ?: "DME8FF_R_EMBEDDED"
         val prgName=prefs.getString("prg_name","") ?: ""
         val prgSha=prefs.getString("prg_sha256","") ?: ""
-        logFile!!.writeText("# app=v1.6,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz\n")
+        logFile!!.writeText("# app=v1.7,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz\n")
         executor.execute { loop() }
     }
     private fun stopLogger() {
@@ -73,7 +73,7 @@ class EnetLoggerService : Service() {
         val foctanCache=arrayOfNulls<Double>(20)
         var slowIat:Double?=null; var slowIgn:Double?=null; var slowCoolant:Double?=null
         var slowThrottle:Double?=null; var slowStft:Double?=null; var slowLambda:Double?=null
-        var slowSuperKnock:Int?=null; var lastSlow=0L; var lastFoctan=0L
+        var slowSuperKnock:Int?=null; var lastSlow=0L; var lastFoctan=0L\n        val sampleTimes=java.util.ArrayDeque<Long>(); var validOctaneSamples=0
         while(running) {
             try {
                 val cm=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -135,11 +135,20 @@ class EnetLoggerService : Service() {
                     }
                                         val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
                     val t=SystemClock.elapsedRealtime()-started
-                    val nextSample=samples+1
-                    val hz=if(t>0) nextSample*1000.0/t else 0.0
-                    FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz))).joinToString(","))}
+                    sampleTimes.addLast(now); while(sampleTimes.size>30) sampleTimes.removeFirst()
+                    val hz=if(sampleTimes.size>=2) (sampleTimes.size-1)*1000.0/(sampleTimes.last()-sampleTimes.first()).coerceAtLeast(1L) else 0.0
+                    val fuelValues=foctanCache.filterNotNull()
+                    val fuelFactor=if(fuelValues.isNotEmpty()) fuelValues.sorted()[fuelValues.size/2].coerceIn(0.0,1.0) else null
+                    val ronEquiv=fuelFactor?.let{98.0-7.0*it}
+                    val knockValues=listOfNotNull(kz1,kz2,kz3,kz4)
+                    val knockMean=knockValues.takeIf{it.size==4}?.average()
+                    val ignValues=listOfNotNull(iz1,iz2,iz3,iz4)
+                    val ignSpread=ignValues.takeIf{it.size==4}?.let{v->v.maxOrNull()!!-v.minOrNull()!!}
+                    if(testWindow && knockMean!=null && ignSpread!=null) validOctaneSamples++
+                    val confidence=(validOctaneSamples*2).coerceAtMost(100)
+                    FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence)).joinToString(","))}
                     samples++
-                    if(samples%10==0) emit("Logging $transport • $samples • ${"%.1f".format(java.util.Locale.US,hz)} Hz • RPM ${r?.toInt()?:"—"} • load ${l?.let{"%.0f".format(it)}?:"—"}% • test ${if(testWindow)"ACTIVE" else "—"}")
+                    if(samples%10==0) emit("Octane v0.1 • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • RONeq ${ronEquiv?.let{"%.1f".format(java.util.Locale.US,it)}?:"—"} • confidence $confidence% • test ${if(testWindow)"ACTIVE" else "—"}")
                 }
             } catch(e:Exception) {
                 if(!running) break
