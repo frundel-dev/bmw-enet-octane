@@ -73,7 +73,8 @@ class EnetLoggerService : Service() {
         val foctanCache=arrayOfNulls<Double>(20)
         var slowIat:Double?=null; var slowIgn:Double?=null; var slowCoolant:Double?=null
         var slowThrottle:Double?=null; var slowStft:Double?=null; var slowLambda:Double?=null
-        var slowSuperKnock:Int?=null; var lastSlow=0L; var lastFoctan=0L\n        val sampleTimes=java.util.ArrayDeque<Long>(); var validOctaneSamples=0
+        var slowSuperKnock:Int?=null; var lastSlow=0L; var lastFoctan=0L
+        val sampleTimes=java.util.ArrayDeque<Long>(); var validOctaneSamples=0
         while(running) {
             try {
                 val cm=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
