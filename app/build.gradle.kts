@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
-        versionName = "1.6"
+        versionCode = 18
+        versionName = "1.7"
     }
 }
 
-// BMW-native v1.6: actual transport + sample rate telemetry
+// v1.7 Octane Engine v0.1 + rolling sample rate
