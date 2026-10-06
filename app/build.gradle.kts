@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.4"
+        versionCode = 16
+        versionName = "1.5"
     }
 }
 
-// BMW-native v1.4: optimized fast/slow read-only polling
+// BMW-native v1.5: USB Ethernet + VXSCAN Wi-Fi ENET
