@@ -27,6 +27,7 @@ class MainActivity : Activity() {
     @Volatile private var logging = false
     private var logFile: File? = null
     private var supportedPids: Set<Int> = emptySet()
+    private var statusReceiver: BroadcastReceiver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -53,6 +54,38 @@ class MainActivity : Activity() {
                 status = TextView(this).apply { text="Embedded profile: DME8FF_R (fresh ECU dataset) ✓\nPRG import is optional.\n\nConnect USB-C ENET or join VXSCAN ENET Wi-Fi, ignition ON, then press START."; textSize=15f; setPadding(0,24,0,0); setTextIsSelectable(true) }
         root.addView(ScrollView(this).apply { addView(status) })
         setContentView(root)
+        statusReceiver=object:BroadcastReceiver(){
+            override fun onReceive(context:Context?, intent:Intent?) {
+                if(intent?.action!=EnetLoggerService.ACTION_STATUS) return
+                val msg=intent.getStringExtra(EnetLoggerService.EXTRA_STATUS) ?: return
+                val state=intent.getStringExtra(EnetLoggerService.EXTRA_STATE)
+                if(state==null) { status.text=msg; return }
+                val rpm=intent.getDoubleExtra(EnetLoggerService.EXTRA_RPM,Double.NaN)
+                val transport=intent.getStringExtra(EnetLoggerService.EXTRA_TRANSPORT) ?: "—"
+                val run=intent.getIntExtra(EnetLoggerService.EXTRA_RUN_ID,0)
+                val hz=intent.getDoubleExtra(EnetLoggerService.EXTRA_HZ,0.0)
+                val reconnects=intent.getIntExtra(EnetLoggerService.EXTRA_RECONNECTS,0)
+                val summary=intent.getStringExtra(EnetLoggerService.EXTRA_SUMMARY)
+                status.text=buildString {
+                    append("СОЕДИНЕНИЕ: ").append(transport).append(" — CONNECTED ✓\n")
+                    append("ОБОРОТЫ: ").append(if(rpm.isFinite()) "%.0f rpm".format(rpm) else "—").append("\n")
+                    append("ЗАМЕР: ").append(state).append("\n")
+                    append("ОПРОС: ").append("%.2f Hz".format(hz)).append("\n")
+                    append("RECONNECT: ").append(reconnects)
+                    if(run>0) append("\nRUN ID: ").append(run)
+                    if(!summary.isNullOrBlank()) append("\n\n").append(summary)
+                    append("\n\n1800: готов • 2000: начало • 4500: завершение")
+                }
+            }
+        }
+        val filter=IntentFilter(EnetLoggerService.ACTION_STATUS)
+        if(Build.VERSION.SDK_INT>=33) registerReceiver(statusReceiver,filter,RECEIVER_NOT_EXPORTED) else @Suppress("DEPRECATION") registerReceiver(statusReceiver,filter)
+    }
+
+    override fun onDestroy() {
+        statusReceiver?.let{try{unregisterReceiver(it)}catch(_:Exception){}}
+        statusReceiver=null
+        super.onDestroy()
     }
 
 
