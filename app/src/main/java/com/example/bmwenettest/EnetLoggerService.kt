@@ -37,7 +37,7 @@ class EnetLoggerService : Service() {
         return START_STICKY
     }
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
-        .setContentTitle("BMW ENET Logger v1.4").setContentText(text)
+        .setContentTitle("BMW ENET Logger v1.5").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
 
     private fun startLogger() {
@@ -46,12 +46,12 @@ class EnetLoggerService : Service() {
         val pm=getSystemService(POWER_SERVICE) as PowerManager
         wakeLock=pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"BmwEnet:Logger").apply{acquire()}
         val dir=getExternalFilesDir(null)?:filesDir
-        logFile=File(dir,"bmw_enet_v14_${System.currentTimeMillis()}.csv")
+        logFile=File(dir,"bmw_enet_v15_${System.currentTimeMillis()}.csv")
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val profile=prefs.getString("prg_profile","DME8FF_R_EMBEDDED") ?: "DME8FF_R_EMBEDDED"
         val prgName=prefs.getString("prg_name","") ?: ""
         val prgSha=prefs.getString("prg_sha256","") ?: ""
-        logFile!!.writeText("# app=v1.4,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window\n")
+        logFile!!.writeText("# app=v1.5,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window\n")
         executor.execute { loop() }
     }
     private fun stopLogger() {
@@ -77,13 +77,26 @@ class EnetLoggerService : Service() {
         while(running) {
             try {
                 val cm=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-                val net=cm.allNetworks.firstOrNull{cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)==true}
-                    ?: throw IOException("Ethernet unavailable")
-                val lp=cm.getLinkProperties(net)
-                val d=discover(net,ipv4Broadcasts(lp))?:throw IOException("BMW discovery no reply")
-                socket=net.socketFactory.createSocket() as Socket
-                socket!!.soTimeout=1800; socket!!.connect(InetSocketAddress(d.ip,6801),2500)
-                emit("CONNECTED ${d.ip}:6801 • reconnects $reconnects")
+                val candidates=cm.allNetworks.mapNotNull { n ->
+                    val caps=cm.getNetworkCapabilities(n) ?: return@mapNotNull null
+                    when {
+                        caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> Triple(n,"ETHERNET",0)
+                        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> Triple(n,"WIFI",1)
+                        else -> null
+                    }
+                }.sortedBy{it.third}
+                if(candidates.isEmpty()) throw IOException("No Ethernet/Wi-Fi ENET network")
+                var net:Network?=null; var d:D?=null; var transport=""
+                for(candidate in candidates) {
+                    val lpCandidate=cm.getLinkProperties(candidate.first)
+                    val found=discover(candidate.first,ipv4Broadcasts(lpCandidate))
+                    if(found!=null) { net=candidate.first; d=found; transport=candidate.second; break }
+                }
+                val activeNet=net ?: throw IOException("BMW HSFZ discovery no reply on Ethernet/Wi-Fi")
+                val gateway=d ?: throw IOException("BMW gateway not found")
+                socket=activeNet.socketFactory.createSocket() as Socket
+                socket!!.soTimeout=1800; socket!!.connect(InetSocketAddress(gateway.ip,6801),2500)
+                emit("CONNECTED $transport ${gateway.ip}:6801 • reconnects $reconnects")
                 while(running && socket?.isClosed==false) {
                     fun pid(id:Int):ByteArray? {
                         val q=hsfz(byteArrayOf(0x01,id.toByte())); socket!!.getOutputStream().write(q); socket!!.getOutputStream().flush()
