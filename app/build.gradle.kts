@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "1.7"
+        versionCode = 19
+        versionName = "1.7.1"
     }
 }
 
-// v1.7 Octane Engine v0.1 + rolling sample rate
+// v1.7.1 Octane Engine v0.1 CSV schema fix
