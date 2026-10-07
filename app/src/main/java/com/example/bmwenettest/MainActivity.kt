@@ -40,7 +40,7 @@ class MainActivity : Activity() {
             }
             startActivityForResult(i,901)
         } })
-        root.addView(Button(this).apply { text="START BACKGROUND LOGGER"; setOnClickListener {
+        root.addView(Button(this).apply { text="START BACKGROUND LOGGER"; textSize=20f; minHeight=160; setPadding(24,32,24,32); setOnClickListener {
             if (!logging) {
                 logging=true; text="STOP LOGGER"
                 val i=Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_START)
