@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20
-        versionName = "1.7.2"
+        versionCode = 21
+        versionName = "1.7.3"
     }
 }
 
-// v1.7.2 automatic RPM capture, audio measurement cues, run/reconnect diagnostics
+// v1.7.3 Octane Engine v0.2: empirical AI-95 RPM x MAP baseline
