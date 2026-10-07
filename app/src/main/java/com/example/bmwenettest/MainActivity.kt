@@ -32,7 +32,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.5"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.6"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(TextView(this).apply { text="G20 • B48 • USB ENET + VXSCAN Wi-Fi • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(Button(this).apply { text="IMPORT/VERIFY BMW DME .PRG (OPTIONAL)"; setOnClickListener {
             val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -45,7 +45,7 @@ class MainActivity : Activity() {
                 logging=true; text="STOP LOGGER"
                 val i=Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_START)
                 startForegroundService(i)
-                status.text="Background logger started. Screen may be off.\n\nAUTO CAPTURE: 1800 RPM • cue 2000 • double cue 4500 • 3 s tail • completion sound.\nLive coolant + engine oil temperature.\nOctane v0.3: expanded AI-95 RPM × MAP baseline + per-run/session Fuel Quality Score. 100 = AI-95 baseline; not RON.\nEach pass gets run_id. TEST WINDOW remains RPM ≥ 2000, load ≥ 70%, MAP ≥ 140 kPa abs.\n\nOctane Engine v0.3 • ECU fuel adaptation + knock/timing metrics • USB ENET + VXSCAN Wi-Fi • read-only."
+                status.text="Background logger started. Screen may be off.\n\nAUTO CAPTURE: 1800 RPM • cue 2000 • double cue 4500 • 3 s tail • completion sound.\nLive coolant + engine oil temperature.\nOctane v0.4: expanded AI-95 RPM × MAP baseline + per-run/session Fuel Quality Score. 100 = AI-95 baseline; not RON.\nEach pass gets run_id. TEST WINDOW remains RPM ≥ 2000, load ≥ 70%, MAP ≥ 140 kPa abs.\n\nOctane Engine v0.4 • ECU fuel adaptation + knock/timing metrics • USB ENET + VXSCAN Wi-Fi • read-only."
             } else {
                 logging=false; text="START BACKGROUND LOGGER"
                 startService(Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_STOP))
@@ -73,21 +73,37 @@ class MainActivity : Activity() {
                 val sessionRuns=intent.getIntExtra(EnetLoggerService.EXTRA_SESSION_RUNS,0)
                 val coolant=intent.getDoubleExtra(EnetLoggerService.EXTRA_COOLANT,Double.NaN)
                 val oil=intent.getDoubleExtra(EnetLoggerService.EXTRA_OIL,Double.NaN)
+                val load=intent.getDoubleExtra(EnetLoggerService.EXTRA_LOAD,Double.NaN)
+                val map=intent.getDoubleExtra(EnetLoggerService.EXTRA_MAP,Double.NaN)
+                val iat=intent.getDoubleExtra(EnetLoggerService.EXTRA_IAT,Double.NaN)
+                val validPoints=intent.getIntExtra(EnetLoggerService.EXTRA_VALID_POINTS,0)
+                val highPoints=intent.getIntExtra(EnetLoggerService.EXTRA_HIGH_POINTS,0)
+                val knockEvents=intent.getIntExtra(EnetLoggerService.EXTRA_KNOCK_EVENTS,0)
+                val superEvents=intent.getIntExtra(EnetLoggerService.EXTRA_SUPER_EVENTS,0)
+                val resultState=intent.getStringExtra(EnetLoggerService.EXTRA_RESULT_STATE) ?: "COLLECTING"
                 status.text=buildString {
-                    append("СОЕДИНЕНИЕ: ").append(transport).append(" — CONNECTED ✓\n")
-                    append("ОБОРОТЫ: ").append(if(rpm.isFinite()) "%.0f rpm".format(rpm) else "—").append("\n")
-                    append("ОЖ: ").append(if(coolant.isFinite()) "%.0f °C".format(coolant) else "—").append("   МАСЛО: ").append(if(oil.isFinite()) "%.0f °C".format(oil) else "—").append("\n")
-                    append("ЗАМЕР: ").append(state).append("\n")
-                    append("ОПРОС: ").append("%.2f Hz".format(hz)).append("\n")
-                    append("RECONNECT: ").append(reconnects)
-                    append("\nFUEL SCORE: ").append(if(fuelScore.isFinite()) "%.1f / 100".format(fuelScore) else "—").append("   RUN QUALITY: ").append(runQuality).append("%")
-                    append("\nSESSION: ").append(if(sessionScore.isFinite()) "%.1f / 100".format(sessionScore) else "—").append("   CONFIDENCE: ").append(sessionConfidence).append("%")
-                    append("\nVALID RUNS: ").append(sessionRuns)
-                    if(run>0) append("\nRUN ID: ").append(run)
+                    val scoreText=if(sessionScore.isFinite()) "%.1f".format(sessionScore) else if(fuelScore.isFinite()) "%.1f".format(fuelScore) else "—"
+                    val progress=if(rpm.isFinite()) (((rpm-2000.0)/2500.0)*10.0).toInt().coerceIn(0,10) else 0
+                    val bar="█".repeat(progress)+"░".repeat(10-progress)
+                    append("BMW OCTANE  •  ").append(transport).append("  •  ").append("%.2f Hz".format(hz)).append("\n\n")
+                    append("        FUEL QUALITY\n")
+                    append("             ").append(scoreText).append("\n")
+                    append("       AI-95 BASELINE = 100\n")
+                    append("           ").append(resultState).append(if(resultState=="NORMAL") " ✓" else "").append("\n\n")
+                    append("CONFIDENCE  ").append("█".repeat((sessionConfidence/10).coerceIn(0,10))).append("░".repeat((10-sessionConfidence/10).coerceIn(0,10))).append("  ").append(sessionConfidence).append("%\n")
+                    append("Valid runs: ").append(sessionRuns).append("   HC points: ").append(highPoints).append("\n\n")
+                    append("──── CURRENT RUN #").append(run).append(" ────\n")
+                    append("RPM ").append(if(rpm.isFinite()) "%.0f".format(rpm) else "—").append("   ").append(bar).append("\n")
+                    append("Load ").append(if(load.isFinite()) "%.0f%%".format(load) else "—").append("   MAP ").append(if(map.isFinite()) "%.0f kPa".format(map) else "—").append("\n")
+                    append("IAT ").append(if(iat.isFinite()) "%.0f°C".format(iat) else "—").append("   ОЖ ").append(if(coolant.isFinite()) "%.0f°C".format(coolant) else "—").append("   Масло ").append(if(oil.isFinite()) "%.0f°C".format(oil) else "—").append("\n")
+                    append("Run score ").append(if(fuelScore.isFinite()) "%.1f".format(fuelScore) else "—").append("   Quality ").append(runQuality).append("%\n")
+                    append("Valid points ").append(validPoints).append("   HC ").append(highPoints).append("\n\n")
+                    append("──── KNOCK ────\n")
+                    append("Knock events ").append(knockEvents).append("   Superknock ").append(superEvents).append("\n\n")
+                    append("STATE: ").append(state).append("   reconnect ").append(reconnects)
                     if(!summary.isNullOrBlank()) append("\n\n").append(summary)
                     append("\n\n1800: готов • 2000: начало • 4500: завершение")
-                }
-            }
+                }            }
         }
         val filter=IntentFilter(EnetLoggerService.ACTION_STATUS)
         if(Build.VERSION.SDK_INT>=33) registerReceiver(statusReceiver,filter,RECEIVER_NOT_EXPORTED) else @Suppress("DEPRECATION") registerReceiver(statusReceiver,filter)
