@@ -32,7 +32,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.3"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.4"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(TextView(this).apply { text="G20 • B48 • USB ENET + VXSCAN Wi-Fi • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(Button(this).apply { text="IMPORT/VERIFY BMW DME .PRG (OPTIONAL)"; setOnClickListener {
             val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -45,7 +45,7 @@ class MainActivity : Activity() {
                 logging=true; text="STOP LOGGER"
                 val i=Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_START)
                 startForegroundService(i)
-                status.text="Background logger started. Screen may be off.\n\nAUTO CAPTURE: 1800 RPM • cue 2000 • double cue 4500 • 3 s tail.\nOctane v0.2: empirical AI-95 baseline by RPM × MAP; comparison only, no fake RON estimate.\nEach pass gets run_id. TEST WINDOW remains RPM ≥ 2000, load ≥ 70%, MAP ≥ 140 kPa abs.\n\nOctane Engine v0.2 • ECU fuel adaptation + knock/timing metrics • USB ENET + VXSCAN Wi-Fi • read-only."
+                status.text="Background logger started. Screen may be off.\n\nAUTO CAPTURE: 1800 RPM • cue 2000 • double cue 4500 • 3 s tail.\nOctane v0.3: expanded AI-95 RPM × MAP baseline + per-run/session Fuel Quality Score. 100 = AI-95 baseline; not RON.\nEach pass gets run_id. TEST WINDOW remains RPM ≥ 2000, load ≥ 70%, MAP ≥ 140 kPa abs.\n\nOctane Engine v0.3 • ECU fuel adaptation + knock/timing metrics • USB ENET + VXSCAN Wi-Fi • read-only."
             } else {
                 logging=false; text="START BACKGROUND LOGGER"
                 startService(Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_STOP))
@@ -66,12 +66,20 @@ class MainActivity : Activity() {
                 val hz=intent.getDoubleExtra(EnetLoggerService.EXTRA_HZ,0.0)
                 val reconnects=intent.getIntExtra(EnetLoggerService.EXTRA_RECONNECTS,0)
                 val summary=intent.getStringExtra(EnetLoggerService.EXTRA_SUMMARY)
+                val fuelScore=intent.getDoubleExtra(EnetLoggerService.EXTRA_FUEL_SCORE,Double.NaN)
+                val runQuality=intent.getIntExtra(EnetLoggerService.EXTRA_RUN_QUALITY,0)
+                val sessionScore=intent.getDoubleExtra(EnetLoggerService.EXTRA_SESSION_SCORE,Double.NaN)
+                val sessionConfidence=intent.getIntExtra(EnetLoggerService.EXTRA_SESSION_CONFIDENCE,0)
+                val sessionRuns=intent.getIntExtra(EnetLoggerService.EXTRA_SESSION_RUNS,0)
                 status.text=buildString {
                     append("СОЕДИНЕНИЕ: ").append(transport).append(" — CONNECTED ✓\n")
                     append("ОБОРОТЫ: ").append(if(rpm.isFinite()) "%.0f rpm".format(rpm) else "—").append("\n")
                     append("ЗАМЕР: ").append(state).append("\n")
                     append("ОПРОС: ").append("%.2f Hz".format(hz)).append("\n")
                     append("RECONNECT: ").append(reconnects)
+                    append("\nFUEL SCORE: ").append(if(fuelScore.isFinite()) "%.1f / 100".format(fuelScore) else "—").append("   RUN QUALITY: ").append(runQuality).append("%")
+                    append("\nSESSION: ").append(if(sessionScore.isFinite()) "%.1f / 100".format(sessionScore) else "—").append("   CONFIDENCE: ").append(sessionConfidence).append("%")
+                    append("\nVALID RUNS: ").append(sessionRuns)
                     if(run>0) append("\nRUN ID: ").append(run)
                     if(!summary.isNullOrBlank()) append("\n\n").append(summary)
                     append("\n\n1800: готов • 2000: начало • 4500: завершение")
