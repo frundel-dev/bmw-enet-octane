@@ -47,7 +47,7 @@ class EnetLoggerService : Service() {
         return START_STICKY
     }
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
-        .setContentTitle("BMW ENET Logger v1.7.2").setContentText(text)
+        .setContentTitle("BMW ENET Logger v1.7.3").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
 
     private fun startLogger() {
@@ -56,12 +56,12 @@ class EnetLoggerService : Service() {
         val pm=getSystemService(POWER_SERVICE) as PowerManager
         wakeLock=pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"BmwEnet:Logger").apply{acquire()}
         val dir=getExternalFilesDir(null)?:filesDir
-        logFile=File(dir,"bmw_enet_v172_${System.currentTimeMillis()}.csv")
+        logFile=File(dir,"bmw_enet_v173_${System.currentTimeMillis()}.csv")
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val profile=prefs.getString("prg_profile","DME8FF_R_EMBEDDED") ?: "DME8FF_R_EMBEDDED"
         val prgName=prefs.getString("prg_name","") ?: ""
         val prgSha=prefs.getString("prg_sha256","") ?: ""
-        logFile!!.writeText("# app=v1.7.2,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz,ecu_fuel_factor,ecu_ron_equiv,knock_mean_vms,ign_spread_deg,octane_confidence_pct,run_id,reconnects\n")
+        logFile!!.writeText("# app=v1.7.3,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz,ecu_fuel_factor,ecu_ron_equiv,knock_mean_vms,ign_spread_deg,octane_confidence_pct,run_id,reconnects,measurement_window,high_confidence_window,baseline95_knock_vms,baseline95_samples,knock_ratio95\n")
         executor.execute { loop() }
     }
     private fun stopLogger() {
@@ -152,7 +152,7 @@ class EnetLoggerService : Service() {
                         lastFoctan=now
                     }
                                         val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
-                    // v1.7.2 measurement assistant: keep polling continuously, persist only measurement segments.
+                    // v1.7.3 measurement assistant: keep polling continuously, persist only measurement segments.
                     if(r!=null && r>=1800.0 && !captureActive) {
                         captureActive=true; runId++; armed2000=false; signaled4500=false; runStart=now; runStartRpm=r; runMaxRpm=r; runMaxLoad=l?:0.0; runMaxMap=m?:0.0; runSamples=0; lastSummary=""
                         tone.startTone(ToneGenerator.TONE_PROP_BEEP,120)
@@ -184,9 +184,13 @@ class EnetLoggerService : Service() {
                     val ignSpread=ignValues.takeIf{it.size==4}?.let{v->v.maxOrNull()!!-v.minOrNull()!!}
                     if(testWindow && knockMean!=null && ignSpread!=null) validOctaneSamples++
                     val confidence=(validOctaneSamples*2).coerceAtMost(100)
-                    if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects)).joinToString(","))}
+                    val measurementWindow=r!=null && l!=null && m!=null && r>=2000.0 && r<=4500.0 && l>=55.0 && m>=130.0
+                    val highConfidenceWindow=r!=null && l!=null && m!=null && r>=2200.0 && r<=4000.0 && l>=70.0 && m>=160.0
+                    val b95=if(measurementWindow) baseline95(r,m) else null
+                    val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0) knockMean/b95.v else null
+                    if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"")).joinToString(","))}
                     samples++
-                    if(samples%4==0) { val state=if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.2 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()}) }
+                    if(samples%4==0) { val state=if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.3 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • 95Δ ${ratio95?.let{String.format(java.util.Locale.US,"%+.0f%%",(it-1.0)*100.0)}?:"—"}",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()}) }
                 }
             } catch(e:Exception) {
                 if(!running) break
@@ -196,6 +200,24 @@ class EnetLoggerService : Service() {
             }
         }
     }
+    // Octane Engine v0.2: empirical AI-95 baseline from validated v1.7.2 runs.
+    // RPM x MAP bins: median knock_mean_vms and number of baseline samples.
+    private data class B95(val v:Double,val n:Int)
+    private fun baseline95(rpm:Double?, map:Double?):B95? {
+        if(rpm==null || map==null) return null
+        val ri=when { rpm<2000->return null; rpm<2500->0; rpm<3000->1; rpm<3500->2; rpm<4000->3; rpm<4500->4; else->5 }
+        val mi=when { map<130->return null; map<160->0; map<180->1; map<200->2; else->3 }
+        val v=arrayOf(
+            arrayOf<B95?>(B95(.075177,8),null,null,null),
+            arrayOf<B95?>(B95(.074039,19),B95(.076380,7),B95(.074590,5),B95(.083804,2)),
+            arrayOf<B95?>(B95(.076654,9),B95(.082133,4),B95(.082402,6),B95(.103298,1)),
+            arrayOf<B95?>(B95(.079952,8),B95(.086841,3),B95(.097288,2),null),
+            arrayOf<B95?>(B95(.085714,9),B95(.095348,3),B95(.104305,2),null),
+            arrayOf<B95?>(B95(.087283,6),B95(.098187,4),null,null)
+        )
+        return v[ri][mi]
+    }
+
     private fun udsData(did:Int):ByteArray? {
         val s=socket ?: return null
         val hi=((did ushr 8) and 255).toByte(); val lo=(did and 255).toByte()
