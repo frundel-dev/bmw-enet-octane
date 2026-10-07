@@ -32,7 +32,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.4"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.5"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(TextView(this).apply { text="G20 • B48 • USB ENET + VXSCAN Wi-Fi • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(Button(this).apply { text="IMPORT/VERIFY BMW DME .PRG (OPTIONAL)"; setOnClickListener {
             val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -45,13 +45,13 @@ class MainActivity : Activity() {
                 logging=true; text="STOP LOGGER"
                 val i=Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_START)
                 startForegroundService(i)
-                status.text="Background logger started. Screen may be off.\n\nAUTO CAPTURE: 1800 RPM • cue 2000 • double cue 4500 • 3 s tail.\nOctane v0.3: expanded AI-95 RPM × MAP baseline + per-run/session Fuel Quality Score. 100 = AI-95 baseline; not RON.\nEach pass gets run_id. TEST WINDOW remains RPM ≥ 2000, load ≥ 70%, MAP ≥ 140 kPa abs.\n\nOctane Engine v0.3 • ECU fuel adaptation + knock/timing metrics • USB ENET + VXSCAN Wi-Fi • read-only."
+                status.text="Background logger started. Screen may be off.\n\nAUTO CAPTURE: 1800 RPM • cue 2000 • double cue 4500 • 3 s tail • completion sound.\nLive coolant + engine oil temperature.\nOctane v0.3: expanded AI-95 RPM × MAP baseline + per-run/session Fuel Quality Score. 100 = AI-95 baseline; not RON.\nEach pass gets run_id. TEST WINDOW remains RPM ≥ 2000, load ≥ 70%, MAP ≥ 140 kPa abs.\n\nOctane Engine v0.3 • ECU fuel adaptation + knock/timing metrics • USB ENET + VXSCAN Wi-Fi • read-only."
             } else {
                 logging=false; text="START BACKGROUND LOGGER"
                 startService(Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_STOP))
             }
         } })
-                status = TextView(this).apply { text="Embedded profile: DME8FF_R (fresh ECU dataset) ✓\nPRG import is optional.\n\nConnect USB-C ENET or join VXSCAN ENET Wi-Fi, ignition ON, then press START."; textSize=15f; setPadding(0,24,0,0); setTextIsSelectable(true) }
+                status = TextView(this).apply { textSize=20f; text="Embedded profile: DME8FF_R (fresh ECU dataset) ✓\nPRG import is optional.\n\nConnect USB-C ENET or join VXSCAN ENET Wi-Fi, ignition ON, then press START."; setPadding(0,24,0,0); setTextIsSelectable(true) }
         root.addView(ScrollView(this).apply { addView(status) })
         setContentView(root)
         statusReceiver=object:BroadcastReceiver(){
@@ -71,9 +71,12 @@ class MainActivity : Activity() {
                 val sessionScore=intent.getDoubleExtra(EnetLoggerService.EXTRA_SESSION_SCORE,Double.NaN)
                 val sessionConfidence=intent.getIntExtra(EnetLoggerService.EXTRA_SESSION_CONFIDENCE,0)
                 val sessionRuns=intent.getIntExtra(EnetLoggerService.EXTRA_SESSION_RUNS,0)
+                val coolant=intent.getDoubleExtra(EnetLoggerService.EXTRA_COOLANT,Double.NaN)
+                val oil=intent.getDoubleExtra(EnetLoggerService.EXTRA_OIL,Double.NaN)
                 status.text=buildString {
                     append("СОЕДИНЕНИЕ: ").append(transport).append(" — CONNECTED ✓\n")
                     append("ОБОРОТЫ: ").append(if(rpm.isFinite()) "%.0f rpm".format(rpm) else "—").append("\n")
+                    append("ОЖ: ").append(if(coolant.isFinite()) "%.0f °C".format(coolant) else "—").append("   МАСЛО: ").append(if(oil.isFinite()) "%.0f °C".format(oil) else "—").append("\n")
                     append("ЗАМЕР: ").append(state).append("\n")
                     append("ОПРОС: ").append("%.2f Hz".format(hz)).append("\n")
                     append("RECONNECT: ").append(reconnects)
