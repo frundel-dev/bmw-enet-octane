@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 22
-        versionName = "1.7.4"
+        versionCode = 23
+        versionName = "1.7.5"
     }
 }
 
-// v1.7.4 Octane Engine v0.3: stabilized AI-95 run/session scoring
+// v1.7.5: oil/coolant telemetry, larger live UI, completion sound
