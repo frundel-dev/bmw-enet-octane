@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 23
-        versionName = "1.7.5"
+        versionCode = 24
+        versionName = "1.7.6"
     }
 }
 
-// v1.7.5: oil/coolant telemetry, larger live UI, completion sound
+// v1.7.6: confidence engine and measurement dashboard
