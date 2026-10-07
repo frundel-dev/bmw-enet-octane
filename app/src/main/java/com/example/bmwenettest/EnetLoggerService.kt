@@ -211,7 +211,7 @@ class EnetLoggerService : Service() {
                     val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0) knockMean/b95.v else null
                     if(captureActive && measurementWindow && ratio95!=null) {
                         val weight=if(highConfidenceWindow) 2.0 else 1.0
-                        val rb=((r!!-2000.0)/500.0).toInt().coerceIn(0,4); val mb=when{m!!<160->0;m<180->1;m<200->2;else->3}; coverageBins.add("$rb:$mb"); if(highConfidenceWindow) sessionHighPoints++
+                        val rv=r!!; val mv=m!!; val rb=((rv-2000.0)/500.0).toInt().coerceIn(0,4); val mb=when{mv<160->0;mv<180->1;mv<200->2;else->3}; coverageBins.add("$rb:$mb"); if(highConfidenceWindow) sessionHighPoints++
                         runWeightedRatio+=ratio95*weight; runWeight+=weight; runValidPoints++; if(highConfidenceWindow) runHighPoints++
                         if(knockStatus==1) runKnockEvents++; if(superKnock!=null && superKnock>0) runSuperEvents++
                     }
