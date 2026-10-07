@@ -47,7 +47,7 @@ class EnetLoggerService : Service() {
         return START_STICKY
     }
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
-        .setContentTitle("BMW ENET Logger v1.7.3").setContentText(text)
+        .setContentTitle("BMW ENET Logger v1.7.4").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
 
     private fun startLogger() {
@@ -56,12 +56,12 @@ class EnetLoggerService : Service() {
         val pm=getSystemService(POWER_SERVICE) as PowerManager
         wakeLock=pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"BmwEnet:Logger").apply{acquire()}
         val dir=getExternalFilesDir(null)?:filesDir
-        logFile=File(dir,"bmw_enet_v173_${System.currentTimeMillis()}.csv")
+        logFile=File(dir,"bmw_enet_v174_${System.currentTimeMillis()}.csv")
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val profile=prefs.getString("prg_profile","DME8FF_R_EMBEDDED") ?: "DME8FF_R_EMBEDDED"
         val prgName=prefs.getString("prg_name","") ?: ""
         val prgSha=prefs.getString("prg_sha256","") ?: ""
-        logFile!!.writeText("# app=v1.7.3,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz,ecu_fuel_factor,ecu_ron_equiv,knock_mean_vms,ign_spread_deg,octane_confidence_pct,run_id,reconnects,measurement_window,high_confidence_window,baseline95_knock_vms,baseline95_samples,knock_ratio95\n")
+        logFile!!.writeText("# app=v1.7.4,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz,ecu_fuel_factor,ecu_ron_equiv,knock_mean_vms,ign_spread_deg,octane_confidence_pct,run_id,reconnects,measurement_window,high_confidence_window,baseline95_knock_vms,baseline95_samples,knock_ratio95,run_fuel_score,run_quality_pct,run_valid_points,session_fuel_score,session_confidence_pct,session_valid_runs\n")
         executor.execute { loop() }
     }
     private fun stopLogger() {
@@ -91,6 +91,9 @@ class EnetLoggerService : Service() {
         val sampleTimes=java.util.ArrayDeque<Long>(); var validOctaneSamples=0
         var captureActive=false; var captureTailUntil=0L; var runId=0; var armed2000=false; var signaled4500=false
         var runStart=0L; var runStartRpm=0.0; var runMaxRpm=0.0; var runMaxLoad=0.0; var runMaxMap=0.0; var runSamples=0; var lastSummary=""
+        var runWeightedRatio=0.0; var runWeight=0.0; var runValidPoints=0; var runHighPoints=0; var runKnockEvents=0; var runSuperEvents=0
+        var lastRunScore:Double?=null; var lastRunQuality=0
+        var sessionScoreSum=0.0; var sessionQualitySum=0.0; var sessionValidRuns=0
         while(running) {
             try {
                 val cm=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -152,9 +155,9 @@ class EnetLoggerService : Service() {
                         lastFoctan=now
                     }
                                         val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
-                    // v1.7.3 measurement assistant: keep polling continuously, persist only measurement segments.
+                    // v1.7.4 measurement assistant: keep polling continuously, persist only measurement segments.
                     if(r!=null && r>=1800.0 && !captureActive) {
-                        captureActive=true; runId++; armed2000=false; signaled4500=false; runStart=now; runStartRpm=r; runMaxRpm=r; runMaxLoad=l?:0.0; runMaxMap=m?:0.0; runSamples=0; lastSummary=""
+                        captureActive=true; runId++; armed2000=false; signaled4500=false; runStart=now; runStartRpm=r; runMaxRpm=r; runMaxLoad=l?:0.0; runMaxMap=m?:0.0; runSamples=0; lastSummary=""; runWeightedRatio=0.0; runWeight=0.0; runValidPoints=0; runHighPoints=0; runKnockEvents=0; runSuperEvents=0; lastRunScore=null; lastRunQuality=0
                         tone.startTone(ToneGenerator.TONE_PROP_BEEP,120)
                     }
                     if(captureActive && r!=null && r>=2000.0 && !armed2000) {
@@ -169,7 +172,7 @@ class EnetLoggerService : Service() {
                         if(r!=null) runMaxRpm=kotlin.math.max(runMaxRpm,r); if(l!=null) runMaxLoad=kotlin.math.max(runMaxLoad,l); if(m!=null) runMaxMap=kotlin.math.max(runMaxMap,m); runSamples++
                         if(r!=null && r<1800.0) {
                             if(captureTailUntil==0L) captureTailUntil=now+3000L
-                            if(now>=captureTailUntil) { lastSummary="ЗАМЕР #$runId ЗАВЕРШЁН ✓\n${"%.0f".format(runStartRpm)} → ${"%.0f".format(runMaxRpm)} rpm • ${"%.1f".format((now-runStart)/1000.0)} s • $runSamples samples\nMax load ${"%.1f".format(runMaxLoad)}% • Max MAP ${"%.0f".format(runMaxMap)} kPa"; captureActive=false; captureTailUntil=0L; armed2000=false; signaled4500=false }
+                            if(now>=captureTailUntil) { val rr=if(runWeight>0.0) runWeightedRatio/runWeight else null; lastRunScore=rr?.let{(100.0+(1.0-it)*50.0-runKnockEvents.coerceAtLeast(1).minus(1)*1.5-runSuperEvents*10.0).coerceIn(0.0,120.0)}; lastRunQuality=((runHighPoints*4+runValidPoints*2).coerceAtMost(100)); if(lastRunScore!=null && lastRunQuality>=20){sessionScoreSum+=lastRunScore!!*lastRunQuality;sessionQualitySum+=lastRunQuality;sessionValidRuns++}; val ss=if(sessionQualitySum>0)sessionScoreSum/sessionQualitySum else null; lastSummary="ЗАМЕР #$runId ЗАВЕРШЁН ✓\n${"%.0f".format(runStartRpm)} → ${"%.0f".format(runMaxRpm)} rpm • ${"%.1f".format((now-runStart)/1000.0)} s\nFuel score ${lastRunScore?.let{String.format(java.util.Locale.US,"%.1f",it)}?:"—"} • Quality $lastRunQuality% • valid $runValidPoints\nSession ${ss?.let{String.format(java.util.Locale.US,"%.1f",it)}?:"—"} • valid runs $sessionValidRuns"; captureActive=false; captureTailUntil=0L; armed2000=false; signaled4500=false }
                         } else captureTailUntil=0L
                     }
                     val t=SystemClock.elapsedRealtime()-started
@@ -177,7 +180,7 @@ class EnetLoggerService : Service() {
                     val hz=if(sampleTimes.size>=2) (sampleTimes.size-1)*1000.0/(sampleTimes.last()-sampleTimes.first()).coerceAtLeast(1L) else 0.0
                     val fuelValues=foctanCache.filterNotNull()
                     val fuelFactor=if(fuelValues.isNotEmpty()) fuelValues.sorted()[fuelValues.size/2].coerceIn(0.0,1.0) else null
-                    val ronEquiv=fuelFactor?.let{98.0-7.0*it}
+                    val ronEquiv:Double?=null // INFOFOCTAN kept raw; no unvalidated RON conversion
                     val knockValues=listOfNotNull(kz1,kz2,kz3,kz4)
                     val knockMean=knockValues.takeIf{it.size==4}?.average()
                     val ignValues=listOfNotNull(iz1,iz2,iz3,iz4)
@@ -188,9 +191,19 @@ class EnetLoggerService : Service() {
                     val highConfidenceWindow=r!=null && l!=null && m!=null && r>=2200.0 && r<=4000.0 && l>=70.0 && m>=160.0
                     val b95=if(measurementWindow) baseline95(r,m) else null
                     val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0) knockMean/b95.v else null
-                    if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"")).joinToString(","))}
+                    if(captureActive && measurementWindow && ratio95!=null) {
+                        val weight=if(highConfidenceWindow) 2.0 else 1.0
+                        runWeightedRatio+=ratio95*weight; runWeight+=weight; runValidPoints++; if(highConfidenceWindow) runHighPoints++
+                        if(knockStatus==1) runKnockEvents++; if(superKnock!=null && superKnock>0) runSuperEvents++
+                    }
+                    val liveRunRatio=if(runWeight>0.0) runWeightedRatio/runWeight else null
+                    val liveRunScore=liveRunRatio?.let{(100.0+(1.0-it)*50.0-(runKnockEvents-1).coerceAtLeast(0)*1.5-runSuperEvents*10.0).coerceIn(0.0,120.0)}
+                    val liveRunQuality=((runHighPoints*4+runValidPoints*2).coerceAtMost(100))
+                    val sessionScore=if(sessionQualitySum>0) sessionScoreSum/sessionQualitySum else null
+                    val sessionConfidence=(sessionValidRuns*15).coerceAtMost(90)
+                    if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns)).joinToString(","))}
                     samples++
-                    if(samples%4==0) { val state=if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.3 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • 95Δ ${ratio95?.let{String.format(java.util.Locale.US,"%+.0f%%",(it-1.0)*100.0)}?:"—"}",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()}) }
+                    if(samples%4==0) { val state=if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.4 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()}) }
                 }
             } catch(e:Exception) {
                 if(!running) break
@@ -200,7 +213,7 @@ class EnetLoggerService : Service() {
             }
         }
     }
-    // Octane Engine v0.2: empirical AI-95 baseline from validated v1.7.2 runs.
+    // Octane Engine v0.2: empirical AI-95 baseline from validated v1.7.2 + independent v1.7.3 AI-95 runs.
     // RPM x MAP bins: median knock_mean_vms and number of baseline samples.
     private data class B95(val v:Double,val n:Int)
     private fun baseline95(rpm:Double?, map:Double?):B95? {
@@ -208,12 +221,12 @@ class EnetLoggerService : Service() {
         val ri=when { rpm<2000->return null; rpm<2500->0; rpm<3000->1; rpm<3500->2; rpm<4000->3; rpm<4500->4; else->5 }
         val mi=when { map<130->return null; map<160->0; map<180->1; map<200->2; else->3 }
         val v=arrayOf(
-            arrayOf<B95?>(B95(.075177,8),null,null,null),
-            arrayOf<B95?>(B95(.074039,19),B95(.076380,7),B95(.074590,5),B95(.083804,2)),
-            arrayOf<B95?>(B95(.076654,9),B95(.082133,4),B95(.082402,6),B95(.103298,1)),
-            arrayOf<B95?>(B95(.079952,8),B95(.086841,3),B95(.097288,2),null),
-            arrayOf<B95?>(B95(.085714,9),B95(.095348,3),B95(.104305,2),null),
-            arrayOf<B95?>(B95(.087283,6),B95(.098187,4),null,null)
+            arrayOf<B95?>(B95(.073798,12),B95(.070848,1),B95(.069070,2),B95(.071781,2)),
+            arrayOf<B95?>(B95(.074039,19),B95(.071964,10),B95(.074590,5),B95(.081251,9)),
+            arrayOf<B95?>(B95(.076440,10),B95(.082133,4),B95(.082402,6),B95(.093991,7)),
+            arrayOf<B95?>(B95(.079952,8),B95(.086841,3),B95(.097288,2),B95(.097531,10)),
+            arrayOf<B95?>(B95(.085714,9),B95(.095348,3),B95(.104305,2),B95(.114581,9)),
+            arrayOf<B95?>(null,null,null,null)
         )
         return v[ri][mi]
     }
