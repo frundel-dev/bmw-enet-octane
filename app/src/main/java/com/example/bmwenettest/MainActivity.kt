@@ -1,6 +1,7 @@
 package com.example.bmwenettest
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.*
 import android.os.Build
 import android.net.ConnectivityManager
@@ -34,7 +35,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.9"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.10"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(TextView(this).apply { text="G20 • B48 • USB ENET + VXSCAN Wi-Fi • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(Button(this).apply { text="IMPORT/VERIFY BMW DME .PRG (OPTIONAL)"; setOnClickListener {
             val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -54,7 +55,13 @@ class MainActivity : Activity() {
                 startService(Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_STOP))
             }
         } })
-                status = TextView(this).apply { textSize=15f; text="Embedded profile: DME8FF_R (fresh ECU dataset) ✓\nPRG import is optional.\n\nConnect USB-C ENET or join VXSCAN ENET Wi-Fi, ignition ON, then press START."; setPadding(0,24,0,0); setTextIsSelectable(true) }
+                root.addView(Button(this).apply {
+            text="ИСТОРИЯ ЗАМЕРОВ"
+            textSize=18f
+            minHeight=120
+            setOnClickListener { showMeasurementHistory() }
+        })
+        status = TextView(this).apply { textSize=15f; text="Embedded profile: DME8FF_R (fresh ECU dataset) ✓\nPRG import is optional.\n\nConnect USB-C ENET or join VXSCAN ENET Wi-Fi, ignition ON, then press START."; setPadding(0,24,0,0); setTextIsSelectable(true) }
         root.addView(ScrollView(this).apply { addView(status) })
         setContentView(root)
         statusReceiver=object:BroadcastReceiver(){
@@ -64,6 +71,7 @@ class MainActivity : Activity() {
                 val state=intent.getStringExtra(EnetLoggerService.EXTRA_STATE)
                 if(state==null) { status.text=msg; return }
                 val rpm=intent.getDoubleExtra(EnetLoggerService.EXTRA_RPM,Double.NaN)
+                val speed=intent.getDoubleExtra(EnetLoggerService.EXTRA_SPEED,Double.NaN)
                 val transport=intent.getStringExtra(EnetLoggerService.EXTRA_TRANSPORT) ?: "—"
                 val run=intent.getIntExtra(EnetLoggerService.EXTRA_RUN_ID,0)
                 val hz=intent.getDoubleExtra(EnetLoggerService.EXTRA_HZ,0.0)
@@ -96,6 +104,7 @@ class MainActivity : Activity() {
                     append("CONFIDENCE  ").append("█".repeat((sessionConfidence/10).coerceIn(0,10))).append("░".repeat((10-sessionConfidence/10).coerceIn(0,10))).append("  ").append(sessionConfidence).append("%\n")
                     append("Qualified segments: ").append(sessionRuns).append("   HC points: ").append(highPoints).append("\n\n")
                     append("──── CURRENT RUN #").append(run).append(" ────\n")
+                    append("Speed ").append(if(speed.isFinite()) "%.0f km/h".format(speed) else "—").append("   ")
                     append("RPM ").append(if(rpm.isFinite()) "%.0f".format(rpm) else "—").append("   ").append(bar).append("\n")
                     append("Load ").append(if(load.isFinite()) "%.0f%%".format(load) else "—").append("   MAP ").append(if(map.isFinite()) "%.0f kPa".format(map) else "—").append("\n")
                     append("IAT ").append(if(iat.isFinite()) "%.0f°C".format(iat) else "—").append("   ОЖ ").append(if(coolant.isFinite()) "%.0f°C".format(coolant) else "—").append("   Масло ").append(if(oil.isFinite()) "%.0f°C".format(oil) else "—").append("\n")
@@ -110,6 +119,48 @@ class MainActivity : Activity() {
         }
         val filter=IntentFilter(EnetLoggerService.ACTION_STATUS)
         if(Build.VERSION.SDK_INT>=33) registerReceiver(statusReceiver,filter,RECEIVER_NOT_EXPORTED) else @Suppress("DEPRECATION") registerReceiver(statusReceiver,filter)
+    }
+
+
+    private fun showMeasurementHistory() {
+        val dir=getExternalFilesDir(null)?:filesDir
+        val recordings=dir.listFiles()?.filter{it.isFile && it.name.startsWith("bmw_enet_") && it.extension.equals("csv",true)}
+            ?.sortedByDescending{it.lastModified()} ?: emptyList()
+        if(recordings.isEmpty()) {
+            AlertDialog.Builder(this).setTitle("История замеров").setMessage("Сохранённых CSV пока нет")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        executor.execute {
+            val labels=recordings.map { file ->
+                try {
+                    val lines=file.useLines { seq -> seq.filter{it.isNotBlank() && !it.startsWith("#")}.toList() }
+                    val keys=lines.firstOrNull()?.split(",") ?: emptyList()
+                    val records=lines.drop(1)
+                    fun idx(name:String)=keys.indexOf(name)
+                    fun last(name:String):String {
+                        val col=idx(name)
+                        return if(col<0) "—" else records.asReversed().firstNotNullOfOrNull {
+                            it.split(",").getOrNull(col)?.takeIf{v->v.isNotBlank()}
+                        } ?: "—"
+                    }
+                    val speedIndex=idx("speed_kmh")
+                    val maxSpeed=if(speedIndex>=0) records.mapNotNull{it.split(",").getOrNull(speedIndex)?.toDoubleOrNull()}.maxOrNull() else null
+                    val date=java.text.SimpleDateFormat("dd.MM.yyyy HH:mm",java.util.Locale.getDefault()).format(java.util.Date(file.lastModified()))
+                    "$date • ${file.name.substringBeforeLast(".")}\nСтрок: ${records.size} • Score: ${last("session_fuel_score")} • Confidence: ${last("session_confidence_pct")}%\nСкорость макс.: ${maxSpeed?.let{"%.0f км/ч".format(it)}?:"—"}"
+                } catch(e:Exception) { file.name+" • Ошибка чтения: "+e.javaClass.simpleName }
+            }
+            runOnUiThread {
+                if(isFinishing || isDestroyed)return@runOnUiThread
+                AlertDialog.Builder(this).setTitle("История замеров")
+                    .setItems(labels.toTypedArray()) { _,which ->
+                        val selected=recordings[which]
+                        AlertDialog.Builder(this).setTitle(selected.name)
+                            .setMessage(labels[which]+"\n\nФайл сохранён в папке приложения.")
+                            .setPositiveButton("OK",null).show()
+                    }.setNegativeButton("Закрыть",null).show()
+            }
+        }
     }
 
     override fun onDestroy() {
