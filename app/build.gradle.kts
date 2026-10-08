@@ -16,8 +16,8 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 26
-        versionName = "1.7.8"
+        versionCode = 27
+        versionName = "1.7.9"
     }
 }
 
