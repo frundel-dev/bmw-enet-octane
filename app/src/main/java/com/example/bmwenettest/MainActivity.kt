@@ -40,7 +40,7 @@ class MainActivity : Activity() {
             }
             startActivityForResult(i,901)
         } })
-        root.addView(Button(this).apply { text="MODE: AUTO / TEST"; setOnClickListener { val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE); val next=if(prefs.getString("measurement_mode","AUTO")=="AUTO")"TEST" else "AUTO"; prefs.edit().putString("measurement_mode",next).apply(); text="MODE: $next (restart logger)" } })
+        root.addView(Button(this).apply { text="MODE: AUTO / TEST"; textSize=20f; minHeight=160; setPadding(24,32,24,32); setOnClickListener { val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE); val next=if(prefs.getString("measurement_mode","AUTO")=="AUTO")"TEST" else "AUTO"; prefs.edit().putString("measurement_mode",next).apply(); text="MODE: $next (restart logger)" } })
         root.addView(Button(this).apply { text="START BACKGROUND LOGGER"; textSize=20f; minHeight=160; setPadding(24,32,24,32); setOnClickListener {
             if (!logging) {
                 logging=true; text="STOP LOGGER"
