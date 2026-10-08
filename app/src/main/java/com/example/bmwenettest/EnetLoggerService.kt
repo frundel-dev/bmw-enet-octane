@@ -65,7 +65,7 @@ class EnetLoggerService : Service() {
         return START_STICKY
     }
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
-        .setContentTitle("BMW ENET Logger v1.7.7").setContentText(text)
+        .setContentTitle("BMW ENET Logger v1.7.9").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
 
     private fun startLogger() {
@@ -74,12 +74,12 @@ class EnetLoggerService : Service() {
         val pm=getSystemService(POWER_SERVICE) as PowerManager
         wakeLock=pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"BmwEnet:Logger").apply{acquire()}
         val dir=getExternalFilesDir(null)?:filesDir
-        logFile=File(dir,"bmw_enet_v177_${System.currentTimeMillis()}.csv")
+        logFile=File(dir,"bmw_enet_v179_${System.currentTimeMillis()}.csv")
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val profile=prefs.getString("prg_profile","DME8FF_R_EMBEDDED") ?: "DME8FF_R_EMBEDDED"
         val prgName=prefs.getString("prg_name","") ?: ""
         val prgSha=prefs.getString("prg_sha256","") ?: ""
-        logFile!!.writeText("# app=v1.7.7,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz,ecu_fuel_factor,ecu_ron_equiv,knock_mean_vms,ign_spread_deg,octane_confidence_pct,run_id,reconnects,measurement_window,high_confidence_window,baseline95_knock_vms,baseline95_samples,knock_ratio95,run_fuel_score,run_quality_pct,run_valid_points,session_fuel_score,session_confidence_pct,session_valid_runs,oil_temp_c,measurement_mode,coverage_cells\n")
+        logFile!!.writeText("# app=v1.7.9,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz,ecu_fuel_factor,ecu_ron_equiv,knock_mean_vms,ign_spread_deg,octane_confidence_pct,run_id,reconnects,measurement_window,high_confidence_window,baseline95_knock_vms,baseline95_samples,knock_ratio95,run_fuel_score,run_quality_pct,run_valid_points,session_fuel_score,session_confidence_pct,session_valid_runs,oil_temp_c,measurement_mode,coverage_cells\n")
         executor.execute { loop() }
     }
     private fun stopLogger() {
@@ -116,6 +116,9 @@ class EnetLoggerService : Service() {
         var lastRunScore:Double?=null; var lastRunQuality=0
         var sessionScoreSum=0.0; var sessionQualitySum=0.0; var sessionValidRuns=0
         val sessionScores=mutableListOf<Double>(); val coverageBins=mutableSetOf<String>(); var sessionHighPoints=0
+        var previousRpm:Double?=null; var previousMap:Double?=null; var previousSampleTime=0L
+        var lastAutoAcceptedTime=0L; var autoQualifiedSegments=0; var autoAcceptedSamples=0
+        val autoCoverage=mutableSetOf<String>()
         while(running) {
             try {
                 val cm=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -181,7 +184,7 @@ class EnetLoggerService : Service() {
                         lastFoctan=now
                     }
                                         val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
-                    // v1.7.7 measurement assistant: keep polling continuously, persist only measurement segments.
+                    // v1.7.9 measurement assistant: keep polling continuously, persist only measurement segments.
                     if(((autoMode && r!=null && l!=null && m!=null && r>=2000.0 && r<=4500.0 && l>=55.0 && m>=130.0) || (!autoMode && r!=null && r>=1800.0)) && !captureActive) {
                         captureActive=true; runId++; armed2000=false; signaled4500=false; runStart=now; runStartRpm=r; runMaxRpm=r; runMaxLoad=l?:0.0; runMaxMap=m?:0.0; runSamples=0; lastSummary=""; runWeightedRatio=0.0; runWeight=0.0; runValidPoints=0; runHighPoints=0; runKnockEvents=0; runSuperEvents=0; lastRunScore=null; lastRunQuality=0
                         if(!autoMode) tone.startTone(ToneGenerator.TONE_PROP_BEEP,120)
@@ -198,7 +201,7 @@ class EnetLoggerService : Service() {
                         if(r!=null) runMaxRpm=kotlin.math.max(runMaxRpm,r); if(l!=null) runMaxLoad=kotlin.math.max(runMaxLoad,l); if(m!=null) runMaxMap=kotlin.math.max(runMaxMap,m); runSamples++
                         if((autoMode && now-lastQualified>=3000L) || (!autoMode && r!=null && r<1800.0)) {
                             if(captureTailUntil==0L) captureTailUntil=now+3000L
-                            if(now>=captureTailUntil) { val rr=if(runWeight>0.0) runWeightedRatio/runWeight else null; lastRunScore=rr?.let{(100.0+(1.0-it)*50.0-runKnockEvents.coerceAtLeast(1).minus(1)*1.5-runSuperEvents*10.0).coerceIn(0.0,120.0)}; lastRunQuality=((runHighPoints*4+runValidPoints*2).coerceAtMost(100)); if(lastRunScore!=null && lastRunQuality>=20){sessionScoreSum+=lastRunScore!!*lastRunQuality;sessionQualitySum+=lastRunQuality;sessionValidRuns++;sessionScores.add(lastRunScore!!)}; val ss=if(sessionQualitySum>0)sessionScoreSum/sessionQualitySum else null; if(!autoMode) { tone.startTone(ToneGenerator.TONE_PROP_ACK,450); Handler(Looper.getMainLooper()).postDelayed({ tone.startTone(ToneGenerator.TONE_PROP_ACK,450) },500) }; lastSummary="ЗАМЕР #$runId ЗАВЕРШЁН ✓\n${"%.0f".format(runStartRpm)} → ${"%.0f".format(runMaxRpm)} rpm • ${"%.1f".format((now-runStart)/1000.0)} s\nFuel score ${lastRunScore?.let{String.format(java.util.Locale.US,"%.1f",it)}?:"—"} • Quality $lastRunQuality% • valid $runValidPoints\nSession ${ss?.let{String.format(java.util.Locale.US,"%.1f",it)}?:"—"} • valid runs $sessionValidRuns"; captureActive=false; captureTailUntil=0L; armed2000=false; signaled4500=false }
+                            if(now>=captureTailUntil) { val rr=if(runWeight>0.0) runWeightedRatio/runWeight else null; lastRunScore=rr?.let{(100.0+(1.0-it)*50.0-runKnockEvents.coerceAtLeast(1).minus(1)*1.5-runSuperEvents*10.0).coerceIn(0.0,120.0)}; lastRunQuality=((runHighPoints*4+runValidPoints*2).coerceAtMost(100)); if(lastRunScore!=null && lastRunQuality>=20 && (!autoMode || (runValidPoints>=4 && runMaxLoad>=55.0))){ if(autoMode) autoQualifiedSegments++;sessionScoreSum+=lastRunScore!!*lastRunQuality;sessionQualitySum+=lastRunQuality;sessionValidRuns++;sessionScores.add(lastRunScore!!)}; val ss=if(sessionQualitySum>0)sessionScoreSum/sessionQualitySum else null; if(!autoMode) { tone.startTone(ToneGenerator.TONE_PROP_ACK,450); Handler(Looper.getMainLooper()).postDelayed({ tone.startTone(ToneGenerator.TONE_PROP_ACK,450) },500) }; lastSummary="ЗАМЕР #$runId ЗАВЕРШЁН ✓\n${"%.0f".format(runStartRpm)} → ${"%.0f".format(runMaxRpm)} rpm • ${"%.1f".format((now-runStart)/1000.0)} s\nFuel score ${lastRunScore?.let{String.format(java.util.Locale.US,"%.1f",it)}?:"—"} • Quality $lastRunQuality% • valid $runValidPoints\nSession ${ss?.let{String.format(java.util.Locale.US,"%.1f",it)}?:"—"} • valid runs $sessionValidRuns"; captureActive=false; captureTailUntil=0L; armed2000=false; signaled4500=false }
                         } else captureTailUntil=0L
                     }
                     val t=SystemClock.elapsedRealtime()-started
@@ -214,13 +217,22 @@ class EnetLoggerService : Service() {
                     if(testWindow && knockMean!=null && ignSpread!=null) validOctaneSamples++
                     val confidence=(validOctaneSamples*2).coerceAtMost(100)
                     val measurementWindow=r!=null && l!=null && m!=null && r>=2000.0 && r<=4500.0 && l>=55.0 && m>=130.0
+                    val stableAuto=if(!autoMode) true else {
+                        val dt=(now-previousSampleTime).coerceAtLeast(1L)/1000.0
+                        previousRpm!=null && previousMap!=null && r!=null && m!=null && dt<=4.0 &&
+                            kotlin.math.abs(r-previousRpm!!)/dt<=350.0 &&
+                            kotlin.math.abs(m-previousMap!!)/dt<=24.0 &&
+                            i!=null && i in 10.0..65.0 && coolant!=null && coolant>=65.0
+                    }
+                    previousRpm=r; previousMap=m; previousSampleTime=now
                     val highConfidenceWindow=r!=null && l!=null && m!=null && r>=2200.0 && r<=4000.0 && l>=70.0 && m>=160.0
                     val b95=if(measurementWindow) baseline95(r,m) else null
-                    val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0) knockMean/b95.v else null
+                    val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && (!autoMode || (stableAuto && b95.n>=5))) knockMean/b95.v else null
                     if(autoMode && measurementWindow && ratio95!=null) lastQualified=now
-                    if(captureActive && measurementWindow && ratio95!=null) {
+                    if(captureActive && measurementWindow && ratio95!=null && (!autoMode || now-lastAutoAcceptedTime>=1200L)) {
+                        if(autoMode) { lastAutoAcceptedTime=now; autoAcceptedSamples++ }
                         val weight=if(highConfidenceWindow) 2.0 else 1.0
-                        val rv=r!!; val mv=m!!; val rb=((rv-2000.0)/500.0).toInt().coerceIn(0,4); val mb=when{mv<160->0;mv<180->1;mv<200->2;else->3}; coverageBins.add("$rb:$mb"); if(highConfidenceWindow) sessionHighPoints++
+                        val rv=r!!; val mv=m!!; val rb=((rv-2000.0)/500.0).toInt().coerceIn(0,4); val mb=when{mv<160->0;mv<180->1;mv<200->2;else->3}; coverageBins.add("$rb:$mb"); if(autoMode) autoCoverage.add("$rb:$mb"); if(highConfidenceWindow) sessionHighPoints++
                         runWeightedRatio+=ratio95*weight; runWeight+=weight; runValidPoints++; if(highConfidenceWindow) runHighPoints++
                         if(knockStatus==1 && !previousKnock) runKnockEvents++; if(superKnock!=null && superKnock>0 && !previousSuper) runSuperEvents++
                     }
@@ -230,11 +242,11 @@ class EnetLoggerService : Service() {
                     val liveRunQuality=((runHighPoints*4+runValidPoints*2).coerceAtMost(100))
                     val sessionScore=if(sessionQualitySum>0) sessionScoreSum/sessionQualitySum else null
                     val consistency=if(sessionScores.size>=2){val mean=sessionScores.average(); val sd=kotlin.math.sqrt(sessionScores.sumOf{(it-mean)*(it-mean)}/sessionScores.size); (15.0-sd*3.0).toInt().coerceIn(0,15)}else 0
-                    val sessionConfidence=((sessionValidRuns*8).coerceAtMost(40)+(sessionHighPoints*2).coerceAtMost(25)+(coverageBins.size*2).coerceAtMost(20)+consistency).coerceAtMost(100)
-                    val resultState=when { sessionConfidence<40 -> "COLLECTING"; sessionScore==null -> "COLLECTING"; sessionScore>=95.0 -> "NORMAL"; sessionScore>=92.0 -> "BORDERLINE"; else -> "BELOW BASELINE" }
+                    val sessionConfidence=if(autoMode) ((autoQualifiedSegments*9).coerceAtMost(36)+(autoCoverage.size*4).coerceAtMost(24)+(autoAcceptedSamples/4).coerceAtMost(20)+consistency).coerceAtMost(100) else ((sessionValidRuns*8).coerceAtMost(40)+(sessionHighPoints*2).coerceAtMost(25)+(coverageBins.size*2).coerceAtMost(20)+consistency).coerceAtMost(100)
+                    val resultState=when { sessionConfidence<60 -> "COLLECTING"; sessionScore==null -> "COLLECTING"; sessionScore>=95.0 -> "NORMAL"; sessionScore>=92.0 -> "BORDERLINE"; else -> "BELOW BASELINE" }
                     if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns,oil?:"",if(autoMode)"AUTO" else "TEST",coverageBins.size)).joinToString(","))}
                     samples++
-                    if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.7 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",sessionValidRuns,coverageBins.size) }
+                    if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.9 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",sessionValidRuns,coverageBins.size) }
                 }
             } catch(e:Exception) {
                 if(!running) break
