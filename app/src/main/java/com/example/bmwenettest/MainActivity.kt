@@ -34,7 +34,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.8"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.9"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(TextView(this).apply { text="G20 • B48 • USB ENET + VXSCAN Wi-Fi • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(Button(this).apply { text="IMPORT/VERIFY BMW DME .PRG (OPTIONAL)"; setOnClickListener {
             val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -48,7 +48,7 @@ class MainActivity : Activity() {
                 logging=true; text="STOP LOGGER"
                 val i=Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_START)
                 startForegroundService(i)
-                status.text="Background logger started. Screen may be off.\n\nAUTO CAPTURE: 1800 RPM • cue 2000 • double cue 4500 • 3 s tail • completion sound.\nLive coolant + engine oil temperature.\nOctane v0.4: expanded AI-95 RPM × MAP baseline + per-run/session Fuel Quality Score. 100 = AI-95 baseline; not RON.\nEach pass gets run_id. TEST WINDOW remains RPM ≥ 2000, load ≥ 70%, MAP ≥ 140 kPa abs.\n\nOctane Engine v0.4 • ECU fuel adaptation + knock/timing metrics • USB ENET + VXSCAN Wi-Fi • read-only."
+                status.text="Background logger started. Screen may be off.\n\nAUTO CAPTURE: 1800 RPM • cue 2000 • double cue 4500 • 3 s tail • completion sound.\nLive coolant + engine oil temperature.\nOctane v0.6: expanded AI-95 RPM × MAP baseline + per-run/session Fuel Quality Score. 100 = AI-95 baseline; not RON.\nEach pass gets run_id. TEST WINDOW remains RPM ≥ 2000, load ≥ 70%, MAP ≥ 140 kPa abs.\n\nOctane Engine v0.4 • ECU fuel adaptation + knock/timing metrics • USB ENET + VXSCAN Wi-Fi • read-only."
             } else {
                 logging=false; text="START BACKGROUND LOGGER"
                 startService(Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_STOP))
@@ -94,7 +94,7 @@ class MainActivity : Activity() {
                     append("       AI-95 BASELINE = 100\n")
                     append("           ").append(resultState).append(if(resultState=="NORMAL") " ✓" else "").append("\n\n")
                     append("CONFIDENCE  ").append("█".repeat((sessionConfidence/10).coerceIn(0,10))).append("░".repeat((10-sessionConfidence/10).coerceIn(0,10))).append("  ").append(sessionConfidence).append("%\n")
-                    append("Valid runs: ").append(sessionRuns).append("   HC points: ").append(highPoints).append("\n\n")
+                    append("Qualified segments: ").append(sessionRuns).append("   HC points: ").append(highPoints).append("\n\n")
                     append("──── CURRENT RUN #").append(run).append(" ────\n")
                     append("RPM ").append(if(rpm.isFinite()) "%.0f".format(rpm) else "—").append("   ").append(bar).append("\n")
                     append("Load ").append(if(load.isFinite()) "%.0f%%".format(load) else "—").append("   MAP ").append(if(map.isFinite()) "%.0f kPa".format(map) else "—").append("\n")
