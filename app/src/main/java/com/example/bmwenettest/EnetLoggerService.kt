@@ -131,11 +131,14 @@ class EnetLoggerService : Service() {
                 var net:Network?=null; var d:D?=null; var transport=""
                 for(candidate in candidates) {
                     val lpCandidate=cm.getLinkProperties(candidate.first)
-                    val found=discover(candidate.first,ipv4Broadcasts(lpCandidate))
+                    val broadcasts=ipv4Broadcasts(lpCandidate)
+                    emit("DISCOVERY ${candidate.second}: UDP 6811 • ${broadcasts.joinToString()} • attempt ${reconnects+1}")
+                    val found=discover(candidate.first,broadcasts)
                     if(found!=null) { net=candidate.first; d=found; transport=candidate.second; break }
                 }
                 val activeNet=net ?: throw IOException("BMW HSFZ discovery no reply on Ethernet/Wi-Fi")
                 val gateway=d ?: throw IOException("BMW gateway not found")
+                emit("GATEWAY $transport ${gateway.ip} • connecting TCP 6801")
                 socket=activeNet.socketFactory.createSocket() as Socket
                 socket!!.soTimeout=1800; socket!!.connect(InetSocketAddress(gateway.ip,6801),2500)
                 sampleTimes.clear()
@@ -235,7 +238,7 @@ class EnetLoggerService : Service() {
                 }
             } catch(e:Exception) {
                 if(!running) break
-                reconnects++; sampleTimes.clear(); tone.startTone(ToneGenerator.TONE_SUP_ERROR,600); emit("ENET reconnect #$reconnects: ${e.javaClass.simpleName}")
+                reconnects++; sampleTimes.clear(); tone.startTone(ToneGenerator.TONE_SUP_ERROR,600); emit("ENET reconnect #$reconnects: ${e.javaClass.simpleName}: ${e.message ?: "no details"}")
                 try{socket?.close()}catch(_:Exception){}; socket=null
                 SystemClock.sleep(1500)
             }
@@ -271,7 +274,7 @@ class EnetLoggerService : Service() {
     }
     data class D(val ip:String)
     private fun discover(n:Network,bs:List<String>):D? {
-        val s=DatagramSocket(null); n.bindSocket(s); s.broadcast=true;s.soTimeout=1800;s.bind(InetSocketAddress(0))
+        val s=DatagramSocket(null); n.bindSocket(s); s.broadcast=true;s.soTimeout=2500;s.bind(InetSocketAddress(0))
         val q=byteArrayOf(0,0,0,0,0,0x11); bs.distinct().forEach{try{s.send(DatagramPacket(q,q.size,InetAddress.getByName(it),6811))}catch(_:Exception){}}
         return try{val b=ByteArray(512);val p=DatagramPacket(b,b.size);s.receive(p);D(p.address.hostAddress?:"")}catch(_:Exception){null}finally{s.close()}
     }
