@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 30
-        versionName = "1.7.12"
+        versionCode = 31
+        versionName = "1.7.13"
     }
 }
 
-// v1.7.12: resilient VXSCAN reconnects; STEADY/ACCEL confidence; high-RPM diagnostics
+// v1.7.13: fixed bottom action buttons and scrollable dashboard
