@@ -70,7 +70,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.19"
+            text="v1.7.20"
             textSize=13f
             setTextColor(sky)
         })
@@ -168,7 +168,8 @@ class MainActivity : Activity() {
 
 
     private fun showAdditionalMenu() {
-        val items=arrayOf("Импорт BMW DME .PRG", "История замеров", "Журнал VXSCAN + Android", "События сети Android", "Только TCP-реконнекты")
+        val items=arrayOf("Импорт BMW DME .PRG", "История замеров", "Журнал VXSCAN + Android",
+            "События сети Android", "Только TCP-реконнекты", "Проверки DME • только чтение")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -184,10 +185,60 @@ class MainActivity : Activity() {
                     2 -> showConnectionHistory()
                     3 -> showConnectionHistory("ANDROID")
                     4 -> showConnectionHistory("TCP")
+                    5 -> showDmeProbeHistory()
                 }
             }
             .setNegativeButton("Закрыть",null)
             .show()
+    }
+
+    private fun showDmeProbeHistory() {
+        val dir=getExternalFilesDir(null)?:filesDir
+        val newest=dir.listFiles()?.filter {
+            it.isFile && it.name.startsWith("bmw_dme_probe_v1720_") &&
+                it.name.endsWith(".csv",true)
+        }?.maxByOrNull { it.lastModified() }
+        if(newest==null) {
+            AlertDialog.Builder(this).setTitle("Проверки DME • UDS 0x22")
+                .setMessage("Пока нет результатов. Запусти логгер и подожди 1–2 минуты.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        executor.execute {
+            val entries=try {
+                newest.useLines { lines -> lines.drop(1).filter { it.isNotBlank() }.toList().takeLast(32) }
+            } catch(_:Exception) { emptyList<String>() }
+            val history=if(entries.isEmpty()) "Проверки ещё не выполнялись." else
+                entries.asReversed().joinToString("\n\n") { line ->
+                    val fields=line.split(",",limit=14)
+                    val time=fields.getOrNull(0)?.toLongOrNull()?.let {
+                        java.text.SimpleDateFormat("dd.MM HH:mm:ss",java.util.Locale.getDefault())
+                            .format(java.util.Date(it))
+                    } ?: "—"
+                    val did=fields.getOrNull(4) ?: "????"
+                    val title=fields.getOrNull(5) ?: "—"
+                    val status=fields.getOrNull(6) ?: "—"
+                    val decoded=fields.getOrNull(9)?.takeIf { it.isNotBlank() } ?: "—"
+                    val raw=fields.getOrNull(8)?.takeIf { it.isNotBlank() } ?: "—"
+                    val nrc=fields.getOrNull(7)?.takeIf { it.isNotBlank() } ?: "—"
+                    "$time · 0x$did ($title)\n$status • $decoded\nRAW: $raw • NRC: $nrc"
+                }
+            runOnUiThread {
+                val view=ScrollView(this).apply {
+                    addView(TextView(this@MainActivity).apply {
+                        text=history
+                        textSize=13f
+                        setTextColor(Color.rgb(230,238,248))
+                        setPadding(24,16,24,24)
+                        setTextIsSelectable(true)
+                    })
+                }
+                AlertDialog.Builder(this).setTitle("DME • диагностические ответы")
+                    .setView(view)
+                    .setMessage("Запросы чтения 0x22. Интерпретации предварительные; Fuel Score не изменяется.")
+                    .setPositiveButton("Закрыть",null).show()
+            }
+        }
     }
 
     private fun showConnectionHistory(filter:String="ALL") {
