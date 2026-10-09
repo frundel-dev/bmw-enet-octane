@@ -438,6 +438,8 @@ class EnetLoggerService : Service() {
                 deniedNetworks.remove(activeNet)
                 connectionTransport=transport; connectionStage="POLL"; emptyPolls=0
                 consecutiveFailures=0
+                // Keep optional DME probes out of the first 12 s after every reconnect.
+                lastDmeProbeMs=SystemClock.elapsedRealtime()
                 prefs.edit().putString("last_gateway_ip",gatewayIp)
                     .putString("last_gateway_transport",transport).apply()
                 sampleTimes.clear()
@@ -542,7 +544,7 @@ class EnetLoggerService : Service() {
                     // Exactly one probe no more frequently than every 12 s.
                     // Negative response and raw payload are preserved; the Fuel
                     // Score, confidence and existing 0x4A36 sampling stay unchanged.
-                    if(now-lastDmeProbeMs>=12000L) {
+                    if(now-lastDmeProbeMs>=12000L && !vxscanWifiBlocked) {
                         val targets=DmeReadOnlyProbe.specs.filter { spec ->
                             dmeProbeResults[spec.did]?.status!="UNSUPPORTED"
                         }
