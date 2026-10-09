@@ -70,7 +70,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.20"
+            text="v1.7.21"
             textSize=13f
             setTextColor(sky)
         })
@@ -195,7 +195,8 @@ class MainActivity : Activity() {
     private fun showDmeProbeHistory() {
         val dir=getExternalFilesDir(null)?:filesDir
         val newest=dir.listFiles()?.filter {
-            it.isFile && it.name.startsWith("bmw_dme_probe_v1720_") &&
+            it.isFile && (it.name.startsWith("bmw_dme_probe_v1720_") ||
+                it.name.startsWith("bmw_dme_probe_v1721_")) &&
                 it.name.endsWith(".csv",true)
         }?.maxByOrNull { it.lastModified() }
         if(newest==null) {
