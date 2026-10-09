@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
+import android.widget.ImageView
 import android.content.*
 import android.os.Build
 import android.net.ConnectivityManager
@@ -56,6 +57,12 @@ class MainActivity : Activity() {
             orientation=LinearLayout.HORIZONTAL
             gravity=Gravity.CENTER_VERTICAL
         }
+        heading.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_bmw_roundel)
+            scaleType=ImageView.ScaleType.FIT_CENTER
+        },LinearLayout.LayoutParams(dp(38),dp(38)).apply {
+            rightMargin=dp(8)
+        })
         heading.addView(TextView(this).apply {
             text="BMW  OCTANE"
             textSize=22f
@@ -63,7 +70,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.18"
+            text="v1.7.19"
             textSize=13f
             setTextColor(sky)
         })
