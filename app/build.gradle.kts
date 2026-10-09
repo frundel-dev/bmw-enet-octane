@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 29
-        versionName = "1.7.11"
+        versionCode = 30
+        versionName = "1.7.12"
     }
 }
 
-// v1.7.11: two-mode AUTO, optional fuel-level refuel events and fuel-session history
+// v1.7.12: resilient VXSCAN reconnects; STEADY/ACCEL confidence; high-RPM diagnostics
