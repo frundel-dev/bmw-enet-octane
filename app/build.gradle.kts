@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 34
-        versionName = "1.7.16"
+        versionCode = 35
+        versionName = "1.7.17"
     }
 }
 
-// v1.7.16: readable dashboard, rapid Wi-Fi unblock recovery, full idle telemetry
+// v1.7.17: VPN-aware physical network selection and reorganized fuel/engine dashboard
