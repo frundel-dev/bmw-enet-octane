@@ -67,6 +67,8 @@ class EnetLoggerService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var androidNetworkMonitor: AndroidNetworkEventMonitor? = null
+    @Volatile private var vxscanWifiBlocked = false
+    private var telemetryFile: File? = null
     private val connectionLogLock = Any()
     private var socket: Socket? = null
     private var logFile: File? = null
@@ -97,8 +99,14 @@ class EnetLoggerService : Service() {
         val wifi=applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
         wifiLock=wifi?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF,"BmwEnet:VXSCAN")?.apply { setReferenceCounted(false); acquire() }
         logFile=createLogFile(getSharedPreferences("bmw_native",MODE_PRIVATE).getInt("fuel_session_id",1))
+        telemetryFile=File(getExternalFilesDir(null)?:filesDir,"bmw_telemetry_v1716_${System.currentTimeMillis()}.csv").apply {
+            writeText("wall_time_ms,elapsed_ms,event,transport,rpm,load_pct,map_kpa_abs,speed_kmh,coolant_c,fuel_level_pct,fuel_session_id,run_id,reconnects,phase\n")
+        }
         val connectivity=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
         androidNetworkMonitor=AndroidNetworkEventMonitor(connectivity) { event,transport,detail ->
+            if(event=="BLOCKED" && transport=="WIFI") {
+                vxscanWifiBlocked=detail.contains("blocked=true")
+            }
             connectionEvent("ANDROID_$event",0,"ANDROID",transport,null,detail)
         }.also { it.start() }
         executor.execute { loop() }
@@ -157,6 +165,21 @@ class EnetLoggerService : Service() {
         }
     }
 
+    private fun telemetryRow(elapsedMs:Long,event:String,transport:String,
+                             rpm:Double?=null,load:Double?=null,map:Double?=null,
+                             speed:Double?=null,coolant:Double?=null,fuelLevel:Double?=null,
+                             fuelId:Int=0,run:Int=0,reconnects:Int=0,phase:String="—") {
+        val file=telemetryFile?:return
+        fun number(v:Double?)=if(v!=null && v.isFinite()) String.format(java.util.Locale.US,"%.2f",v) else ""
+        try {
+            FileOutputStream(file,true).bufferedWriter().use { out ->
+                out.appendLine(listOf(System.currentTimeMillis(),elapsedMs,event,transport,
+                    number(rpm),number(load),number(map),number(speed),number(coolant),
+                    number(fuelLevel),fuelId,run,reconnects,phase).joinToString(","))
+            }
+        } catch(_:Exception) { /* Telemetry file errors must not terminate ECU polling. */ }
+    }
+
     private fun networkSnapshot(): String {
         return try {
             val cm=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -204,7 +227,7 @@ class EnetLoggerService : Service() {
         var cachedIp:String?=prefs.getString("last_gateway_ip",null)
         var cachedTransport:String?=prefs.getString("last_gateway_transport",null)
         var connectionStage="NETWORK"; var connectionTransport=""; var connectionIp:String?=null
-        var outageFrom:Long?=null; var emptyPolls=0
+        var outageFrom:Long?=null; var emptyPolls=0; var consecutiveFailures=0; var lastTelemetryTime=0L
         var steadyRatioSum=0.0; var steadyRatioWeight=0.0; var accelRatioSum=0.0; var accelRatioWeight=0.0
         var steadyPoints=0; var accelPoints=0
         val acceptedAutoSegments=mutableSetOf<String>(); val steadyCells=mutableSetOf<String>(); val accelCells=mutableSetOf<String>()
