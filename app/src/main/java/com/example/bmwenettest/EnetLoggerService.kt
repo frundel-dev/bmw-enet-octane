@@ -3,6 +3,7 @@ package com.example.bmwenettest
 import android.app.*
 import android.content.*
 import android.net.*
+import android.net.wifi.WifiManager
 import android.os.*
 import android.media.AudioManager
 import android.media.ToneGenerator
@@ -55,6 +56,7 @@ class EnetLoggerService : Service() {
     private val executor = Executors.newSingleThreadExecutor()
     @Volatile private var running = false
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private var socket: Socket? = null
     private var logFile: File? = null
     private val tone by lazy { ToneGenerator(AudioManager.STREAM_MUSIC, 85) }
@@ -81,6 +83,8 @@ class EnetLoggerService : Service() {
         startForeground(7,notification("Connecting…"))
         val pm=getSystemService(POWER_SERVICE) as PowerManager
         wakeLock=pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"BmwEnet:Logger").apply{acquire()}
+        val wifi=applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
+        wifiLock=wifi?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF,"BmwEnet:VXSCAN")?.apply { setReferenceCounted(false); acquire() }
         logFile=createLogFile(getSharedPreferences("bmw_native",MODE_PRIVATE).getInt("fuel_session_id",1))
         executor.execute { loop() }
     }
@@ -103,6 +107,7 @@ class EnetLoggerService : Service() {
     override fun onDestroy() {
         running=false; try{socket?.close()}catch(_:Exception){}
         if(wakeLock?.isHeld==true) wakeLock?.release()
+        if(wifiLock?.isHeld==true) wifiLock?.release()
         tone.release()
         super.onDestroy()
     }
