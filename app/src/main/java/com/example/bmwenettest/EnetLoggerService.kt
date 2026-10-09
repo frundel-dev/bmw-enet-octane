@@ -121,6 +121,15 @@ class EnetLoggerService : Service() {
         sendBroadcast(intent)
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(7,notification(s.take(100)))
     }
+    private fun connectionEvent(event:String,attempt:Int,stage:String,transport:String,ip:String?,detail:String,gapMs:Long=0L) {
+        try {
+            val file=File(getExternalFilesDir(null)?:filesDir,"bmw_connection_events.csv")
+            if(!file.exists()) file.appendText("wall_time_ms,event,attempt,stage,transport,gateway_ip,gap_ms,detail\\n".replace("\\n","\n"))
+            val safe=detail.replace("\n"," ").replace("\r"," ").replace(",",";").take(160)
+            file.appendText("${System.currentTimeMillis()},$event,$attempt,$stage,$transport,${ip?:""},$gapMs,$safe\n")
+        } catch(_:Exception) { /* Never interrupt diagnostics because audit logging failed. */ }
+    }
+
     private fun loop() {
         val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0
         val foctanCache=arrayOfNulls<Double>(20)
@@ -147,11 +156,16 @@ class EnetLoggerService : Service() {
         var lastAutoAcceptedTime=0L; var autoQualifiedSegments=0; var autoAcceptedSamples=0
         val autoCoverage=mutableSetOf<String>()
         var autoRatioSum=0.0; var autoRatioWeight=0.0; var autoKnockEvents=0; var autoSuperEvents=0
+        var cachedIp:String?=prefs.getString("last_gateway_ip",null)
+        var cachedTransport:String?=prefs.getString("last_gateway_transport",null)
+        var connectionStage="NETWORK"; var connectionTransport=""; var connectionIp:String?=null
+        var outageFrom:Long?=null; var emptyPolls=0
         var steadyRatioSum=0.0; var steadyRatioWeight=0.0; var accelRatioSum=0.0; var accelRatioWeight=0.0
         var steadyPoints=0; var accelPoints=0
         val acceptedAutoSegments=mutableSetOf<String>(); val steadyCells=mutableSetOf<String>(); val accelCells=mutableSetOf<String>()
         while(running) {
             try {
+                connectionStage="NETWORK"; connectionTransport=""; connectionIp=null
                 val cm=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
                 val candidates=cm.allNetworks.mapNotNull { n ->
                     val caps=cm.getNetworkCapabilities(n) ?: return@mapNotNull null
@@ -160,23 +174,62 @@ class EnetLoggerService : Service() {
                         caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> Triple(n,"WIFI",1)
                         else -> null
                     }
-                }.sortedBy{it.third}
-                if(candidates.isEmpty()) throw IOException("No Ethernet/Wi-Fi ENET network")
-                var net:Network?=null; var d:D?=null; var transport=""
+                }.sortedBy { it.third }
+                if(candidates.isEmpty()) throw IOException("No Ethernet or Wi-Fi diagnostic network")
+                var activeNet:Network?=null; var transport=""; var gatewayIp:String?=null; var viaFastPath=false
                 for(candidate in candidates) {
-                    val lpCandidate=cm.getLinkProperties(candidate.first)
-                    val broadcasts=ipv4Broadcasts(lpCandidate)
-                    emit("DISCOVERY ${candidate.second}: UDP 6811 • ${broadcasts.joinToString()} • attempt ${reconnects+1}")
-                    val found=discover(candidate.first,broadcasts)
-                    if(found!=null) { net=candidate.first; d=found; transport=candidate.second; break }
+                    val network=candidate.first
+                    val kind=candidate.second
+                    connectionTransport=kind
+                    val rememberedIp=cachedIp
+                    // TCP fast path: avoid repeated UDP discovery after short call-related interruptions.
+                    if(rememberedIp!=null && kind==cachedTransport) {
+                        connectionStage="FAST_TCP"
+                        try {
+                            val quick=network.socketFactory.createSocket()
+                            try {
+                                quick.soTimeout=1800
+                                quick.connect(InetSocketAddress(rememberedIp,6801),1600)
+                                socket=quick; activeNet=network; transport=kind; gatewayIp=rememberedIp
+                                viaFastPath=true
+                                break
+                            } catch(e:Exception) { try{quick.close()}catch(_:Exception){}; throw e }
+                        } catch(e:Exception) {
+                            connectionEvent("FAST_RETRY_FAILED",reconnects+1,connectionStage,kind,rememberedIp,
+                                "${e.javaClass.simpleName}: ${e.message?:"no details"}")
+                        }
+                    }
+                    connectionStage="DISCOVERY"
+                    val broadcasts=ipv4Broadcasts(cm.getLinkProperties(network))
+                    emit("DISCOVERY $kind UDP 6811 • ${broadcasts.joinToString()} • attempt ${reconnects+1}")
+                    val found=discover(network,broadcasts) ?: continue
+                    connectionStage="TCP"
+                    connectionIp=found.ip
+                    emit("GATEWAY $kind ${found.ip}:6801 • connecting")
+                    val candidateSocket=network.socketFactory.createSocket()
+                    try {
+                        candidateSocket.soTimeout=1800
+                        candidateSocket.connect(InetSocketAddress(found.ip,6801),2500)
+                        socket=candidateSocket; activeNet=network; transport=kind; gatewayIp=found.ip
+                        break
+                    } catch(e:Exception) {
+                        try{candidateSocket.close()}catch(_:Exception){}
+                        connectionEvent("TCP_FAILED",reconnects+1,connectionStage,kind,found.ip,
+                            "${e.javaClass.simpleName}: ${e.message?:"no details"}")
+                    }
                 }
-                val activeNet=net ?: throw IOException("BMW HSFZ discovery no reply on Ethernet/Wi-Fi")
-                val gateway=d ?: throw IOException("BMW gateway not found")
-                emit("GATEWAY $transport ${gateway.ip} • connecting TCP 6801")
-                socket=activeNet.socketFactory.createSocket() as Socket
-                socket!!.soTimeout=1800; socket!!.connect(InetSocketAddress(gateway.ip,6801),2500)
+                if(activeNet==null || gatewayIp==null) throw IOException("HSFZ gateway unavailable after cached TCP and UDP discovery")
+                cachedIp=gatewayIp; cachedTransport=transport; connectionIp=gatewayIp
+                connectionTransport=transport; connectionStage="POLL"; emptyPolls=0
+                prefs.edit().putString("last_gateway_ip",gatewayIp)
+                    .putString("last_gateway_transport",transport).apply()
                 sampleTimes.clear()
-                emit("CONNECTED $transport ${gateway.ip}:6801 • reconnects $reconnects")
+                val gap=outageFrom?.let { (SystemClock.elapsedRealtime()-it).coerceAtLeast(0L) } ?: 0L
+                connectionEvent(if(gap>0)"RECOVERED" else "CONNECTED",reconnects,connectionStage,
+                    transport,gatewayIp,if(viaFastPath)"cached TCP" else "UDP discovery + TCP",gap)
+                outageFrom=null
+                emit("CONNECTED $transport $gatewayIp:6801 • reconnects $reconnects" +
+                    if(gap>0)" • recovered in ${gap} ms" else "")
                 while(running && socket?.isClosed==false) {
                     fun pid(id:Int):ByteArray? {
                         val q=hsfz(byteArrayOf(0x01,id.toByte())); socket!!.getOutputStream().write(q); socket!!.getOutputStream().flush()
@@ -186,6 +239,10 @@ class EnetLoggerService : Service() {
                     val r=obd(pid(0x0C),0x0C)?.let{(((it[0].toInt()and 255)*256)+(it[1].toInt()and 255))/4.0}
                     val l=obd(pid(0x04),0x04)?.let{(it[0].toInt()and 255)*100.0/255.0}
                     val m=obd(pid(0x0B),0x0B)?.let{(it[0].toInt()and 255).toDouble()}
+                    if(r==null && l==null && m==null) {
+                        emptyPolls++
+                        if(emptyPolls>=3) throw IOException("No ECU OBD reply for 3 consecutive polls")
+                    } else emptyPolls=0
                     val now=SystemClock.elapsedRealtime()
                     if(now-lastSlow>=2000L) {
                         slowSpeed=obd(pid(0x0D),0x0D)?.firstOrNull()?.let{(it.toInt() and 255).toDouble()}
@@ -343,7 +400,12 @@ class EnetLoggerService : Service() {
                 }
             } catch(e:Exception) {
                 if(!running) break
-                reconnects++; sampleTimes.clear(); tone.startTone(ToneGenerator.TONE_SUP_ERROR,600); emit("ENET reconnect #$reconnects: ${e.javaClass.simpleName}: ${e.message ?: "no details"}")
+                reconnects++; sampleTimes.clear()
+                if(outageFrom==null) outageFrom=SystemClock.elapsedRealtime()
+                connectionEvent("DISCONNECTED",reconnects,connectionStage,connectionTransport,connectionIp,
+                    "${e.javaClass.simpleName}: ${e.message?:"no details"}")
+                tone.startTone(ToneGenerator.TONE_SUP_ERROR,600)
+                emit("ENET reconnect #$reconnects [$connectionStage]: ${e.javaClass.simpleName}: ${e.message ?: "no details"}")
                 try{socket?.close()}catch(_:Exception){}; socket=null
                 SystemClock.sleep(1500)
             }
