@@ -492,8 +492,11 @@ class EnetLoggerService : Service() {
                     }
                                         val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
                     // v1.7.18 measurement assistant: keep polling continuously, persist only measurement segments.
-                    if(((autoMode && r!=null && l!=null && m!=null && r>=2000.0 && r<=4500.0 && l>=55.0 && m>=130.0) || (!autoMode && r!=null && r>=1800.0)) && !captureActive) {
-                        captureActive=true; runId++; armed2000=false; signaled4500=false; runStart=now; runStartRpm=r; runMaxRpm=r; runMaxLoad=l?:0.0; runMaxMap=m?:0.0; runSamples=0; lastSummary=""; runWeightedRatio=0.0; runWeight=0.0; runValidPoints=0; runHighPoints=0; runKnockEvents=0; runSuperEvents=0; lastRunScore=null; lastRunQuality=0
+                    if(((autoMode && r!=null && l!=null && m!=null && r>=1300.0 && r<=4500.0 &&
+                        l>=15.0 && m>=88.0 && m<=250.0 && (speed==null || speed>=15.0)) ||
+                        (!autoMode && r!=null && r>=1800.0)) && !captureActive) {
+                        captureActive=true; runId++; armed2000=false; signaled4500=false; runStart=now;
+                        if(autoMode)lastQualified=now; runStartRpm=r; runMaxRpm=r; runMaxLoad=l?:0.0; runMaxMap=m?:0.0; runSamples=0; lastSummary=""; runWeightedRatio=0.0; runWeight=0.0; runValidPoints=0; runHighPoints=0; runKnockEvents=0; runSuperEvents=0; lastRunScore=null; lastRunQuality=0
                         if(!autoMode) tone.startTone(ToneGenerator.TONE_PROP_BEEP,120)
                     }
                     if(!autoMode && captureActive && r!=null && r>=2000.0 && !armed2000) {
@@ -531,11 +534,58 @@ class EnetLoggerService : Service() {
                     val accelerationAuto=autoMode && measurementWindow && warm && rpmRate!=null && mapRate!=null &&
                         rpmRate>=130.0 && rpmRate<=1800.0 && mapRate>=-65.0 && l!=null && l>=65.0 &&
                         m!=null && m>=150.0 && (throttle==null || throttle>=25.0)
+                    // STEADY v0.8 observes ordinary urban/cruise load independently
+                    // from the old high-load RPM x MAP baseline (which is unchanged).
+                    val steadyWindow=autoMode && r!=null && l!=null && m!=null &&
+                        r>=1300.0 && r<4500.0 && l in 15.0..68.0 && m in 88.0..150.0 &&
+                        (speed==null || speed>=15.0)
+                    val steadyAuto=steadyWindow && warm && rpmRate!=null && mapRate!=null &&
+                        kotlin.math.abs(rpmRate)<=250.0 && kotlin.math.abs(mapRate)<=16.0
                     val stableAuto=autoMode && measurementWindow && warm && rpmRate!=null && mapRate!=null &&
                         kotlin.math.abs(rpmRate)<=350.0 && kotlin.math.abs(mapRate)<=24.0
-                    val drivePhase=if(!autoMode) "TEST" else if(accelerationAuto) "ACCELERATION" else if(stableAuto) "STEADY" else "TRANSIENT"
+                    val drivePhase=when {
+                        !autoMode -> "TEST"
+                        steadyAuto -> "STEADY"
+                        accelerationAuto -> "ACCELERATION"
+                        stableAuto -> "STEADY_HIGH"
+                        else -> "TRANSIENT"
+                    }
                     previousRpm=r; previousMap=m; previousSampleTime=now
                     val highConfidenceWindow=r!=null && l!=null && m!=null && r>=2200.0 && r<=4000.0 && l>=70.0 && m>=160.0
+                    // Record all valid steady observations, even outside a known
+                    // reference cell. This is observation data, not an auto-adjusted baseline.
+                    val steadyRef=if(steadyAuto) OctaneCalibration.steadyReference(r,m,l) else null
+                    val accelRef=if(accelerationAuto) OctaneCalibration.accelerationReference(r,m) else null
+                    if(steadyAuto && knockMean!=null && knockMean>0.0 &&
+                        !fuelDetector.pending && mixingKm<=0.0 && r!=null && m!=null && l!=null) {
+                        if(lastSteadyObservation==0L || now-lastSteadyObservation>6000L)steadySegmentId++
+                        lastSteadyObservation=now
+                        steadySurveyPoints++
+                        val steadyCell=OctaneCalibration.steadyCell(r,m)
+                        steadySurveyCells.add(steadyCell)
+                        val validSteadyRef=steadyRef!=null && steadyRef.trainingSamples>=5 &&
+                            steadyRef.trainingTrips>=2
+                        if(validSteadyRef && steadyRef!=null) {
+                            val steadyRatio=knockMean/steadyRef.knockMeanVms
+                            steadyRatioSum+=steadyRatio
+                            steadyRatioWeight+=1.0
+                            steadyPoints++
+                            steadySegments.add(steadySegmentId)
+                            steadyCells.add(steadyCell)
+                        }
+                        // All qualified observations are retained for an independent
+                        // follow-up steady calibration without self-training.
+                        try {
+                            FileOutputStream(steadySurveyFile!!,true).bufferedWriter().use { out ->
+                                out.appendLine(listOf(System.currentTimeMillis(),t,r,l,m,
+                                    rpmRate?:"",mapRate?:"",knockMean,i?:"",coolant?:"",
+                                    speed?:"",steadyRef?.knockMeanVms?:"",
+                                    steadyRef?.trainingSamples?:"",steadyRef?.trainingTrips?:"",
+                                    steadyCell,steadySegmentId,if(validSteadyRef)1 else 0).joinToString(","))
+                            }
+                        } catch(_:Exception) { }
+                        lastQualified=now
+                    }
                     val b95=if(measurementWindow) baseline95(r,m) else null
                     val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && !fuelDetector.pending && mixingKm<=0.0 && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5))) knockMean/b95.v else null
                     if(autoMode && measurementWindow && ratio95!=null) lastQualified=now
@@ -547,10 +597,14 @@ class EnetLoggerService : Service() {
                             if(drivePhase=="ACCELERATION") {
                                 accelRatioSum+=ratio95*w; accelRatioWeight+=w; accelPoints++
                                 accelSegments.add(runId)
-                            } else {
-                                steadyRatioSum+=ratio95*w; steadyRatioWeight+=w; steadyPoints++
-                                steadySegments.add(runId)
+                                if(accelRef!=null && knockMean!=null && accelRef.trainingTrips>=3) {
+                                    accelV08Sum+=(knockMean/accelRef.knockMeanVms)*w
+                                    accelV08Weight+=w
+                                    accelV08Points++
+                                }
                             }
+                            // High-load steady points still count in the legacy overall
+                            // score, but NEVER contaminate the low-load STEADY v0.8 score.
                             if(knockStatus==1 && !previousKnock)autoKnockEvents++
                             if(superKnock!=null && superKnock>0 && !previousSuper)autoSuperEvents++
                             acceptedAutoSegments.add("$runId:$drivePhase")
@@ -562,7 +616,7 @@ class EnetLoggerService : Service() {
                         val weight=if(highConfidenceWindow) 2.0 else 1.0
                         val rv=r!!; val mv=m!!; val rb=((rv-2000.0)/500.0).toInt().coerceIn(0,4); val mb=when{mv<160->0;mv<180->1;mv<200->2;else->3}; coverageBins.add("$rb:$mb"); if(autoMode) {
                             autoCoverage.add("$rb:$mb")
-                            if(drivePhase=="ACCELERATION") accelCells.add("$rb:$mb") else steadyCells.add("$rb:$mb")
+                            if(drivePhase=="ACCELERATION") accelCells.add("$rb:$mb")
                         }; if(highConfidenceWindow) sessionHighPoints++
                         runWeightedRatio+=ratio95*weight; runWeight+=weight; runValidPoints++; if(highConfidenceWindow) runHighPoints++
                         if(knockStatus==1 && !previousKnock) runKnockEvents++; if(superKnock!=null && superKnock>0 && !previousSuper) runSuperEvents++
