@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 36
-        versionName = "1.7.18"
+        versionCode = 37
+        versionName = "1.7.19"
     }
 }
 
-// v1.7.18: experimental calibrated steady observations and hold-out validated acceleration candidates
+// v1.7.19: fine STEADY strata, trim and timing diagnostics, BMW roundel launcher icon
