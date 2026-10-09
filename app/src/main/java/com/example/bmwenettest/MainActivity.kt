@@ -140,7 +140,9 @@ class MainActivity : Activity() {
         val dir=getExternalFilesDir(null)?:filesDir
         val recordings=dir.listFiles()?.filter{it.isFile && it.name.startsWith("bmw_enet_") && it.extension.equals("csv",true)}
             ?.sortedByDescending{it.lastModified()} ?: emptyList()
-        if(recordings.isEmpty()) {
+        val fuelEventsFile=File(dir,"bmw_fuel_events.csv")
+        val refuelEvents=if(fuelEventsFile.isFile) fuelEventsFile.readLines().filter{it.split(",").size>=4}.asReversed() else emptyList()
+        if(recordings.isEmpty() && refuelEvents.isEmpty()) {
             AlertDialog.Builder(this).setTitle("История замеров").setMessage("Сохранённых CSV пока нет")
                 .setPositiveButton("OK",null).show()
             return
@@ -161,17 +163,32 @@ class MainActivity : Activity() {
                     val speedIndex=idx("speed_kmh")
                     val maxSpeed=if(speedIndex>=0) records.mapNotNull{it.split(",").getOrNull(speedIndex)?.toDoubleOrNull()}.maxOrNull() else null
                     val date=java.text.SimpleDateFormat("dd.MM.yyyy HH:mm",java.util.Locale.getDefault()).format(java.util.Date(file.lastModified()))
-                    "$date • ${file.name.substringBeforeLast(".")}\nСтрок: ${records.size} • Score: ${last("session_fuel_score")} • Confidence: ${last("session_confidence_pct")}%\nСкорость макс.: ${maxSpeed?.let{"%.0f км/ч".format(it)}?:"—"}"
+                    "$date • ${file.name.substringBeforeLast(".")}\nСтрок: ${records.size} • Score: ${last("session_fuel_score")} • Confidence: ${last("session_confidence_pct")}%\nСкорость макс.: ${maxSpeed?.let{"%.0f км/ч".format(it)}?:"—"} • Топливо #${last("fuel_session_id")}\nSTEADY ${last("steady_points")} • ACCEL ${last("accel_points")} • бак ${last("fuel_level_pct")}% "
                 } catch(e:Exception) { file.name+" • Ошибка чтения: "+e.javaClass.simpleName }
             }
+            val eventLabels=refuelEvents.map { line ->
+                val fields=line.split(",")
+                val date=fields[0].toLongOrNull()?.let {
+                    java.text.SimpleDateFormat("dd.MM.yyyy HH:mm",java.util.Locale.getDefault()).format(java.util.Date(it))
+                } ?: "—"
+                "⛽ $date • топливо #${fields[1]}: ${fields[2]}% → ${fields[3]}% (предполагаемая заправка)"
+            }
+            val allLabels=eventLabels+labels
             runOnUiThread {
                 if(isFinishing || isDestroyed)return@runOnUiThread
-                AlertDialog.Builder(this).setTitle("История замеров")
-                    .setItems(labels.toTypedArray()) { _,which ->
-                        val selected=recordings[which]
-                        AlertDialog.Builder(this).setTitle(selected.name)
-                            .setMessage(labels[which]+"\n\nФайл сохранён в папке приложения.")
-                            .setPositiveButton("OK",null).show()
+                AlertDialog.Builder(this).setTitle("История замеров и заправок")
+                    .setItems(allLabels.toTypedArray()) { _,which ->
+                        if(which<eventLabels.size) {
+                            AlertDialog.Builder(this).setTitle("Событие заправки")
+                                .setMessage(eventLabels[which]+"\n\nОпределено по изменению уровня топлива; требует подтверждения водителем.")
+                                .setPositiveButton("OK",null).show()
+                        } else {
+                            val fileIndex=which-eventLabels.size
+                            val selected=recordings[fileIndex]
+                            AlertDialog.Builder(this).setTitle(selected.name)
+                                .setMessage(labels[fileIndex]+"\n\nФайл сохранён в папке приложения.")
+                                .setPositiveButton("OK",null).show()
+                        }
                     }.setNegativeButton("Закрыть",null).show()
             }
         }
