@@ -492,6 +492,9 @@ class EnetLoggerService : Service() {
                             logFile=createLogFile(fuelSessionId)
                             steadySurveyFile=createSteadySurveyFile(fuelSessionId)
                             dmeProbeFile=createDmeProbeFile(fuelSessionId)
+                            dmeProbeResults.clear()
+                            dmeProbeIndex=0
+                            lastDmeProbeMs=0L
                             captureActive=false; captureTailUntil=0L; runId=0; runSamples=0; runValidPoints=0; runHighPoints=0
                             runWeightedRatio=0.0; runWeight=0.0; lastRunScore=null; lastRunQuality=0
                             sessionScoreSum=0.0; sessionQualitySum=0.0; sessionValidRuns=0; sessionScores.clear()
@@ -535,6 +538,34 @@ class EnetLoggerService : Service() {
                     val kz1=knock(0x4A37); val kz2=knock(0x4A38); val kz3=knock(0x4A39); val kz4=knock(0x4A3A)
                     val iz1=ign(0x4A49); val iz2=ign(0x4A4A); val iz3=ign(0x4A4C); val iz4=ign(0x4A4D)
                     val superKnock=slowSuperKnock
+                    // Verify DME8FF_R candidate identifiers with READ-ONLY UDS 0x22.
+                    // Exactly one probe no more frequently than every 12 s.
+                    // Negative response and raw payload are preserved; the Fuel
+                    // Score, confidence and existing 0x4A36 sampling stay unchanged.
+                    if(now-lastDmeProbeMs>=12000L) {
+                        val targets=DmeReadOnlyProbe.specs.filter { spec ->
+                            dmeProbeResults[spec.did]?.status!="UNSUPPORTED"
+                        }
+                        if(targets.isNotEmpty()) {
+                            val spec=targets[dmeProbeIndex % targets.size]
+                            dmeProbeIndex++
+                            val probe=readDmeProbe(spec)
+                            dmeProbeResults[spec.did]=probe
+                            lastDmeProbeMs=SystemClock.elapsedRealtime()
+                            try {
+                                FileOutputStream(dmeProbeFile!!,true).bufferedWriter().use { out ->
+                                    val textValue=probe.decodedCandidate.replace(",",";").replace("\\n"," ")
+                                    val note=probe.note.replace(",",";").replace("\\n"," ")
+                                    out.appendLine(listOf(
+                                        System.currentTimeMillis(),lastDmeProbeMs-started,
+                                        fuelSessionId,transport,DmeReadOnlyProbe.didHex(spec.did),
+                                        spec.title,probe.status,probe.negativeCode,probe.rawHex,
+                                        textValue,r?:"",l?:"",m?:"",note
+                                    ).joinToString(","))
+                                }
+                            } catch(_:Exception) { /* Never interrupt ECU polling for CSV IO. */ }
+                        }
+                    }
                     if(now-lastFoctan>=10000L) {
                         udsData(0x407F)?.let{data-> if(data.size>=220) for(x in 0..19) foctanCache[x]=(data[200+x].toInt()and 255)/256.0 }
                         lastFoctan=now
@@ -738,7 +769,9 @@ class EnetLoggerService : Service() {
                         steadyScore,accelScore,highRpmMean,highRpmPoints,highRpmOver120,
                         steadySurveyPoints,steadySurveyCells.size,accelV08Score,accelV08Points,
                         stft1,ltft1,combinedTrim,ignSpread,
-                        steadyFineStats.cells(),steadyFineStats.repeatableCells()) }
+                        steadyFineStats.cells(),steadyFineStats.repeatableCells(),
+                        DmeReadOnlyProbe.overview(dmeProbeResults,dmeProbeResults.size),
+                        dmeProbeResults.size) }
                 }
             } catch(e:Exception) {
                 if(!running) break
@@ -792,6 +825,18 @@ class EnetLoggerService : Service() {
             arrayOf<B95?>(null,null,null,null)
         )
         return v[ri][mi]
+    }
+
+    private fun readDmeProbe(spec:DmeReadOnlyProbe.Spec):DmeReadOnlyProbe.Result {
+        val s=socket ?: return DmeReadOnlyProbe.Result(spec,"DISCONNECTED")
+        val hi=((spec.did ushr 8) and 255).toByte()
+        val lo=(spec.did and 255).toByte()
+        // UDS ReadDataByIdentifier only; no 0x2E, 0x27, 0x31 or EDIABAS jobs.
+        val request=hsfz(byteArrayOf(0x22,hi,lo))
+        s.getOutputStream().write(request)
+        s.getOutputStream().flush()
+        val payloads=readFrames(s.getInputStream()).mapNotNull { payload(it) }
+        return DmeReadOnlyProbe.parse(spec,payloads)
     }
 
     private fun udsData(did:Int):ByteArray? {
