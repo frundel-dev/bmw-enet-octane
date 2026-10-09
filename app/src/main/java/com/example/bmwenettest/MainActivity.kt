@@ -35,7 +35,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.14"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.15"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(TextView(this).apply { text="G20 • B48 • USB ENET + VXSCAN Wi-Fi • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(Button(this).apply { text="MODE: ${getSharedPreferences("bmw_native",MODE_PRIVATE).getString("measurement_mode","AUTO")} • SWITCH"; textSize=20f; minHeight=160; setPadding(24,32,24,32); setOnClickListener { val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE); val next=if(prefs.getString("measurement_mode","AUTO")=="AUTO")"TEST" else "AUTO"; prefs.edit().putString("measurement_mode",next).apply(); text="MODE: $next (restart logger)" } })
         root.addView(Button(this).apply { text="START BACKGROUND LOGGER"; textSize=20f; minHeight=160; setPadding(24,32,24,32); setOnClickListener {
@@ -165,7 +165,7 @@ class MainActivity : Activity() {
 
 
     private fun showAdditionalMenu() {
-        val items=arrayOf("Импорт BMW DME .PRG", "История замеров", "Журнал соединений VXSCAN")
+        val items=arrayOf("Импорт BMW DME .PRG", "История замеров", "Журнал VXSCAN + Android", "События сети Android", "Только TCP-реконнекты")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -179,13 +179,15 @@ class MainActivity : Activity() {
                     }
                     1 -> showMeasurementHistory()
                     2 -> showConnectionHistory()
+                    3 -> showConnectionHistory("ANDROID")
+                    4 -> showConnectionHistory("TCP")
                 }
             }
             .setNegativeButton("Закрыть",null)
             .show()
     }
 
-    private fun showConnectionHistory() {
+    private fun showConnectionHistory(filter:String="ALL") {
         val file=File(getExternalFilesDir(null)?:filesDir,"bmw_connection_events.csv")
         if(!file.isFile) {
             AlertDialog.Builder(this).setTitle("VXSCAN • соединения")
@@ -194,7 +196,19 @@ class MainActivity : Activity() {
             return
         }
         executor.execute {
-            val records=try { file.useLines { it.drop(1).toList().takeLast(30) } }
+            val records=try {
+                file.useLines { seq ->
+                    seq.drop(1)
+                        .filter { line ->
+                            when(filter) {
+                                "ANDROID" -> line.contains(",ANDROID_")
+                                "TCP" -> !line.contains(",ANDROID_")
+                                else -> true
+                            }
+                        }
+                        .toList().takeLast(50)
+                }
+            }
                          catch(e:Exception) { emptyList<String>() }
             val details=if(records.isEmpty()) "Нет событий" else records.asReversed().joinToString("\n\n") { line ->
                 val fields=line.split(",",limit=8)
@@ -209,7 +223,11 @@ class MainActivity : Activity() {
             }
             runOnUiThread {
                 if(!isFinishing && !isDestroyed) AlertDialog.Builder(this)
-                    .setTitle("VXSCAN • последние соединения")
+                    .setTitle(when(filter) {
+                        "ANDROID" -> "Android • события сети"
+                        "TCP" -> "VXSCAN • TCP и реконнекты"
+                        else -> "VXSCAN + Android • последние события"
+                    })
                     .setMessage(details)
                     .setPositiveButton("OK",null).show()
             }
