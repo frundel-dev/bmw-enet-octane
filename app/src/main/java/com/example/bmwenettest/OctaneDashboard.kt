@@ -50,6 +50,8 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
     private lateinit var network:TextView
     private lateinit var knock:TextView
     private lateinit var highRpm:TextView
+    private lateinit var fuelTrims:TextView
+    private lateinit var ignitionStatus:TextView
     val connectionView:TextView
 
     private fun dp(value:Int)=(value*resources.displayMetrics.density+0.5f).toInt()
@@ -208,6 +210,12 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         highRpm=text("3500+ об/мин: данных пока нет",12f,muted)
         highRpm.setPadding(0,dp(6),0,0)
         diagnostic.addView(highRpm)
+        fuelTrims=text("STFT —  •  LTFT —",12f,muted)
+        fuelTrims.setPadding(0,dp(9),0,0)
+        diagnostic.addView(fuelTrims)
+        ignitionStatus=text("УОЗ —  •  откат углов / импульс форсунок: нет подтверждённых параметров",11f,muted)
+        ignitionStatus.setPadding(0,dp(7),0,0)
+        diagnostic.addView(ignitionStatus)
         connectionView=text("Подключите USB ENET или Wi-Fi VXSCAN и нажмите START LOGGER.",
             12f,muted)
         connectionView.setPadding(0,dp(11),0,0)
@@ -285,8 +293,11 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
 
         val surveyed=count(EnetLoggerService.EXTRA_STEADY_SURVEY)
         val covered=count(EnetLoggerService.EXTRA_STEADY_CELLS)
-        steadySurvey.text="STEADY v0.8 • наблюдений $surveyed • ячеек $covered"+
-            " • пробный балл, не лабораторный RON"
+        val fineCells=count(EnetLoggerService.EXTRA_FINE_STEADY_CELLS)
+        val repeatableCells=count(EnetLoggerService.EXTRA_REPEATABLE_STEADY_CELLS)
+        steadySurvey.text="STEADY v0.9 • $surveyed наблюдений • $fineCells узких ячеек"+ 
+            " ($repeatableCells устойчивых в этой записи)\n"+
+            "Эталон требует подтверждения независимыми поездками."
         val newAccel=number(EnetLoggerService.EXTRA_ACCEL_V08_SCORE)
         val newAccelPoints=count(EnetLoggerService.EXTRA_ACCEL_V08_POINTS)
         accelCalibration.text="ACCEL v0.8 (проверочная): "+format(newAccel,1)+
@@ -307,6 +318,13 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         knock.text="Knock: "+count(EnetLoggerService.EXTRA_KNOCK_EVENTS)+
             "   •   Superknock: "+count(EnetLoggerService.EXTRA_SUPER_EVENTS)+
             "   •   Run Q: "+count(EnetLoggerService.EXTRA_RUN_QUALITY)+"%"
+        val stft=number(EnetLoggerService.EXTRA_STFT)
+        val ltft=number(EnetLoggerService.EXTRA_LTFT)
+        val trim=number(EnetLoggerService.EXTRA_COMBINED_TRIM)
+        val ignSpread=number(EnetLoggerService.EXTRA_IGN_SPREAD)
+        fuelTrims.text="STFT "+format(stft,1)+"%   •   LTFT "+format(ltft,1)+"%"+
+            "   •   сумма* "+format(trim,1)+"%"
+        ignitionStatus.text="Разброс УОЗ по цилиндрам: "+format(ignSpread,1)+"°  •  Knock Retard / Injection Time: —"
         val highRatio=number(EnetLoggerService.EXTRA_HIGH_RPM_RATIO)
         val highPoints=count(EnetLoggerService.EXTRA_HIGH_RPM_POINTS)
         highRpm.text="3500+ RPM • MAP 180+: "+highPoints+" точек"+
