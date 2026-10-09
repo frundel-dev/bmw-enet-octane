@@ -173,7 +173,9 @@ class EnetLoggerService : Service() {
         steadySegments:Int?=null,accelSegments:Int?=null,steadyScore:Double?=null,accelScore:Double?=null,
         highRpmMean:Double?=null,highRpmPoints:Int?=null,highRpmOver120:Int?=null,
         steadySurveyPoints:Int?=null,steadySurveyCells:Int?=null,
-        accelV08Score:Double?=null,accelV08Points:Int?=null) {
+        accelV08Score:Double?=null,accelV08Points:Int?=null,
+        stft:Double?=null,ltft:Double?=null,combinedTrim:Double?=null,
+        ignitionSpread:Double?=null,fineCells:Int?=null,repeatableCells:Int?=null) {
         val intent=Intent(ACTION_STATUS).setPackage(packageName).putExtra(EXTRA_STATUS,s)
         state?.let{intent.putExtra(EXTRA_STATE,it)}; rpm?.let{intent.putExtra(EXTRA_RPM,it)}; transport?.let{intent.putExtra(EXTRA_TRANSPORT,it)}
         runId?.let{intent.putExtra(EXTRA_RUN_ID,it)}; hz?.let{intent.putExtra(EXTRA_HZ,it)}; reconnects?.let{intent.putExtra(EXTRA_RECONNECTS,it)}; summary?.let{intent.putExtra(EXTRA_SUMMARY,it)}
@@ -187,6 +189,12 @@ class EnetLoggerService : Service() {
         steadySurveyCells?.let{intent.putExtra(EXTRA_STEADY_CELLS,it)}
         accelV08Score?.let{intent.putExtra(EXTRA_ACCEL_V08_SCORE,it)}
         accelV08Points?.let{intent.putExtra(EXTRA_ACCEL_V08_POINTS,it)}
+        stft?.let{intent.putExtra(EXTRA_STFT,it)}
+        ltft?.let{intent.putExtra(EXTRA_LTFT,it)}
+        combinedTrim?.let{intent.putExtra(EXTRA_COMBINED_TRIM,it)}
+        ignitionSpread?.let{intent.putExtra(EXTRA_IGN_SPREAD,it)}
+        fineCells?.let{intent.putExtra(EXTRA_FINE_STEADY_CELLS,it)}
+        repeatableCells?.let{intent.putExtra(EXTRA_REPEATABLE_STEADY_CELLS,it)}
         intent.putExtra(EXTRA_CALIBRATION,OctaneCalibration.VERSION)
         sendBroadcast(intent)
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(7,notification(s.take(100)))
@@ -666,7 +674,11 @@ class EnetLoggerService : Service() {
                     val liveRunQuality=((runHighPoints*4+runValidPoints*2).coerceAtMost(100))
                     val sessionScore=if(autoMode) { if(autoRatioWeight>0.0) (100.0+(1.0-autoRatioSum/autoRatioWeight)*50.0-(autoKnockEvents-1).coerceAtLeast(0)*1.5-autoSuperEvents*10.0).coerceIn(0.0,120.0) else null } else if(sessionQualitySum>0) sessionScoreSum/sessionQualitySum else null
                     val consistency=if(sessionScores.size>=2){val mean=sessionScores.average(); val sd=kotlin.math.sqrt(sessionScores.sumOf{(it-mean)*(it-mean)}/sessionScores.size); (15.0-sd*3.0).toInt().coerceIn(0,15)}else 0
-                    val steadyConfidence=if(autoMode)phaseConfidence(steadyPoints,steadySegments.size,steadyCells.size) else 0
+                    val steadyConfidence=if(autoMode)
+                        // Only one legacy provisional reference cell is supported by
+                        // independent AI-95 sessions; no independent v0.9 holdout yet.
+                        phaseConfidence(steadyPoints,steadySegments.size,steadyCells.size).coerceAtMost(49)
+                        else 0
                     val accelConfidence=if(autoMode)phaseConfidence(accelPoints,accelSegments.size,accelCells.size) else 0
                     val sessionConfidence=if(autoMode) {
                         val primary=maxOf(steadyConfidence,accelConfidence)
@@ -692,12 +704,19 @@ class EnetLoggerService : Service() {
                     }
                     if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns,oil?:"",if(autoMode)"AUTO" else "TEST",coverageBins.size,speed?:"",slowFuel?:"",fuelSessionId,drivePhase,steadyPoints,accelPoints,steadyScore?:"",accelScore?:"",if(fuelDetector.pending)1 else 0,"%.2f".format(java.util.Locale.US,mixingKm),steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,highRpmMean?:"",highRpmPoints,highRpmOver120,highRpmBaselineAvg?:"",acceptedAutoSegments.size,
                         steadySurveyPoints,steadySurveyCells.size,accelV08Score?:"",accelV08Points,
-                        OctaneCalibration.VERSION,steadyRef?.knockMeanVms?:"",accelRef?.knockMeanVms?:"")).joinToString(","))}
+                        OctaneCalibration.VERSION,steadyRef?.knockMeanVms?:"",accelRef?.knockMeanVms?:"",
+                        ltft1?:"",combinedTrim?:"",a?:"",lastFineCell,
+                        steadyFineStats.cells(),steadyFineStats.repeatableCells(),
+                        lastFineSummary.observations,lastFineSummary.segments,
+                        lastFineSummary.medianVms?:"",lastFineSummary.dispersionPct?:"",
+                        "", "")).joinToString(","))}
                     samples++
                     if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.19 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
                         steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,
                         steadyScore,accelScore,highRpmMean,highRpmPoints,highRpmOver120,
-                        steadySurveyPoints,steadySurveyCells.size,accelV08Score,accelV08Points) }
+                        steadySurveyPoints,steadySurveyCells.size,accelV08Score,accelV08Points,
+                        stft1,ltft1,combinedTrim,ignSpread,
+                        steadyFineStats.cells(),steadyFineStats.repeatableCells()) }
                 }
             } catch(e:Exception) {
                 if(!running) break
@@ -705,7 +724,7 @@ class EnetLoggerService : Service() {
                 if(outageFrom==null) outageFrom=SystemClock.elapsedRealtime()
                 // Do not combine samples on opposite sides of a network interruption.
                 captureActive=false; captureTailUntil=0L; previousSampleTime=0L
-                previousRpm=null; previousMap=null; lastQualified=0L
+                previousRpm=null; previousMap=null; lastQualified=0L;lastSteadyObservation=0L
                 runWeightedRatio=0.0; runWeight=0.0; runValidPoints=0; runHighPoints=0
                 connectionEvent("DISCONNECTED",reconnects,connectionStage,connectionTransport,connectionIp,
                     "${e.javaClass.simpleName}: ${e.message?:"no details"};${networkSnapshot()}")
