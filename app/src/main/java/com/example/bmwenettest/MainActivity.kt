@@ -35,7 +35,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.11"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.12"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(TextView(this).apply { text="G20 • B48 • USB ENET + VXSCAN Wi-Fi • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(Button(this).apply { text="IMPORT/VERIFY BMW DME .PRG (OPTIONAL)"; setOnClickListener {
             val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -60,6 +60,12 @@ class MainActivity : Activity() {
             textSize=18f
             minHeight=120
             setOnClickListener { showMeasurementHistory() }
+        })
+        root.addView(Button(this).apply {
+            text="ЖУРНАЛ СОЕДИНЕНИЙ VXSCAN"
+            textSize=16f
+            minHeight=110
+            setOnClickListener { showConnectionHistory() }
         })
         status = TextView(this).apply { textSize=15f; text="Embedded profile: DME8FF_R (fresh ECU dataset) ✓\nPRG import is optional.\n\nConnect USB-C ENET or join VXSCAN ENET Wi-Fi, ignition ON, then press START."; setPadding(0,24,0,0); setTextIsSelectable(true) }
         root.addView(ScrollView(this).apply { addView(status) })
@@ -92,6 +98,16 @@ class MainActivity : Activity() {
                 val knockEvents=intent.getIntExtra(EnetLoggerService.EXTRA_KNOCK_EVENTS,0)
                 val superEvents=intent.getIntExtra(EnetLoggerService.EXTRA_SUPER_EVENTS,0)
                 val resultState=intent.getStringExtra(EnetLoggerService.EXTRA_RESULT_STATE) ?: "COLLECTING"
+                val phaseSegments=intent.getIntExtra(EnetLoggerService.EXTRA_SEGMENTS,sessionRuns)
+                val steadyConfidence=intent.getIntExtra(EnetLoggerService.EXTRA_STEADY_CONF,0)
+                val accelConfidence=intent.getIntExtra(EnetLoggerService.EXTRA_ACCEL_CONF,0)
+                val steadySegments=intent.getIntExtra(EnetLoggerService.EXTRA_STEADY_SEGMENTS,0)
+                val accelSegments=intent.getIntExtra(EnetLoggerService.EXTRA_ACCEL_SEGMENTS,0)
+                val steadyScore=intent.getDoubleExtra(EnetLoggerService.EXTRA_STEADY_SCORE,Double.NaN)
+                val accelScore=intent.getDoubleExtra(EnetLoggerService.EXTRA_ACCEL_SCORE,Double.NaN)
+                val highRpmMean=intent.getDoubleExtra(EnetLoggerService.EXTRA_HIGH_RPM_RATIO,Double.NaN)
+                val highRpmPoints=intent.getIntExtra(EnetLoggerService.EXTRA_HIGH_RPM_POINTS,0)
+                val highRpmOver120=intent.getIntExtra(EnetLoggerService.EXTRA_HIGH_RPM_OVER120,0)
                 val fuelPct=intent.getDoubleExtra(EnetLoggerService.EXTRA_FUEL_PCT,Double.NaN)
                 val fuelId=intent.getIntExtra(EnetLoggerService.EXTRA_FUEL_ID,1)
                 val drivingPhase=intent.getStringExtra(EnetLoggerService.EXTRA_PHASE) ?: "—"
@@ -109,8 +125,14 @@ class MainActivity : Activity() {
                     append("       AI-95 BASELINE = 100\n")
                     append("           ").append(resultState).append(if(resultState=="NORMAL") " ✓" else "").append("\n\n")
                     append("CONFIDENCE  ").append("█".repeat((sessionConfidence/10).coerceIn(0,10))).append("░".repeat((10-sessionConfidence/10).coerceIn(0,10))).append("  ").append(sessionConfidence).append("%\n")
-                    append("Qualified segments: ").append(sessionRuns).append("   HC points: ").append(highPoints).append("\n")
-                    append("STEADY ").append(steadyPoints).append(" pts • ACCEL ").append(accelPoints).append(" pts\n")
+                    append("Qualified phase segments: ").append(phaseSegments).append("   HC points: ").append(highPoints).append("\n")
+                    append("STEADY ").append(steadyPoints).append(" pts • ").append(steadySegments).append(" sections")
+                        .append(" • Confidence ").append(steadyConfidence).append("%\n")
+                    append("  Ratio score: ").append(if(steadyScore.isFinite()) "%.1f".format(steadyScore) else "—").append("\n")
+                    append("ACCEL ").append(accelPoints).append(" pts • ").append(accelSegments).append(" sections")
+                        .append(" • Confidence ").append(accelConfidence).append("%\n")
+                    append("  Ratio score: ").append(if(accelScore.isFinite()) "%.1f".format(accelScore) else "—").append("\n")
+                    if(steadyPoints==0 || accelPoints==0) append("Partial coverage: one driving phase missing\n")
                     append("Mode: ").append(drivingPhase).append("\n\n")
                     append("──── FUEL SESSION #").append(fuelId).append(" ────\n")
                     append("Tank: ").append(if(fuelPct.isFinite()) "%.1f%%".format(fuelPct) else "— (OBD PID 2F unavailable)").append("\n")
@@ -124,6 +146,12 @@ class MainActivity : Activity() {
                     append("IAT ").append(if(iat.isFinite()) "%.0f°C".format(iat) else "—").append("   ОЖ ").append(if(coolant.isFinite()) "%.0f°C".format(coolant) else "—").append("   Масло ").append(if(oil.isFinite()) "%.0f°C".format(oil) else "—").append("\n")
                     append("Run score ").append(if(fuelScore.isFinite()) "%.1f".format(fuelScore) else "—").append("   Quality ").append(runQuality).append("%\n")
                     append("Valid points ").append(validPoints).append("   HC ").append(highPoints).append("\n\n")
+                    append("──── HIGH RPM DIAGNOSTIC ────\n")
+                    append("3500+ RPM, MAP 180+: ").append(highRpmPoints).append(" samples\n")
+                    append("Knock signal / AI-95 baseline: ")
+                        .append(if(highRpmMean.isFinite()) "%.2f".format(highRpmMean) else "—")
+                        .append("  • Ratio ≥1.20: ").append(highRpmOver120).append("\n")
+                    append("Signal ratio is not a count of knock events.\n\n")
                     append("──── KNOCK ────\n")
                     append("Knock events ").append(knockEvents).append("   Superknock ").append(superEvents).append("\n\n")
                     append("STATE: ").append(state).append("   reconnect ").append(reconnects)
@@ -135,6 +163,37 @@ class MainActivity : Activity() {
         if(Build.VERSION.SDK_INT>=33) registerReceiver(statusReceiver,filter,RECEIVER_NOT_EXPORTED) else @Suppress("DEPRECATION") registerReceiver(statusReceiver,filter)
     }
 
+
+    private fun showConnectionHistory() {
+        val file=File(getExternalFilesDir(null)?:filesDir,"bmw_connection_events.csv")
+        if(!file.isFile) {
+            AlertDialog.Builder(this).setTitle("VXSCAN • соединения")
+                .setMessage("Пока нет записей о соединениях.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        executor.execute {
+            val records=try { file.useLines { it.drop(1).takeLast(30).toList() } }
+                         catch(e:Exception) { emptyList<String>() }
+            val details=if(records.isEmpty()) "Нет событий" else records.asReversed().joinToString("\n\n") { line ->
+                val fields=line.split(",",limit=8)
+                val date=fields.firstOrNull()?.toLongOrNull()?.let {
+                    java.text.SimpleDateFormat("dd.MM HH:mm:ss",java.util.Locale.getDefault())
+                        .format(java.util.Date(it))
+                } ?: "—"
+                "$date • ${fields.getOrNull(1)?:"—"}\n" +
+                    "Stage: ${fields.getOrNull(3)?:"—"} • ${fields.getOrNull(4)?:"—"}" +
+                    " • ${fields.getOrNull(5)?:"—"}\n" +
+                    "Outage: ${fields.getOrNull(6)?:"0"} ms • ${fields.getOrNull(7)?:""}"
+            }
+            runOnUiThread {
+                if(!isFinishing && !isDestroyed) AlertDialog.Builder(this)
+                    .setTitle("VXSCAN • последние соединения")
+                    .setMessage(details)
+                    .setPositiveButton("OK",null).show()
+            }
+        }
+    }
 
     private fun showMeasurementHistory() {
         val dir=getExternalFilesDir(null)?:filesDir
