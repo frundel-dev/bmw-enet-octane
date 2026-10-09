@@ -1,7 +1,7 @@
 package com.example.bmwenettest
 
 /**
- * Octane Engine v0.8 EXPERIMENTAL AI-95 reference.
+ * Octane Engine v0.9: stratified STEADY survey + frozen v0.8 acceleration reference.
  *
  * The published v1.7.2/v1.7.3 high-load baseline is intentionally unchanged.
  *
@@ -17,7 +17,7 @@ package com.example.bmwenettest
  * extrapolated or assigned a score. This model is NOT a laboratory RON test.
  */
 object OctaneCalibration {
-    const val VERSION = "0.8-experimental"
+    const val VERSION = "0.9-stratified-survey"
     data class Reference(
         val knockMeanVms:Double,
         val trainingSamples:Int,
@@ -55,6 +55,24 @@ object OctaneCalibration {
         }
         val mb=when {map<105.0->"088-104";map<130.0->"105-129";else->"130-150"}
         return "$rb:$mb"
+    }
+
+    /**
+     * Fine comparison key: RPM 250, MAP 8 kPa, load 12 percentage points,
+     * IAT 6 C, coolant temperature 10 C. Each component is measured, not
+     * corrected: do not infer a reference for an unseen combination.
+     */
+    fun fineSteadyCell(rpm:Double,map:Double,load:Double,iat:Double,coolant:Double):String {
+        fun bucket(v:Double,width:Int)=(kotlin.math.floor(v/width).toInt()*width).toString()
+        return "r${bucket(rpm,250)}:m${bucket(map-88.0,8)}:"+
+            "l${bucket(load,12)}:i${bucket(iat,6)}:c${bucket(coolant,10)}"
+    }
+
+    /** A nominal trim marks a comparable observation, never an octane number. */
+    fun trimsComparable(stft:Double?,ltft:Double?):Boolean {
+        if(stft!=null && (!stft.isFinite() || kotlin.math.abs(stft)>15.0))return false
+        if(ltft!=null && (!ltft.isFinite() || kotlin.math.abs(ltft)>15.0))return false
+        return true
     }
 
     fun experimentalScore(weightedKnockRatio:Double):Double=
