@@ -444,6 +444,10 @@ class EnetLoggerService : Service() {
                 if(!running) break
                 reconnects++; sampleTimes.clear()
                 if(outageFrom==null) outageFrom=SystemClock.elapsedRealtime()
+                // Do not combine samples on opposite sides of a network interruption.
+                captureActive=false; captureTailUntil=0L; previousSampleTime=0L
+                previousRpm=null; previousMap=null; lastQualified=0L
+                runWeightedRatio=0.0; runWeight=0.0; runValidPoints=0; runHighPoints=0
                 connectionEvent("DISCONNECTED",reconnects,connectionStage,connectionTransport,connectionIp,
                     "${e.javaClass.simpleName}: ${e.message?:"no details"}")
                 tone.startTone(ToneGenerator.TONE_SUP_ERROR,600)
