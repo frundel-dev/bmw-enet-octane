@@ -52,7 +52,7 @@ class MainActivity : Activity() {
         status = TextView(this).apply { textSize=15f; text="Embedded profile: DME8FF_R (fresh ECU dataset) ✓\nPRG import is optional.\n\nConnect USB-C ENET or join VXSCAN ENET Wi-Fi, ignition ON, then press START."; setPadding(0,24,0,0); setTextIsSelectable(true) }
         // Keep the dashboard scrollable, while auxiliary controls remain fixed at the bottom.
         val dashboard=ScrollView(this).apply {
-            fillViewport=true
+            setFillViewport(true)
             addView(status)
         }
         root.addView(dashboard,LinearLayout.LayoutParams(
