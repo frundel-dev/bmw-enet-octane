@@ -137,6 +137,15 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         progress.progressTintList=ColorStateList.valueOf(teal)
         progress.progressBackgroundTintList=ColorStateList.valueOf(panelBorder)
         hero.addView(progress,LayoutParams(LayoutParams.MATCH_PARENT,dp(7)))
+        hero.addView(View(context),LayoutParams(1,dp(15)))
+        val fuelDivider=View(context).apply { setBackgroundColor(panelBorder) }
+        hero.addView(fuelDivider,LayoutParams(LayoutParams.MATCH_PARENT,dp(1)))
+        hero.addView(View(context),LayoutParams(1,dp(12)))
+        hero.addView(text("УРОВЕНЬ ТОПЛИВА И СЕССИЯ",11f,muted,true))
+        fuel=text("Бак —   •   сессия №1",14f,foreground,true).apply {
+            setPadding(0,dp(5),0,0)
+        }
+        hero.addView(fuel)
 
         val driving=card("ДВИЖЕНИЕ И ДВИГАТЕЛЬ")
         val top=row()
@@ -148,6 +157,15 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         addTile(bottom,"НАГРУЗКА") { load=it }
         addTile(bottom,"MAP • АБС.") { map=it }
         driving.addView(bottom)
+        driving.addView(View(context),LayoutParams(1,dp(16)))
+        val tempCaption=text("ТЕМПЕРАТУРЫ",11f,muted,true)
+        driving.addView(tempCaption)
+        driving.addView(View(context),LayoutParams(1,dp(9)))
+        val temp=row()
+        addTile(temp,"ОЖ") { coolant=it }
+        addTile(temp,"МАСЛО") { oil=it }
+        addTile(temp,"ВПУСК") { iat=it }
+        driving.addView(temp)
 
         val measurement=card("РЕЖИМЫ ИЗМЕРЕНИЙ")
         phaseLabel=text("AUTO • ожидание подходящего участка",12f,blue)
@@ -169,16 +187,6 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         accelColumn.addView(accelDetail)
         modes.addView(accelColumn,LayoutParams(0,LayoutParams.WRAP_CONTENT,1f))
         measurement.addView(modes)
-
-        val tank=card("ТОПЛИВО И ТЕМПЕРАТУРЫ")
-        fuel=text("Бак —   •   топливная сессия №1",14f,foreground,true)
-        tank.addView(fuel)
-        tank.addView(View(context),LayoutParams(1,dp(12)))
-        val temp=row()
-        addTile(temp,"ОЖ") { coolant=it }
-        addTile(temp,"МАСЛО") { oil=it }
-        addTile(temp,"ВПУСК") { iat=it }
-        tank.addView(temp)
 
         val diagnostic=card("СВЯЗЬ И ДИАГНОСТИКА")
         network=text("Ожидание VXSCAN",13f,blue,true)
