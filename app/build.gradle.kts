@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 33
-        versionName = "1.7.15"
+        versionCode = 34
+        versionName = "1.7.16"
     }
 }
 
-// v1.7.15: passive Android connectivity logging alongside VXSCAN TCP events
+// v1.7.16: readable dashboard, rapid Wi-Fi unblock recovery, full idle telemetry
