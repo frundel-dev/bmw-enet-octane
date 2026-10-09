@@ -52,6 +52,7 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
     private lateinit var highRpm:TextView
     private lateinit var fuelTrims:TextView
     private lateinit var ignitionStatus:TextView
+    private lateinit var dmeProbeStatus:TextView
     val connectionView:TextView
 
     private fun dp(value:Int)=(value*resources.displayMetrics.density+0.5f).toInt()
@@ -216,6 +217,11 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         ignitionStatus=text("УОЗ —  •  откат углов / импульс форсунок: нет подтверждённых параметров",11f,muted)
         ignitionStatus.setPadding(0,dp(7),0,0)
         diagnostic.addView(ignitionStatus)
+        val probeLabel=text("ПРОВЕРКА DME • ТОЛЬКО ЧТЕНИЕ 0x22",11f,muted,true)
+        probeLabel.setPadding(0,dp(15),0,dp(7))
+        diagnostic.addView(probeLabel)
+        dmeProbeStatus=text("Ожидание подключения к DME. Результаты появятся во время работы логгера.",12f,blue)
+        diagnostic.addView(dmeProbeStatus)
         connectionView=text("Подключите USB ENET или Wi-Fi VXSCAN и нажмите START LOGGER.",
             12f,muted)
         connectionView.setPadding(0,dp(11),0,0)
@@ -325,6 +331,11 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         fuelTrims.text="STFT "+format(stft,1)+"%   •   LTFT "+format(ltft,1)+"%"+
             "   •   сумма* "+format(trim,1)+"%"
         ignitionStatus.text="Разброс УОЗ по цилиндрам: "+format(ignSpread,1)+"°  •  Knock Retard / Injection Time: —"
+        val dmeSummary=intent.getStringExtra(EnetLoggerService.EXTRA_DME_PROBE_SUMMARY)
+        if(!dmeSummary.isNullOrEmpty()) {
+            dmeProbeStatus.text=dmeSummary
+            dmeProbeStatus.setTextColor(blue)
+        }
         val highRatio=number(EnetLoggerService.EXTRA_HIGH_RPM_RATIO)
         val highPoints=count(EnetLoggerService.EXTRA_HIGH_RPM_POINTS)
         highRpm.text="3500+ RPM • MAP 180+: "+highPoints+" точек"+
