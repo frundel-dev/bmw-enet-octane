@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 35
-        versionName = "1.7.17"
+        versionCode = 36
+        versionName = "1.7.18"
     }
 }
 
-// v1.7.17: VPN-aware physical network selection and reorganized fuel/engine dashboard
+// v1.7.18: experimental calibrated steady observations and hold-out validated acceleration candidates
