@@ -171,7 +171,12 @@ class MainActivity : Activity() {
                 val date=fields[0].toLongOrNull()?.let {
                     java.text.SimpleDateFormat("dd.MM.yyyy HH:mm",java.util.Locale.getDefault()).format(java.util.Date(it))
                 } ?: "—"
-                "⛽ $date • топливо #${fields[1]}: ${fields[2]}% → ${fields[3]}% (предполагаемая заправка)"
+                val decision=when(fields.getOrNull(4)) {
+                    "CONFIRMED" -> "✓ подтверждена"
+                    "REJECTED" -> "× отклонена"
+                    else -> "? требует проверки"
+                }
+                "⛽ $date • топливо #${fields[1]}: ${fields[2]}% → ${fields[3]}% • $decision"
             }
             val allLabels=eventLabels+labels
             runOnUiThread {
@@ -179,9 +184,15 @@ class MainActivity : Activity() {
                 AlertDialog.Builder(this).setTitle("История замеров и заправок")
                     .setItems(allLabels.toTypedArray()) { _,which ->
                         if(which<eventLabels.size) {
-                            AlertDialog.Builder(this).setTitle("Событие заправки")
-                                .setMessage(eventLabels[which]+"\n\nОпределено по изменению уровня топлива; требует подтверждения водителем.")
-                                .setPositiveButton("OK",null).show()
+                            val fields=refuelEvents[which].split(",")
+                            val builder=AlertDialog.Builder(this).setTitle("Возможная заправка")
+                                .setMessage(eventLabels[which]+"\n\nОпределено по изменению уровня топлива. Сегменты уже разделены для безопасности расчётов.")
+                            if(fields.getOrNull(4)=="PENDING" || fields.size<5) {
+                                builder.setPositiveButton("Подтвердить") { _,_ -> markRefuelEvent(fields[1],"CONFIRMED") }
+                                    .setNegativeButton("Не было") { _,_ -> markRefuelEvent(fields[1],"REJECTED") }
+                                    .setNeutralButton("Позже",null)
+                            } else builder.setPositiveButton("OK",null)
+                            builder.show()
                         } else {
                             val fileIndex=which-eventLabels.size
                             val selected=recordings[fileIndex]
@@ -192,6 +203,21 @@ class MainActivity : Activity() {
                     }.setNegativeButton("Закрыть",null).show()
             }
         }
+    }
+
+    private fun markRefuelEvent(id:String,decision:String) {
+        val file=File(getExternalFilesDir(null)?:filesDir,"bmw_fuel_events.csv")
+        if(!file.isFile)return
+        val lines=file.readLines().toMutableList()
+        val index=lines.indexOfLast { it.split(",").getOrNull(1)==id }
+        if(index<0)return
+        lines[index]=lines[index].split(",").take(4).joinToString(",")+"," + decision
+        file.writeText(lines.joinToString("\n",postfix="\n"))
+        if(decision=="REJECTED") {
+            getSharedPreferences("bmw_native",MODE_PRIVATE).edit()
+                .putInt("refuel_rejected_id",id.toIntOrNull()?:-1).apply()
+        }
+        Toast.makeText(this,if(decision=="CONFIRMED")"Заправка подтверждена" else "Ложное событие отмечено; история не удалена",Toast.LENGTH_LONG).show()
     }
 
     override fun onDestroy() {
