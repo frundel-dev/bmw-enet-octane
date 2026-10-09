@@ -113,7 +113,7 @@ object DmeReadOnlyProbe {
             .joinToString(" · ") { s ->
                 val result=results[s.did]
                 "ц${s.did-0x452F}:${when(result?.status) {
-                    "OK"->result.decodedCandidate.substringBefore(' ')
+                    "OK"->result?.decodedCandidate?.substringBefore(' ') ?: "?"
                     "UNSUPPORTED"->"—"
                     null->"?"
                     else->result.status
