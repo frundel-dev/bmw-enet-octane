@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 37
-        versionName = "1.7.19"
+        versionCode = 38
+        versionName = "1.7.20"
     }
 }
 
-// v1.7.19: fine STEADY strata, trim and timing diagnostics, BMW roundel launcher icon
+// v1.7.20: read-only UDS 0x22 DME parameter compatibility survey and raw response capture
