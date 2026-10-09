@@ -2,6 +2,9 @@ package com.example.bmwenettest
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.res.ColorStateList
+import android.graphics.Color
+import android.graphics.Typeface
 import android.content.*
 import android.os.Build
 import android.net.ConnectivityManager
@@ -24,6 +27,7 @@ import java.security.MessageDigest
 
 class MainActivity : Activity() {
     private lateinit var status: TextView
+    private lateinit var dashboard: OctaneDashboard
     private val executor = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var logging = false
@@ -34,130 +38,122 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.15"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(TextView(this).apply { text="G20 • B48 • USB ENET + VXSCAN Wi-Fi • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(Button(this).apply { text="MODE: ${getSharedPreferences("bmw_native",MODE_PRIVATE).getString("measurement_mode","AUTO")} • SWITCH"; textSize=20f; minHeight=160; setPadding(24,32,24,32); setOnClickListener { val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE); val next=if(prefs.getString("measurement_mode","AUTO")=="AUTO")"TEST" else "AUTO"; prefs.edit().putString("measurement_mode",next).apply(); text="MODE: $next (restart logger)" } })
-        root.addView(Button(this).apply { text="START BACKGROUND LOGGER"; textSize=20f; minHeight=160; setPadding(24,32,24,32); setOnClickListener {
-            if (!logging) {
-                logging=true; text="STOP LOGGER"
-                val i=Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_START)
-                startForegroundService(i)
-                status.text="Logger started. AUTO evaluates STEADY / ACCELERATION separately. Fuel tank detection: OBD PID 0x2F, if supported. Refueling starts a new fuel session. Same AI-95 baseline = 100; Fuel Score is relative, not actual RON."
-            } else {
-                logging=false; text="START BACKGROUND LOGGER"
-                startService(Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_STOP))
-            }
-        } })
-        status = TextView(this).apply { textSize=15f; text="Embedded profile: DME8FF_R (fresh ECU dataset) ✓\nPRG import is optional.\n\nConnect USB-C ENET or join VXSCAN ENET Wi-Fi, ignition ON, then press START."; setPadding(0,24,0,0); setTextIsSelectable(true) }
-        // Keep the dashboard scrollable, while auxiliary controls remain fixed at the bottom.
-        val dashboard=ScrollView(this).apply {
-            setFillViewport(true)
-            addView(status)
+        val scale=resources.displayMetrics.density
+        fun dp(v:Int)=(scale*v+0.5f).toInt()
+        val navy=Color.rgb(12,19,32)
+        val muted=Color.rgb(158,175,196)
+        val sky=Color.rgb(89,171,255)
+        window.statusBarColor=navy
+        window.navigationBarColor=navy
+        window.decorView.systemUiVisibility=0
+
+        val root=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(14),dp(15),dp(14),dp(7))
+            setBackgroundColor(navy)
         }
-        root.addView(dashboard,LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,0,1f
-        ))
-        // Compact bottom action: keep all secondary functions in one menu.
-        root.addView(Button(this).apply {
-            text="⋯  ДОПОЛНИТЕЛЬНО"
+        val heading=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.CENTER_VERTICAL
+        }
+        heading.addView(TextView(this).apply {
+            text="BMW  OCTANE"
+            textSize=22f
+            setTextColor(Color.WHITE)
+            typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
+        },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
+        heading.addView(TextView(this).apply {
+            text="v1.7.16"
+            textSize=13f
+            setTextColor(sky)
+        })
+        root.addView(heading)
+        root.addView(TextView(this).apply {
+            text="G20 / B48   •   USB ENET / VXSCAN"
+            textSize=12f
+            setTextColor(muted)
+            setPadding(0,dp(5),0,dp(14))
+        })
+        val controls=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.CENTER_VERTICAL
+        }
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        val modeButton=Button(this).apply {
+            text="РЕЖИМ: "+prefs.getString("measurement_mode","AUTO")
             textSize=14f
             isAllCaps=false
-            minHeight=(48*resources.displayMetrics.density).toInt()
+            minHeight=dp(52)
+            setTextColor(Color.WHITE)
+            backgroundTintList=ColorStateList.valueOf(Color.rgb(41,60,84))
+            setOnClickListener {
+                val next=if(prefs.getString("measurement_mode","AUTO")=="AUTO")"TEST" else "AUTO"
+                prefs.edit().putString("measurement_mode",next).apply()
+                text="РЕЖИМ: "+next
+                if(logging) Toast.makeText(this@MainActivity,"Новый режим активируется после перезапуска логгера",Toast.LENGTH_LONG).show()
+            }
+        }
+        controls.addView(modeButton,LinearLayout.LayoutParams(0,dp(54),1f).apply {
+            rightMargin=dp(7)
+        })
+        val startButton=Button(this).apply {
+            text="START LOGGER"
+            textSize=15f
+            isAllCaps=false
+            minHeight=dp(52)
+            setTextColor(Color.rgb(7,18,29))
+            backgroundTintList=ColorStateList.valueOf(sky)
+            setOnClickListener {
+                if(!logging) {
+                    logging=true
+                    text="STOP LOGGER"
+                    backgroundTintList=ColorStateList.valueOf(Color.rgb(255,179,126))
+                    dashboard.setLogging(true)
+                    startForegroundService(Intent(this@MainActivity,EnetLoggerService::class.java)
+                        .setAction(EnetLoggerService.ACTION_START))
+                } else {
+                    logging=false
+                    text="START LOGGER"
+                    backgroundTintList=ColorStateList.valueOf(sky)
+                    startService(Intent(this@MainActivity,EnetLoggerService::class.java)
+                        .setAction(EnetLoggerService.ACTION_STOP))
+                    dashboard.setLogging(false)
+                }
+            }
+        }
+        controls.addView(startButton,LinearLayout.LayoutParams(0,dp(54),1.15f))
+        root.addView(controls)
+        dashboard=OctaneDashboard(this)
+        status=dashboard.connectionView
+        val scroll=ScrollView(this).apply {
+            setFillViewport(true)
+            addView(dashboard)
+        }
+        root.addView(scroll,LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,0,1f
+        ))
+        root.addView(Button(this).apply {
+            text="ДОПОЛНИТЕЛЬНО"
+            textSize=14f
+            isAllCaps=false
+            minHeight=dp(46)
+            setTextColor(Color.WHITE)
+            backgroundTintList=ColorStateList.valueOf(Color.rgb(41,60,84))
             setOnClickListener { showAdditionalMenu() }
         },LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
+            LinearLayout.LayoutParams.MATCH_PARENT,dp(48)
         ))
         setContentView(root)
-        statusReceiver=object:BroadcastReceiver(){
-            override fun onReceive(context:Context?, intent:Intent?) {
-                if(intent?.action!=EnetLoggerService.ACTION_STATUS) return
-                val msg=intent.getStringExtra(EnetLoggerService.EXTRA_STATUS) ?: return
-                val state=intent.getStringExtra(EnetLoggerService.EXTRA_STATE)
-                if(state==null) { status.text=msg; return }
-                val rpm=intent.getDoubleExtra(EnetLoggerService.EXTRA_RPM,Double.NaN)
-                val speed=intent.getDoubleExtra(EnetLoggerService.EXTRA_SPEED,Double.NaN)
-                val transport=intent.getStringExtra(EnetLoggerService.EXTRA_TRANSPORT) ?: "—"
-                val run=intent.getIntExtra(EnetLoggerService.EXTRA_RUN_ID,0)
-                val hz=intent.getDoubleExtra(EnetLoggerService.EXTRA_HZ,0.0)
-                val reconnects=intent.getIntExtra(EnetLoggerService.EXTRA_RECONNECTS,0)
-                val summary=intent.getStringExtra(EnetLoggerService.EXTRA_SUMMARY)
-                val fuelScore=intent.getDoubleExtra(EnetLoggerService.EXTRA_FUEL_SCORE,Double.NaN)
-                val runQuality=intent.getIntExtra(EnetLoggerService.EXTRA_RUN_QUALITY,0)
-                val sessionScore=intent.getDoubleExtra(EnetLoggerService.EXTRA_SESSION_SCORE,Double.NaN)
-                val sessionConfidence=intent.getIntExtra(EnetLoggerService.EXTRA_SESSION_CONFIDENCE,0)
-                val sessionRuns=intent.getIntExtra(EnetLoggerService.EXTRA_SESSION_RUNS,0)
-                val coolant=intent.getDoubleExtra(EnetLoggerService.EXTRA_COOLANT,Double.NaN)
-                val oil=intent.getDoubleExtra(EnetLoggerService.EXTRA_OIL,Double.NaN)
-                val load=intent.getDoubleExtra(EnetLoggerService.EXTRA_LOAD,Double.NaN)
-                val map=intent.getDoubleExtra(EnetLoggerService.EXTRA_MAP,Double.NaN)
-                val iat=intent.getDoubleExtra(EnetLoggerService.EXTRA_IAT,Double.NaN)
-                val validPoints=intent.getIntExtra(EnetLoggerService.EXTRA_VALID_POINTS,0)
-                val highPoints=intent.getIntExtra(EnetLoggerService.EXTRA_HIGH_POINTS,0)
-                val knockEvents=intent.getIntExtra(EnetLoggerService.EXTRA_KNOCK_EVENTS,0)
-                val superEvents=intent.getIntExtra(EnetLoggerService.EXTRA_SUPER_EVENTS,0)
-                val resultState=intent.getStringExtra(EnetLoggerService.EXTRA_RESULT_STATE) ?: "COLLECTING"
-                val phaseSegments=intent.getIntExtra(EnetLoggerService.EXTRA_SEGMENTS,sessionRuns)
-                val steadyConfidence=intent.getIntExtra(EnetLoggerService.EXTRA_STEADY_CONF,0)
-                val accelConfidence=intent.getIntExtra(EnetLoggerService.EXTRA_ACCEL_CONF,0)
-                val steadySegments=intent.getIntExtra(EnetLoggerService.EXTRA_STEADY_SEGMENTS,0)
-                val accelSegments=intent.getIntExtra(EnetLoggerService.EXTRA_ACCEL_SEGMENTS,0)
-                val steadyScore=intent.getDoubleExtra(EnetLoggerService.EXTRA_STEADY_SCORE,Double.NaN)
-                val accelScore=intent.getDoubleExtra(EnetLoggerService.EXTRA_ACCEL_SCORE,Double.NaN)
-                val highRpmMean=intent.getDoubleExtra(EnetLoggerService.EXTRA_HIGH_RPM_RATIO,Double.NaN)
-                val highRpmPoints=intent.getIntExtra(EnetLoggerService.EXTRA_HIGH_RPM_POINTS,0)
-                val highRpmOver120=intent.getIntExtra(EnetLoggerService.EXTRA_HIGH_RPM_OVER120,0)
-                val fuelPct=intent.getDoubleExtra(EnetLoggerService.EXTRA_FUEL_PCT,Double.NaN)
-                val fuelId=intent.getIntExtra(EnetLoggerService.EXTRA_FUEL_ID,1)
-                val drivingPhase=intent.getStringExtra(EnetLoggerService.EXTRA_PHASE) ?: "—"
-                val steadyPoints=intent.getIntExtra(EnetLoggerService.EXTRA_STEADY_POINTS,0)
-                val accelPoints=intent.getIntExtra(EnetLoggerService.EXTRA_ACCEL_POINTS,0)
-                val refuelNote=intent.getStringExtra(EnetLoggerService.EXTRA_REFUEL)
-                val mixingKm=intent.getDoubleExtra(EnetLoggerService.EXTRA_MIXING_KM,0.0)
-                status.text=buildString {
-                    val scoreText=if(resultState=="MIXING" || resultState=="REFUEL CHECK") "—" else if(sessionScore.isFinite()) "%.1f".format(sessionScore) else if(fuelScore.isFinite()) "%.1f".format(fuelScore) else "—"
-                    val progress=if(rpm.isFinite()) (((rpm-2000.0)/2500.0)*10.0).toInt().coerceIn(0,10) else 0
-                    val bar="█".repeat(progress)+"░".repeat(10-progress)
-                    append("BMW OCTANE  •  ").append(transport).append("  •  ").append("%.2f Hz".format(hz)).append("\n\n")
-                    append("        FUEL QUALITY\n")
-                    append("             ").append(scoreText).append("\n")
-                    append("       AI-95 BASELINE = 100\n")
-                    append("           ").append(resultState).append(if(resultState=="NORMAL") " ✓" else "").append("\n\n")
-                    append("CONFIDENCE  ").append("█".repeat((sessionConfidence/10).coerceIn(0,10))).append("░".repeat((10-sessionConfidence/10).coerceIn(0,10))).append("  ").append(sessionConfidence).append("%\n")
-                    append("Qualified phase segments: ").append(phaseSegments).append("   HC points: ").append(highPoints).append("\n")
-                    append("STEADY ").append(steadyPoints).append(" pts • ").append(steadySegments).append(" sections")
-                        .append(" • Confidence ").append(steadyConfidence).append("%\n")
-                    append("  Ratio score: ").append(if(steadyScore.isFinite()) "%.1f".format(steadyScore) else "—").append("\n")
-                    append("ACCEL ").append(accelPoints).append(" pts • ").append(accelSegments).append(" sections")
-                        .append(" • Confidence ").append(accelConfidence).append("%\n")
-                    append("  Ratio score: ").append(if(accelScore.isFinite()) "%.1f".format(accelScore) else "—").append("\n")
-                    if(steadyPoints==0 || accelPoints==0) append("Partial coverage: one driving phase missing\n")
-                    append("Mode: ").append(drivingPhase).append("\n\n")
-                    append("──── FUEL SESSION #").append(fuelId).append(" ────\n")
-                    append("Tank: ").append(if(fuelPct.isFinite()) "%.1f%%".format(fuelPct) else "— (OBD PID 2F unavailable)").append("\n")
-                    if(mixingKm>0.0) append("Mixing estimate: ").append("%.1f".format(mixingKm)).append(" km remaining\n")
-                    if(!refuelNote.isNullOrBlank()) append(refuelNote).append("\n")
-                    append("\n")
-                    append("──── CURRENT RUN #").append(run).append(" ────\n")
-                    append("Speed ").append(if(speed.isFinite()) "%.0f km/h".format(speed) else "—").append("   ")
-                    append("RPM ").append(if(rpm.isFinite()) "%.0f".format(rpm) else "—").append("   ").append(bar).append("\n")
-                    append("Load ").append(if(load.isFinite()) "%.0f%%".format(load) else "—").append("   MAP ").append(if(map.isFinite()) "%.0f kPa".format(map) else "—").append("\n")
-                    append("IAT ").append(if(iat.isFinite()) "%.0f°C".format(iat) else "—").append("   ОЖ ").append(if(coolant.isFinite()) "%.0f°C".format(coolant) else "—").append("   Масло ").append(if(oil.isFinite()) "%.0f°C".format(oil) else "—").append("\n")
-                    append("Run score ").append(if(fuelScore.isFinite()) "%.1f".format(fuelScore) else "—").append("   Quality ").append(runQuality).append("%\n")
-                    append("Valid points ").append(validPoints).append("   HC ").append(highPoints).append("\n\n")
-                    append("──── HIGH RPM DIAGNOSTIC ────\n")
-                    append("3500+ RPM, MAP 180+: ").append(highRpmPoints).append(" samples\n")
-                    append("Knock signal / AI-95 baseline: ")
-                        .append(if(highRpmMean.isFinite()) "%.2f".format(highRpmMean) else "—")
-                        .append("  • Ratio ≥1.20: ").append(highRpmOver120).append("\n")
-                    append("Signal ratio is not a count of knock events.\n\n")
-                    append("──── KNOCK ────\n")
-                    append("Knock events ").append(knockEvents).append("   Superknock ").append(superEvents).append("\n\n")
-                    append("STATE: ").append(state).append("   reconnect ").append(reconnects)
-                    if(!summary.isNullOrBlank()) append("\n\n").append(summary)
-                    append(if(drivingPhase=="TEST") "\n\nTEST: 1800 → 4500 rpm" else "\n\nAUTO: steady + acceleration • matched RPM×MAP")
-                }            }
+        statusReceiver=object:BroadcastReceiver() {
+            override fun onReceive(context:Context?,intent:Intent?) {
+                if(intent?.action!=EnetLoggerService.ACTION_STATUS)return
+                val message=intent.getStringExtra(EnetLoggerService.EXTRA_STATUS)?:return
+                if(intent.getStringExtra(EnetLoggerService.EXTRA_STATE)==null) {
+                    dashboard.setMessage(message)
+                } else {
+                    dashboard.render(intent)
+                }
+            }
         }
         val filter=IntentFilter(EnetLoggerService.ACTION_STATUS)
         if(Build.VERSION.SDK_INT>=33) registerReceiver(statusReceiver,filter,RECEIVER_NOT_EXPORTED) else @Suppress("DEPRECATION") registerReceiver(statusReceiver,filter)
