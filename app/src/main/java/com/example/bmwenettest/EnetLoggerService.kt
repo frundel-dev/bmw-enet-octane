@@ -206,7 +206,7 @@ class EnetLoggerService : Service() {
                             mixingKm=5.0 // Heuristic minimum driving distance to allow partial mixing.
                             prefs.edit().putInt("fuel_session_id",fuelSessionId).putFloat("mixing_remaining_km",mixingKm.toFloat()).apply()
                             val events=File(getExternalFilesDir(null)?:filesDir,"bmw_fuel_events.csv")
-                            events.appendText("${System.currentTimeMillis()},$fuelSessionId,${"%.1f".format(java.util.Locale.US,refill.fromPercent)},${"%.1f".format(java.util.Locale.US,refill.toPercent)}\n")
+                            events.appendText("${System.currentTimeMillis()},$fuelSessionId,${"%.1f".format(java.util.Locale.US,refill.fromPercent)},${"%.1f".format(java.util.Locale.US,refill.toPercent)},PENDING\n")
                             logFile=createLogFile(fuelSessionId)
                             captureActive=false; captureTailUntil=0L; runId=0; runSamples=0; runValidPoints=0; runHighPoints=0
                             runWeightedRatio=0.0; runWeight=0.0; lastRunScore=null; lastRunQuality=0
@@ -226,6 +226,11 @@ class EnetLoggerService : Service() {
                         prefs.edit().putFloat("mixing_remaining_km",mixingKm.toFloat()).apply()
                     }
                     lastDistanceSampleTime=now
+                    if(prefs.getInt("refuel_rejected_id",-1)==fuelSessionId) {
+                        mixingKm=0.0
+                        prefs.edit().putFloat("mixing_remaining_km",0f).remove("refuel_rejected_id").apply()
+                        lastRefuelNote="Событие заправки #$fuelSessionId отклонено. Файлы замеров сохранены раздельно."
+                    }
                     val speed=slowSpeed; val i=slowIat; val a=slowIgn; val coolant=slowCoolant; val oil=slowOil; val throttle=slowThrottle; val stft1=slowStft; val lambdaEq=slowLambda
                     val knockStatus=udsData(0x4A36)?.firstOrNull()?.let{it.toInt() and 255}
                     fun knock(did:Int)=udsData(did)?.takeIf{it.size>=4}?.let{
