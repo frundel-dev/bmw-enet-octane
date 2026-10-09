@@ -32,7 +32,6 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
     private lateinit var score:TextView
     private lateinit var scoreState:TextView
     private lateinit var confidence:TextView
-    private lateinit var speed:TextView
     private lateinit var rpm:TextView
     private lateinit var load:TextView
     private lateinit var map:TextView
@@ -152,16 +151,14 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         }
         hero.addView(fuel)
 
-        val driving=card("ДВИЖЕНИЕ И ДВИГАТЕЛЬ")
-        val top=row()
-        addTile(top,"СКОРОСТЬ") { speed=it }
-        addTile(top,"ОБОРОТЫ") { rpm=it }
-        driving.addView(top)
-        driving.addView(View(context),LayoutParams(1,dp(17)))
-        val bottom=row()
-        addTile(bottom,"НАГРУЗКА") { load=it }
-        addTile(bottom,"MAP • АБС.") { map=it }
-        driving.addView(bottom)
+        val driving=card("ПОКАЗАНИЯ ДВИГАТЕЛЯ")
+        // Three equal-width columns line up with the three temperature
+        // tiles beneath them, without wasting space on vehicle speed.
+        val readings=row()
+        addTile(readings,"ОБОРОТЫ") { rpm=it }
+        addTile(readings,"НАГРУЗКА") { load=it }
+        addTile(readings,"MAP, кПа") { map=it }
+        driving.addView(readings)
         driving.addView(View(context),LayoutParams(1,dp(16)))
         val tempCaption=text("ТЕМПЕРАТУРЫ",11f,muted,true)
         driving.addView(tempCaption)
@@ -276,10 +273,9 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         val conf=count(EnetLoggerService.EXTRA_SESSION_CONFIDENCE).coerceIn(0,100)
         confidence.text="$conf%"
         progress.progress=conf
-        speed.text=format(number(EnetLoggerService.EXTRA_SPEED)) + " км/ч"
         rpm.text=format(number(EnetLoggerService.EXTRA_RPM))
         load.text=format(number(EnetLoggerService.EXTRA_LOAD)) + "%"
-        map.text=format(number(EnetLoggerService.EXTRA_MAP)) + " кПа"
+        map.text=format(number(EnetLoggerService.EXTRA_MAP))
         coolant.text=format(number(EnetLoggerService.EXTRA_COOLANT)) + "°"
         oil.text=format(number(EnetLoggerService.EXTRA_OIL)) + "°"
         iat.text=format(number(EnetLoggerService.EXTRA_IAT)) + "°"
