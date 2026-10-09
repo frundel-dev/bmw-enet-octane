@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 31
-        versionName = "1.7.13"
+        versionCode = 32
+        versionName = "1.7.14"
     }
 }
 
-// v1.7.13: fixed bottom action buttons and scrollable dashboard
+// v1.7.14: compact Additional menu; unchanged measurement engine
