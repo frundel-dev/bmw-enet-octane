@@ -125,7 +125,7 @@ class EnetLoggerService : Service() {
             writeText("# calibration=${OctaneCalibration.VERSION},fuel_session=$fuelId,observational_only=true\n"+
                 "wall_time_ms,elapsed_ms,rpm,load_pct,map_kpa_abs,rpm_per_s,map_kpa_per_s,"+
                 "knock_mean_vms,iat_c,coolant_c,speed_kmh,reference_vms,reference_samples,"+
-                "reference_trips,cell,segment_id,accepted_to_score\n")
+                "reference_trips,cell,segment_id,steady_filter_pass,accepted_to_score\n")
         }
     }
 
@@ -556,35 +556,39 @@ class EnetLoggerService : Service() {
                     // reference cell. This is observation data, not an auto-adjusted baseline.
                     val steadyRef=if(steadyAuto) OctaneCalibration.steadyReference(r,m,l) else null
                     val accelRef=if(accelerationAuto) OctaneCalibration.accelerationReference(r,m) else null
-                    if(steadyAuto && knockMean!=null && knockMean>0.0 &&
+                    if(steadyWindow && warm && knockMean!=null && knockMean>0.0 &&
                         !fuelDetector.pending && mixingKm<=0.0 && r!=null && m!=null && l!=null) {
-                        if(lastSteadyObservation==0L || now-lastSteadyObservation>6000L)steadySegmentId++
-                        lastSteadyObservation=now
-                        steadySurveyPoints++
                         val steadyCell=OctaneCalibration.steadyCell(r,m)
-                        steadySurveyCells.add(steadyCell)
-                        val validSteadyRef=steadyRef!=null && steadyRef.trainingSamples>=5 &&
-                            steadyRef.trainingTrips>=2
-                        if(validSteadyRef && steadyRef!=null) {
-                            val steadyRatio=knockMean/steadyRef.knockMeanVms
-                            steadyRatioSum+=steadyRatio
-                            steadyRatioWeight+=1.0
-                            steadyPoints++
-                            steadySegments.add(steadySegmentId)
-                            steadyCells.add(steadyCell)
+                        val validSteadyRef=steadyAuto && steadyRef!=null &&
+                            steadyRef.trainingSamples>=5 && steadyRef.trainingTrips>=2
+                        if(steadyAuto) {
+                            if(lastSteadyObservation==0L || now-lastSteadyObservation>6000L)steadySegmentId++
+                            lastSteadyObservation=now
+                            steadySurveyPoints++
+                            steadySurveyCells.add(steadyCell)
+                            if(validSteadyRef && steadyRef!=null) {
+                                val steadyRatio=knockMean/steadyRef.knockMeanVms
+                                steadyRatioSum+=steadyRatio
+                                steadyRatioWeight+=1.0
+                                steadyPoints++
+                                steadySegments.add(steadySegmentId)
+                                steadyCells.add(steadyCell)
+                            }
+                            lastQualified=now
                         }
-                        // All qualified observations are retained for an independent
-                        // follow-up steady calibration without self-training.
+                        // Keep both accepted STEADY points and rejected, plausible
+                        // low-load candidates. Rejected candidates have no influence
+                        // on confidence or scores, but allow offline threshold review.
                         try {
                             FileOutputStream(steadySurveyFile!!,true).bufferedWriter().use { out ->
                                 out.appendLine(listOf(System.currentTimeMillis(),t,r,l,m,
                                     rpmRate?:"",mapRate?:"",knockMean,i?:"",coolant?:"",
                                     speed?:"",steadyRef?.knockMeanVms?:"",
                                     steadyRef?.trainingSamples?:"",steadyRef?.trainingTrips?:"",
-                                    steadyCell,steadySegmentId,if(validSteadyRef)1 else 0).joinToString(","))
+                                    steadyCell,steadySegmentId,if(steadyAuto)1 else 0,
+                                    if(validSteadyRef)1 else 0).joinToString(","))
                             }
                         } catch(_:Exception) { }
-                        lastQualified=now
                     }
                     val b95=if(measurementWindow) baseline95(r,m) else null
                     val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && !fuelDetector.pending && mixingKm<=0.0 && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5))) knockMean/b95.v else null
