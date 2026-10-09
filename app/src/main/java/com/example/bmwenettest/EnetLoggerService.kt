@@ -576,37 +576,52 @@ class EnetLoggerService : Service() {
                     // reference cell. This is observation data, not an auto-adjusted baseline.
                     val steadyRef=if(steadyAuto) OctaneCalibration.steadyReference(r,m,l) else null
                     val accelRef=if(accelerationAuto) OctaneCalibration.accelerationReference(r,m) else null
+                    val trimComparable=OctaneCalibration.trimsComparable(stft1,ltft1)
                     if(steadyWindow && warm && knockMean!=null && knockMean>0.0 &&
-                        !fuelDetector.pending && mixingKm<=0.0 && r!=null && m!=null && l!=null) {
-                        val steadyCell=OctaneCalibration.steadyCell(r,m)
-                        val validSteadyRef=steadyAuto && steadyRef!=null &&
+                        !fuelDetector.pending && mixingKm<=0.0 &&
+                        r!=null && m!=null && l!=null && i!=null && coolant!=null) {
+                        val coarseCell=OctaneCalibration.steadyCell(r,m)
+                        val fineCell=OctaneCalibration.fineSteadyCell(r,m,l,i,coolant)
+                        val validSteadyRef=steadyAuto && trimComparable && steadyRef!=null &&
                             steadyRef.trainingSamples>=5 && steadyRef.trainingTrips>=2
+                        var fineStats=steadyFineStats.summary(fineCell)
                         if(steadyAuto) {
                             if(lastSteadyObservation==0L || now-lastSteadyObservation>6000L)steadySegmentId++
                             lastSteadyObservation=now
                             steadySurveyPoints++
-                            steadySurveyCells.add(steadyCell)
+                            steadySurveyCells.add(fineCell)
+                            if(trimComparable) {
+                                fineStats=steadyFineStats.record(fineCell,steadySegmentId,knockMean)
+                            }
+                            lastFineCell=fineCell
+                            lastFineSummary=fineStats
                             if(validSteadyRef && steadyRef!=null) {
+                                // This is only the earlier provisional v0.8 STEADY
+                                // comparison. No self-updating reference is used.
                                 val steadyRatio=knockMean/steadyRef.knockMeanVms
                                 steadyRatioSum+=steadyRatio
                                 steadyRatioWeight+=1.0
                                 steadyPoints++
                                 steadySegments.add(steadySegmentId)
-                                steadyCells.add(steadyCell)
+                                steadyCells.add(fineCell)
                             }
                             lastQualified=now
                         }
-                        // Keep both accepted STEADY points and rejected, plausible
-                        // low-load candidates. Rejected candidates have no influence
-                        // on confidence or scores, but allow offline threshold review.
+                        // Raw candidate and matched-cell stats stay separate from
+                        // the legacy official Fuel Score and from the v0.8 reference.
                         try {
                             FileOutputStream(steadySurveyFile!!,true).bufferedWriter().use { out ->
                                 out.appendLine(listOf(System.currentTimeMillis(),t,r,l,m,
-                                    rpmRate?:"",mapRate?:"",knockMean,i?:"",coolant?:"",
+                                    rpmRate?:"",mapRate?:"",knockMean,i,coolant,
                                     speed?:"",steadyRef?.knockMeanVms?:"",
                                     steadyRef?.trainingSamples?:"",steadyRef?.trainingTrips?:"",
-                                    steadyCell,steadySegmentId,if(steadyAuto)1 else 0,
-                                    if(validSteadyRef)1 else 0).joinToString(","))
+                                    coarseCell,steadySegmentId,if(steadyAuto)1 else 0,
+                                    if(validSteadyRef)1 else 0,fineCell,
+                                    fineStats.observations,fineStats.segments,
+                                    fineStats.medianVms?:"",fineStats.dispersionPct?:"",
+                                    if(trimComparable)1 else 0,stft1?:"",ltft1?:"",
+                                    combinedTrim?:"",a?:"",ignSpread?:"",
+                                    "", "").joinToString(","))
                             }
                         } catch(_:Exception) { }
                     }
