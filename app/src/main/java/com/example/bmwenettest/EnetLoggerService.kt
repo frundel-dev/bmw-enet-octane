@@ -112,7 +112,7 @@ class EnetLoggerService : Service() {
         wifiLock=wifi?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF,"BmwEnet:VXSCAN")?.apply { setReferenceCounted(false); acquire() }
         logFile=createLogFile(getSharedPreferences("bmw_native",MODE_PRIVATE).getInt("fuel_session_id",1))
         telemetryFile=File(getExternalFilesDir(null)?:filesDir,"bmw_telemetry_v1719_${System.currentTimeMillis()}.csv").apply {
-            writeText("wall_time_ms,elapsed_ms,event,transport,rpm,load_pct,map_kpa_abs,speed_kmh,coolant_c,fuel_level_pct,fuel_session_id,run_id,reconnects,phase\n")
+            writeText("wall_time_ms,elapsed_ms,event,transport,rpm,load_pct,map_kpa_abs,speed_kmh,coolant_c,fuel_level_pct,fuel_session_id,run_id,reconnects,phase,stft1_pct,ltft1_pct,ign_advance_deg\n")
         }
         val connectivity=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
         androidNetworkMonitor=AndroidNetworkEventMonitor(connectivity) { event,transport,detail ->
@@ -214,14 +214,15 @@ class EnetLoggerService : Service() {
     private fun telemetryRow(elapsedMs:Long,event:String,transport:String,
                              rpm:Double?=null,load:Double?=null,map:Double?=null,
                              speed:Double?=null,coolant:Double?=null,fuelLevel:Double?=null,
-                             fuelId:Int=0,run:Int=0,reconnects:Int=0,phase:String="—") {
+                             fuelId:Int=0,run:Int=0,reconnects:Int=0,phase:String="—",
+                             stft:Double?=null,ltft:Double?=null,ign:Double?=null) {
         val file=telemetryFile?:return
         fun number(v:Double?)=if(v!=null && v.isFinite()) String.format(java.util.Locale.US,"%.2f",v) else ""
         try {
             FileOutputStream(file,true).bufferedWriter().use { out ->
                 out.appendLine(listOf(System.currentTimeMillis(),elapsedMs,event,transport,
                     number(rpm),number(load),number(map),number(speed),number(coolant),
-                    number(fuelLevel),fuelId,run,reconnects,phase).joinToString(","))
+                    number(fuelLevel),fuelId,run,reconnects,phase,number(stft),number(ltft),number(ign)).joinToString(","))
             }
         } catch(_:Exception) { /* Telemetry file errors must not terminate ECU polling. */ }
     }
@@ -699,7 +700,8 @@ class EnetLoggerService : Service() {
                     // CSV unchanged, but make short connection tests analyzable.
                     if(now-lastTelemetryTime>=2500L) {
                         telemetryRow(t,if(captureActive)"CAPTURE" else "IDLE",transport,
-                            r,l,m,speed,coolant,slowFuel,fuelSessionId,runId,reconnects,drivePhase)
+                            r,l,m,speed,coolant,slowFuel,fuelSessionId,runId,reconnects,drivePhase,
+                            stft1,ltft1,a)
                         lastTelemetryTime=now
                     }
                     if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns,oil?:"",if(autoMode)"AUTO" else "TEST",coverageBins.size,speed?:"",slowFuel?:"",fuelSessionId,drivePhase,steadyPoints,accelPoints,steadyScore?:"",accelScore?:"",if(fuelDetector.pending)1 else 0,"%.2f".format(java.util.Locale.US,mixingKm),steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,highRpmMean?:"",highRpmPoints,highRpmOver120,highRpmBaselineAvg?:"",acceptedAutoSegments.size,
