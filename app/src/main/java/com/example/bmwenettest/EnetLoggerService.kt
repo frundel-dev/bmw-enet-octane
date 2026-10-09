@@ -106,11 +106,13 @@ class EnetLoggerService : Service() {
         tone.release()
         super.onDestroy()
     }
-    private fun emit(s:String, state:String?=null, rpm:Double?=null, transport:String?=null, runId:Int?=null, hz:Double?=null, reconnects:Int?=null, summary:String?=null, fuelScore:Double?=null, runQuality:Int?=null, sessionScore:Double?=null, sessionConfidence:Int?=null, sessionRuns:Int?=null, coolant:Double?=null, oil:Double?=null, load:Double?=null, map:Double?=null, iat:Double?=null, validPoints:Int?=null, highPoints:Int?=null, knockEvents:Int?=null, superEvents:Int?=null, resultState:String?=null, mode:String?=null, segments:Int?=null, coverage:Int?=null, speed:Double?=null) {
+    private fun emit(s:String, state:String?=null, rpm:Double?=null, transport:String?=null, runId:Int?=null, hz:Double?=null, reconnects:Int?=null, summary:String?=null, fuelScore:Double?=null, runQuality:Int?=null, sessionScore:Double?=null, sessionConfidence:Int?=null, sessionRuns:Int?=null, coolant:Double?=null, oil:Double?=null, load:Double?=null, map:Double?=null, iat:Double?=null, validPoints:Int?=null, highPoints:Int?=null, knockEvents:Int?=null, superEvents:Int?=null, resultState:String?=null, mode:String?=null, segments:Int?=null, coverage:Int?=null, speed:Double?=null,
+        fuelPct:Double?=null, fuelId:Int?=null, phase:String?=null,
+        steadyPoints:Int?=null, accelPoints:Int?=null, refuelNote:String?=null, mixingKm:Double?=null) {
         val intent=Intent(ACTION_STATUS).setPackage(packageName).putExtra(EXTRA_STATUS,s)
         state?.let{intent.putExtra(EXTRA_STATE,it)}; rpm?.let{intent.putExtra(EXTRA_RPM,it)}; transport?.let{intent.putExtra(EXTRA_TRANSPORT,it)}
         runId?.let{intent.putExtra(EXTRA_RUN_ID,it)}; hz?.let{intent.putExtra(EXTRA_HZ,it)}; reconnects?.let{intent.putExtra(EXTRA_RECONNECTS,it)}; summary?.let{intent.putExtra(EXTRA_SUMMARY,it)}
-        fuelScore?.let{intent.putExtra(EXTRA_FUEL_SCORE,it)}; runQuality?.let{intent.putExtra(EXTRA_RUN_QUALITY,it)}; sessionScore?.let{intent.putExtra(EXTRA_SESSION_SCORE,it)}; sessionConfidence?.let{intent.putExtra(EXTRA_SESSION_CONFIDENCE,it)}; sessionRuns?.let{intent.putExtra(EXTRA_SESSION_RUNS,it)}; coolant?.let{intent.putExtra(EXTRA_COOLANT,it)}; oil?.let{intent.putExtra(EXTRA_OIL,it)}; load?.let{intent.putExtra(EXTRA_LOAD,it)}; map?.let{intent.putExtra(EXTRA_MAP,it)}; iat?.let{intent.putExtra(EXTRA_IAT,it)}; validPoints?.let{intent.putExtra(EXTRA_VALID_POINTS,it)}; highPoints?.let{intent.putExtra(EXTRA_HIGH_POINTS,it)}; knockEvents?.let{intent.putExtra(EXTRA_KNOCK_EVENTS,it)}; superEvents?.let{intent.putExtra(EXTRA_SUPER_EVENTS,it)}; resultState?.let{intent.putExtra(EXTRA_RESULT_STATE,it)}; mode?.let{intent.putExtra(EXTRA_MODE,it)}; segments?.let{intent.putExtra(EXTRA_SEGMENTS,it)}; coverage?.let{intent.putExtra(EXTRA_COVERAGE,it)}; speed?.let{intent.putExtra(EXTRA_SPEED,it)}
+        fuelScore?.let{intent.putExtra(EXTRA_FUEL_SCORE,it)}; runQuality?.let{intent.putExtra(EXTRA_RUN_QUALITY,it)}; sessionScore?.let{intent.putExtra(EXTRA_SESSION_SCORE,it)}; sessionConfidence?.let{intent.putExtra(EXTRA_SESSION_CONFIDENCE,it)}; sessionRuns?.let{intent.putExtra(EXTRA_SESSION_RUNS,it)}; coolant?.let{intent.putExtra(EXTRA_COOLANT,it)}; oil?.let{intent.putExtra(EXTRA_OIL,it)}; load?.let{intent.putExtra(EXTRA_LOAD,it)}; map?.let{intent.putExtra(EXTRA_MAP,it)}; iat?.let{intent.putExtra(EXTRA_IAT,it)}; validPoints?.let{intent.putExtra(EXTRA_VALID_POINTS,it)}; highPoints?.let{intent.putExtra(EXTRA_HIGH_POINTS,it)}; knockEvents?.let{intent.putExtra(EXTRA_KNOCK_EVENTS,it)}; superEvents?.let{intent.putExtra(EXTRA_SUPER_EVENTS,it)}; resultState?.let{intent.putExtra(EXTRA_RESULT_STATE,it)}; mode?.let{intent.putExtra(EXTRA_MODE,it)}; segments?.let{intent.putExtra(EXTRA_SEGMENTS,it)}; coverage?.let{intent.putExtra(EXTRA_COVERAGE,it)}; speed?.let{intent.putExtra(EXTRA_SPEED,it)}; fuelPct?.let{intent.putExtra(EXTRA_FUEL_PCT,it)}; fuelId?.let{intent.putExtra(EXTRA_FUEL_ID,it)}; phase?.let{intent.putExtra(EXTRA_PHASE,it)}; steadyPoints?.let{intent.putExtra(EXTRA_STEADY_POINTS,it)}; accelPoints?.let{intent.putExtra(EXTRA_ACCEL_POINTS,it)}; refuelNote?.let{intent.putExtra(EXTRA_REFUEL,it)}; mixingKm?.let{intent.putExtra(EXTRA_MIXING_KM,it)}
         sendBroadcast(intent)
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(7,notification(s.take(100)))
     }
@@ -274,22 +276,37 @@ class EnetLoggerService : Service() {
                     if(testWindow && knockMean!=null && ignSpread!=null) validOctaneSamples++
                     val confidence=(validOctaneSamples*2).coerceAtMost(100)
                     val measurementWindow=r!=null && l!=null && m!=null && r>=2000.0 && r<=4500.0 && l>=55.0 && m>=130.0
-                    val stableAuto=if(!autoMode) true else {
-                        val dt=(now-previousSampleTime).coerceAtLeast(1L)/1000.0
-                        previousRpm!=null && previousMap!=null && r!=null && m!=null && dt<=4.0 &&
-                            kotlin.math.abs(r-previousRpm!!)/dt<=350.0 &&
-                            kotlin.math.abs(m-previousMap!!)/dt<=24.0 &&
-                            i!=null && i in 10.0..65.0 && coolant!=null && coolant>=65.0
-                    }
+                    val dt=(now-previousSampleTime).coerceAtLeast(1L)/1000.0
+                    val rpmRate=if(r!=null && previousRpm!=null && previousSampleTime>0L && dt<=5.0) (r-previousRpm!!)/dt else null
+                    val mapRate=if(m!=null && previousMap!=null && previousSampleTime>0L && dt<=5.0) (m-previousMap!!)/dt else null
+                    val warm=i!=null && i in 10.0..65.0 && coolant!=null && coolant>=65.0
+                    val accelerationAuto=autoMode && measurementWindow && warm && rpmRate!=null && mapRate!=null &&
+                        rpmRate>=130.0 && rpmRate<=1800.0 && mapRate>=-65.0 && l!=null && l>=65.0 &&
+                        m!=null && m>=150.0 && (throttle==null || throttle>=25.0)
+                    val stableAuto=autoMode && measurementWindow && warm && rpmRate!=null && mapRate!=null &&
+                        kotlin.math.abs(rpmRate)<=350.0 && kotlin.math.abs(mapRate)<=24.0
+                    val drivePhase=if(!autoMode) "TEST" else if(accelerationAuto) "ACCELERATION" else if(stableAuto) "STEADY" else "TRANSIENT"
                     previousRpm=r; previousMap=m; previousSampleTime=now
                     val highConfidenceWindow=r!=null && l!=null && m!=null && r>=2200.0 && r<=4000.0 && l>=70.0 && m>=160.0
                     val b95=if(measurementWindow) baseline95(r,m) else null
-                    val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && (!autoMode || (stableAuto && b95.n>=5))) knockMean/b95.v else null
+                    val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5 && !fuelDetector.pending && mixingKm<=0.0))) knockMean/b95.v else null
                     if(autoMode && measurementWindow && ratio95!=null) lastQualified=now
                     if(captureActive && measurementWindow && ratio95!=null && (!autoMode || now-lastAutoAcceptedTime>=1200L)) {
-                        if(autoMode) { lastAutoAcceptedTime=now; autoAcceptedSamples++; val w=if(highConfidenceWindow)2.0 else 1.0; autoRatioSum+=ratio95*w; autoRatioWeight+=w; if(knockStatus==1 && !previousKnock)autoKnockEvents++; if(superKnock!=null && superKnock>0 && !previousSuper)autoSuperEvents++ }
+                        if(autoMode) {
+                            lastAutoAcceptedTime=now; autoAcceptedSamples++
+                            val w=if(highConfidenceWindow)2.0 else 1.0
+                            autoRatioSum+=ratio95*w; autoRatioWeight+=w
+                            if(drivePhase=="ACCELERATION") { accelRatioSum+=ratio95*w; accelRatioWeight+=w; accelPoints++ }
+                            else { steadyRatioSum+=ratio95*w; steadyRatioWeight+=w; steadyPoints++ }
+                            if(knockStatus==1 && !previousKnock)autoKnockEvents++
+                            if(superKnock!=null && superKnock>0 && !previousSuper)autoSuperEvents++
+                            acceptedAutoSegments.add("$runId:$drivePhase")
+                        }
                         val weight=if(highConfidenceWindow) 2.0 else 1.0
-                        val rv=r!!; val mv=m!!; val rb=((rv-2000.0)/500.0).toInt().coerceIn(0,4); val mb=when{mv<160->0;mv<180->1;mv<200->2;else->3}; coverageBins.add("$rb:$mb"); if(autoMode) autoCoverage.add("$rb:$mb"); if(highConfidenceWindow) sessionHighPoints++
+                        val rv=r!!; val mv=m!!; val rb=((rv-2000.0)/500.0).toInt().coerceIn(0,4); val mb=when{mv<160->0;mv<180->1;mv<200->2;else->3}; coverageBins.add("$rb:$mb"); if(autoMode) {
+                            autoCoverage.add("$rb:$mb")
+                            if(drivePhase=="ACCELERATION") accelCells.add("$rb:$mb") else steadyCells.add("$rb:$mb")
+                        }; if(highConfidenceWindow) sessionHighPoints++
                         runWeightedRatio+=ratio95*weight; runWeight+=weight; runValidPoints++; if(highConfidenceWindow) runHighPoints++
                         if(knockStatus==1 && !previousKnock) runKnockEvents++; if(superKnock!=null && superKnock>0 && !previousSuper) runSuperEvents++
                     }
@@ -299,11 +316,20 @@ class EnetLoggerService : Service() {
                     val liveRunQuality=((runHighPoints*4+runValidPoints*2).coerceAtMost(100))
                     val sessionScore=if(autoMode) { if(autoRatioWeight>0.0) (100.0+(1.0-autoRatioSum/autoRatioWeight)*50.0-(autoKnockEvents-1).coerceAtLeast(0)*1.5-autoSuperEvents*10.0).coerceIn(0.0,120.0) else null } else if(sessionQualitySum>0) sessionScoreSum/sessionQualitySum else null
                     val consistency=if(sessionScores.size>=2){val mean=sessionScores.average(); val sd=kotlin.math.sqrt(sessionScores.sumOf{(it-mean)*(it-mean)}/sessionScores.size); (15.0-sd*3.0).toInt().coerceIn(0,15)}else 0
-                    val sessionConfidence=if(autoMode) ((autoQualifiedSegments*9).coerceAtMost(27)+(autoCoverage.size*5).coerceAtMost(30)+(autoAcceptedSamples/3).coerceAtMost(23)+consistency).coerceAtMost(100) else ((sessionValidRuns*8).coerceAtMost(40)+(sessionHighPoints*2).coerceAtMost(25)+(coverageBins.size*2).coerceAtMost(20)+consistency).coerceAtMost(100)
-                    val resultState=when { sessionConfidence<60 -> "COLLECTING"; sessionScore==null -> "COLLECTING"; sessionScore>=95.0 -> "NORMAL"; sessionScore>=92.0 -> "BORDERLINE"; else -> "BELOW BASELINE" }
-                    if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns,oil?:"",if(autoMode)"AUTO" else "TEST",coverageBins.size,speed?:"")).joinToString(","))}
+                    val sessionConfidence=if(autoMode) {
+                        val rawConfidence=(acceptedAutoSegments.size*6).coerceAtMost(30)+
+                            ((steadyCells.size+accelCells.size)*4).coerceAtMost(28)+
+                            (autoAcceptedSamples/2).coerceAtMost(24)+
+                            (if(steadyPoints>0 && accelPoints>0)8 else 0)
+                        if(autoAcceptedSamples<12 || acceptedAutoSegments.size<3 || autoCoverage.size<3) rawConfidence.coerceAtMost(49)
+                        else rawConfidence.coerceAtMost(90)
+                    } else ((sessionValidRuns*8).coerceAtMost(40)+(sessionHighPoints*2).coerceAtMost(25)+(coverageBins.size*2).coerceAtMost(20)+consistency).coerceAtMost(100) else ((sessionValidRuns*8).coerceAtMost(40)+(sessionHighPoints*2).coerceAtMost(25)+(coverageBins.size*2).coerceAtMost(20)+consistency).coerceAtMost(100)
+                    val steadyScore=if(steadyRatioWeight>0.0) (100.0+(1.0-steadyRatioSum/steadyRatioWeight)*50.0).coerceIn(0.0,120.0) else null
+                    val accelScore=if(accelRatioWeight>0.0) (100.0+(1.0-accelRatioSum/accelRatioWeight)*50.0).coerceIn(0.0,120.0) else null
+                    val resultState=when { mixingKm>0.0 -> "MIXING"; fuelDetector.pending -> "REFUEL CHECK"; sessionConfidence<60 -> "COLLECTING"; sessionScore==null -> "COLLECTING"; sessionScore>=95.0 -> "NORMAL"; sessionScore>=92.0 -> "BORDERLINE"; else -> "BELOW BASELINE" }
+                    if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns,oil?:"",if(autoMode)"AUTO" else "TEST",coverageBins.size,speed?:"",slowFuel?:"",fuelSessionId,drivePhase,steadyPoints,accelPoints,steadyScore?:"",accelScore?:"",if(fuelDetector.pending)1 else 0,"%.2f".format(java.util.Locale.US,mixingKm))).joinToString(","))}
                     samples++
-                    if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.11 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",sessionValidRuns,coverageBins.size,speed) }
+                    if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.11 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm) }
                 }
             } catch(e:Exception) {
                 if(!running) break
