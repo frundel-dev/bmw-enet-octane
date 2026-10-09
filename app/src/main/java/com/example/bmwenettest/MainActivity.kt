@@ -35,14 +35,8 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(36,40,36,36) }
-        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.12"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
+        root.addView(TextView(this).apply { text="BMW ENET OCTANE v1.7.13"; textSize=25f; gravity=Gravity.CENTER_HORIZONTAL })
         root.addView(TextView(this).apply { text="G20 • B48 • USB ENET + VXSCAN Wi-Fi • read-only"; textSize=14f; gravity=Gravity.CENTER_HORIZONTAL })
-        root.addView(Button(this).apply { text="IMPORT/VERIFY BMW DME .PRG (OPTIONAL)"; setOnClickListener {
-            val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE); type="application/octet-stream"
-            }
-            startActivityForResult(i,901)
-        } })
         root.addView(Button(this).apply { text="MODE: ${getSharedPreferences("bmw_native",MODE_PRIVATE).getString("measurement_mode","AUTO")} • SWITCH"; textSize=20f; minHeight=160; setPadding(24,32,24,32); setOnClickListener { val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE); val next=if(prefs.getString("measurement_mode","AUTO")=="AUTO")"TEST" else "AUTO"; prefs.edit().putString("measurement_mode",next).apply(); text="MODE: $next (restart logger)" } })
         root.addView(Button(this).apply { text="START BACKGROUND LOGGER"; textSize=20f; minHeight=160; setPadding(24,32,24,32); setOnClickListener {
             if (!logging) {
@@ -55,20 +49,41 @@ class MainActivity : Activity() {
                 startService(Intent(this@MainActivity,EnetLoggerService::class.java).setAction(EnetLoggerService.ACTION_STOP))
             }
         } })
-                root.addView(Button(this).apply {
-            text="ИСТОРИЯ ЗАМЕРОВ"
-            textSize=18f
-            minHeight=120
-            setOnClickListener { showMeasurementHistory() }
-        })
-        root.addView(Button(this).apply {
-            text="ЖУРНАЛ СОЕДИНЕНИЙ VXSCAN"
-            textSize=16f
-            minHeight=110
-            setOnClickListener { showConnectionHistory() }
-        })
         status = TextView(this).apply { textSize=15f; text="Embedded profile: DME8FF_R (fresh ECU dataset) ✓\nPRG import is optional.\n\nConnect USB-C ENET or join VXSCAN ENET Wi-Fi, ignition ON, then press START."; setPadding(0,24,0,0); setTextIsSelectable(true) }
-        root.addView(ScrollView(this).apply { addView(status) })
+        // Keep the dashboard scrollable, while auxiliary controls remain fixed at the bottom.
+        val dashboard=ScrollView(this).apply {
+            fillViewport=true
+            addView(status)
+        }
+        root.addView(dashboard,LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,0,1f
+        ))
+        val bottomActions=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+        }
+        fun bottomButton(label:String,action:()->Unit) {
+            val button=Button(this).apply {
+                text=label
+                textSize=14f
+                isAllCaps=false
+                minHeight=(48*resources.displayMetrics.density).toInt()
+                setOnClickListener { action() }
+            }
+            bottomActions.addView(button,LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
+        }
+        bottomButton("ИМПОРТ PRG (опционально)") {
+            val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type="application/octet-stream"
+            }
+            startActivityForResult(i,901)
+        }
+        bottomButton("ИСТОРИЯ ЗАМЕРОВ") { showMeasurementHistory() }
+        bottomButton("ЖУРНАЛ VXSCAN") { showConnectionHistory() }
+        root.addView(bottomActions)
         setContentView(root)
         statusReceiver=object:BroadcastReceiver(){
             override fun onReceive(context:Context?, intent:Intent?) {
