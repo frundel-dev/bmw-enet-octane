@@ -60,6 +60,11 @@ class EnetLoggerService : Service() {
         const val EXTRA_HIGH_RPM_RATIO = "high_rpm_ratio95_mean"
         const val EXTRA_HIGH_RPM_POINTS = "high_rpm_points"
         const val EXTRA_HIGH_RPM_OVER120 = "high_rpm_over120_count"
+        const val EXTRA_STEADY_SURVEY = "steady_survey_points"
+        const val EXTRA_STEADY_CELLS = "steady_survey_cells"
+        const val EXTRA_ACCEL_V08_SCORE = "accel_v08_score"
+        const val EXTRA_ACCEL_V08_POINTS = "accel_v08_points"
+        const val EXTRA_CALIBRATION = "calibration_model"
         const val CHANNEL = "enet_logger"
     }
     private val executor = Executors.newSingleThreadExecutor()
@@ -69,6 +74,7 @@ class EnetLoggerService : Service() {
     private var androidNetworkMonitor: AndroidNetworkEventMonitor? = null
     @Volatile private var vxscanWifiBlocked = false
     private var telemetryFile: File? = null
+    private var steadySurveyFile: File? = null
     private val connectionLogLock = Any()
     private var socket: Socket? = null
     private var logFile: File? = null
@@ -88,7 +94,7 @@ class EnetLoggerService : Service() {
         return START_STICKY
     }
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
-        .setContentTitle("BMW ENET Logger v1.7.17").setContentText(text)
+        .setContentTitle("BMW ENET Logger v1.7.18").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
 
     private fun startLogger() {
@@ -99,7 +105,7 @@ class EnetLoggerService : Service() {
         val wifi=applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
         wifiLock=wifi?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF,"BmwEnet:VXSCAN")?.apply { setReferenceCounted(false); acquire() }
         logFile=createLogFile(getSharedPreferences("bmw_native",MODE_PRIVATE).getInt("fuel_session_id",1))
-        telemetryFile=File(getExternalFilesDir(null)?:filesDir,"bmw_telemetry_v1717_${System.currentTimeMillis()}.csv").apply {
+        telemetryFile=File(getExternalFilesDir(null)?:filesDir,"bmw_telemetry_v1718_${System.currentTimeMillis()}.csv").apply {
             writeText("wall_time_ms,elapsed_ms,event,transport,rpm,load_pct,map_kpa_abs,speed_kmh,coolant_c,fuel_level_pct,fuel_session_id,run_id,reconnects,phase\n")
         }
         val connectivity=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -109,16 +115,28 @@ class EnetLoggerService : Service() {
             }
             connectionEvent("ANDROID_$event",0,"ANDROID",transport,null,detail)
         }.also { it.start() }
+        steadySurveyFile=createSteadySurveyFile(
+            getSharedPreferences("bmw_native",MODE_PRIVATE).getInt("fuel_session_id",1))
         executor.execute { loop() }
     }
+    private fun createSteadySurveyFile(fuelId:Int):File {
+        val dir=getExternalFilesDir(null)?:filesDir
+        return File(dir,"bmw_steady_v1718_fuel${fuelId}_${System.currentTimeMillis()}.csv").apply {
+            writeText("# calibration=${OctaneCalibration.VERSION},fuel_session=$fuelId,observational_only=true\n"+
+                "wall_time_ms,elapsed_ms,rpm,load_pct,map_kpa_abs,rpm_per_s,map_kpa_per_s,"+
+                "knock_mean_vms,iat_c,coolant_c,speed_kmh,reference_vms,reference_samples,"+
+                "reference_trips,cell,segment_id,accepted_to_score\n")
+        }
+    }
+
     private fun createLogFile(fuelId:Int): File {
         val dir=getExternalFilesDir(null)?:filesDir
-        val file=File(dir,"bmw_enet_v1717_fuel${fuelId}_${System.currentTimeMillis()}.csv")
+        val file=File(dir,"bmw_enet_v1718_fuel${fuelId}_${System.currentTimeMillis()}.csv")
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val profile=prefs.getString("prg_profile","DME8FF_R_EMBEDDED") ?: "DME8FF_R_EMBEDDED"
         val prgName=prefs.getString("prg_name","") ?: ""
         val prgSha=prefs.getString("prg_sha256","") ?: ""
-        file.writeText("# app=v1.7.17,fuel_session_id=$fuelId,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz,ecu_fuel_factor,ecu_ron_equiv,knock_mean_vms,ign_spread_deg,octane_confidence_pct,run_id,reconnects,measurement_window,high_confidence_window,baseline95_knock_vms,baseline95_samples,knock_ratio95,run_fuel_score,run_quality_pct,run_valid_points,session_fuel_score,session_confidence_pct,session_valid_runs,oil_temp_c,measurement_mode,coverage_cells,speed_kmh,fuel_level_pct,fuel_session_id,driving_phase,steady_points,accel_points,steady_score,accel_score,refuel_pending,mixing_km,steady_confidence_pct,accel_confidence_pct,steady_segments,accel_segments,high_rpm_ratio95_mean,high_rpm_points,high_rpm_over120_count,high_rpm_baseline_support_avg,auto_phase_segments\n")
+        file.writeText("# app=v1.7.18,fuel_session_id=$fuelId,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz,ecu_fuel_factor,ecu_ron_equiv,knock_mean_vms,ign_spread_deg,octane_confidence_pct,run_id,reconnects,measurement_window,high_confidence_window,baseline95_knock_vms,baseline95_samples,knock_ratio95,run_fuel_score,run_quality_pct,run_valid_points,session_fuel_score,session_confidence_pct,session_valid_runs,oil_temp_c,measurement_mode,coverage_cells,speed_kmh,fuel_level_pct,fuel_session_id,driving_phase,steady_points,accel_points,steady_score,accel_score,refuel_pending,mixing_km,steady_confidence_pct,accel_confidence_pct,steady_segments,accel_segments,high_rpm_ratio95_mean,high_rpm_points,high_rpm_over120_count,high_rpm_baseline_support_avg,auto_phase_segments,steady_survey_points,steady_survey_cells,accel_v08_score,accel_v08_points,calibration_model,steady_reference_vms,accel_reference_vms\n")
         return file
     }
 
@@ -140,7 +158,9 @@ class EnetLoggerService : Service() {
         fuelPct:Double?=null, fuelId:Int?=null, phase:String?=null,
         steadyPoints:Int?=null, accelPoints:Int?=null, refuelNote:String?=null, mixingKm:Double?=null,steadyConf:Int?=null,accelConf:Int?=null,
         steadySegments:Int?=null,accelSegments:Int?=null,steadyScore:Double?=null,accelScore:Double?=null,
-        highRpmMean:Double?=null,highRpmPoints:Int?=null,highRpmOver120:Int?=null) {
+        highRpmMean:Double?=null,highRpmPoints:Int?=null,highRpmOver120:Int?=null,
+        steadySurveyPoints:Int?=null,steadySurveyCells:Int?=null,
+        accelV08Score:Double?=null,accelV08Points:Int?=null) {
         val intent=Intent(ACTION_STATUS).setPackage(packageName).putExtra(EXTRA_STATUS,s)
         state?.let{intent.putExtra(EXTRA_STATE,it)}; rpm?.let{intent.putExtra(EXTRA_RPM,it)}; transport?.let{intent.putExtra(EXTRA_TRANSPORT,it)}
         runId?.let{intent.putExtra(EXTRA_RUN_ID,it)}; hz?.let{intent.putExtra(EXTRA_HZ,it)}; reconnects?.let{intent.putExtra(EXTRA_RECONNECTS,it)}; summary?.let{intent.putExtra(EXTRA_SUMMARY,it)}
@@ -150,6 +170,11 @@ class EnetLoggerService : Service() {
         steadyScore?.let{intent.putExtra(EXTRA_STEADY_SCORE,it)}; accelScore?.let{intent.putExtra(EXTRA_ACCEL_SCORE,it)}
         highRpmMean?.let{intent.putExtra(EXTRA_HIGH_RPM_RATIO,it)}; highRpmPoints?.let{intent.putExtra(EXTRA_HIGH_RPM_POINTS,it)}
         highRpmOver120?.let{intent.putExtra(EXTRA_HIGH_RPM_OVER120,it)}
+        steadySurveyPoints?.let{intent.putExtra(EXTRA_STEADY_SURVEY,it)}
+        steadySurveyCells?.let{intent.putExtra(EXTRA_STEADY_CELLS,it)}
+        accelV08Score?.let{intent.putExtra(EXTRA_ACCEL_V08_SCORE,it)}
+        accelV08Points?.let{intent.putExtra(EXTRA_ACCEL_V08_POINTS,it)}
+        intent.putExtra(EXTRA_CALIBRATION,OctaneCalibration.VERSION)
         sendBroadcast(intent)
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(7,notification(s.take(100)))
     }
@@ -249,6 +274,9 @@ class EnetLoggerService : Service() {
         var steadyPoints=0; var accelPoints=0
         val acceptedAutoSegments=mutableSetOf<String>(); val steadyCells=mutableSetOf<String>(); val accelCells=mutableSetOf<String>()
         val steadySegments=mutableSetOf<Int>(); val accelSegments=mutableSetOf<Int>()
+        val steadySurveyCells=mutableSetOf<String>()
+        var steadySurveyPoints=0; var steadySegmentId=0; var lastSteadyObservation=0L
+        var accelV08Sum=0.0; var accelV08Weight=0.0; var accelV08Points=0
         var highRpmRatioSum=0.0; var highRpmPoints=0; var highRpmOver120=0; var highRpmBaselineSum=0
         while(running) {
             try {
@@ -418,6 +446,7 @@ class EnetLoggerService : Service() {
                             val events=File(getExternalFilesDir(null)?:filesDir,"bmw_fuel_events.csv")
                             events.appendText("${System.currentTimeMillis()},$fuelSessionId,${"%.1f".format(java.util.Locale.US,refill.fromPercent)},${"%.1f".format(java.util.Locale.US,refill.toPercent)},PENDING\n")
                             logFile=createLogFile(fuelSessionId)
+                            steadySurveyFile=createSteadySurveyFile(fuelSessionId)
                             captureActive=false; captureTailUntil=0L; runId=0; runSamples=0; runValidPoints=0; runHighPoints=0
                             runWeightedRatio=0.0; runWeight=0.0; lastRunScore=null; lastRunQuality=0
                             sessionScoreSum=0.0; sessionQualitySum=0.0; sessionValidRuns=0; sessionScores.clear()
@@ -425,7 +454,9 @@ class EnetLoggerService : Service() {
                             autoCoverage.clear(); autoRatioSum=0.0; autoRatioWeight=0.0; autoKnockEvents=0; autoSuperEvents=0
                             steadyRatioSum=0.0; steadyRatioWeight=0.0; accelRatioSum=0.0; accelRatioWeight=0.0
                             steadyPoints=0; accelPoints=0; steadyCells.clear(); accelCells.clear(); acceptedAutoSegments.clear()
-                            steadySegments.clear(); accelSegments.clear()
+                            steadySegments.clear(); accelSegments.clear(); steadySurveyCells.clear()
+                            steadySurveyPoints=0;steadySegmentId=0;lastSteadyObservation=0L
+                            accelV08Sum=0.0;accelV08Weight=0.0;accelV08Points=0
                             highRpmRatioSum=0.0; highRpmPoints=0; highRpmOver120=0; highRpmBaselineSum=0
                             lastAutoAcceptedTime=0L; lastQualified=0L; previousSampleTime=0L; previousRpm=null; previousMap=null
                             lastRefuelNote="Возможная заправка: ${"%.0f".format(refill.fromPercent)}% → ${"%.0f".format(refill.toPercent)}% • сессия #$fuelSessionId"
@@ -460,7 +491,7 @@ class EnetLoggerService : Service() {
                         lastFoctan=now
                     }
                                         val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
-                    // v1.7.17 measurement assistant: keep polling continuously, persist only measurement segments.
+                    // v1.7.18 measurement assistant: keep polling continuously, persist only measurement segments.
                     if(((autoMode && r!=null && l!=null && m!=null && r>=2000.0 && r<=4500.0 && l>=55.0 && m>=130.0) || (!autoMode && r!=null && r>=1800.0)) && !captureActive) {
                         captureActive=true; runId++; armed2000=false; signaled4500=false; runStart=now; runStartRpm=r; runMaxRpm=r; runMaxLoad=l?:0.0; runMaxMap=m?:0.0; runSamples=0; lastSummary=""; runWeightedRatio=0.0; runWeight=0.0; runValidPoints=0; runHighPoints=0; runKnockEvents=0; runSuperEvents=0; lastRunScore=null; lastRunQuality=0
                         if(!autoMode) tone.startTone(ToneGenerator.TONE_PROP_BEEP,120)
@@ -566,7 +597,7 @@ class EnetLoggerService : Service() {
                     }
                     if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns,oil?:"",if(autoMode)"AUTO" else "TEST",coverageBins.size,speed?:"",slowFuel?:"",fuelSessionId,drivePhase,steadyPoints,accelPoints,steadyScore?:"",accelScore?:"",if(fuelDetector.pending)1 else 0,"%.2f".format(java.util.Locale.US,mixingKm),steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,highRpmMean?:"",highRpmPoints,highRpmOver120,highRpmBaselineAvg?:"",acceptedAutoSegments.size)).joinToString(","))}
                     samples++
-                    if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.17 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
+                    if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.18 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
                         steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,
                         steadyScore,accelScore,highRpmMean,highRpmPoints,highRpmOver120) }
                 }
