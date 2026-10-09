@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 32
-        versionName = "1.7.14"
+        versionCode = 33
+        versionName = "1.7.15"
     }
 }
 
-// v1.7.14: compact Additional menu; unchanged measurement engine
+// v1.7.15: passive Android connectivity logging alongside VXSCAN TCP events
