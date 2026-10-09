@@ -41,6 +41,8 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
     private lateinit var accelScore:TextView
     private lateinit var accelDetail:TextView
     private lateinit var phaseLabel:TextView
+    private lateinit var steadySurvey:TextView
+    private lateinit var accelCalibration:TextView
     private lateinit var coolant:TextView
     private lateinit var oil:TextView
     private lateinit var iat:TextView
@@ -187,6 +189,15 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         accelColumn.addView(accelDetail)
         modes.addView(accelColumn,LayoutParams(0,LayoutParams.WRAP_CONTENT,1f))
         measurement.addView(modes)
+        measurement.addView(View(context),LayoutParams(1,dp(12)))
+        steadySurvey=text("STEADY v0.8 • собираем новую эталонную базу",12f,amber)
+        measurement.addView(steadySurvey)
+        accelCalibration=text("ACCEL v0.8 • экспериментальный эталон: —",12f,blue)
+        accelCalibration.setPadding(0,dp(7),0,0)
+        measurement.addView(accelCalibration)
+        measurement.addView(text("Общий Fuel Score по-прежнему по исходному эталону АИ-95.",11f,muted).apply {
+            setPadding(0,dp(7),0,0)
+        })
 
         val diagnostic=card("СВЯЗЬ И ДИАГНОСТИКА")
         network=text("Ожидание VXSCAN",13f,blue,true)
@@ -271,6 +282,15 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         accelDetail.text=count(EnetLoggerService.EXTRA_ACCEL_CONF).toString()+"% · "+
             count(EnetLoggerService.EXTRA_ACCEL_POINTS)+" тчк · "+
             count(EnetLoggerService.EXTRA_ACCEL_SEGMENTS)+" уч."
+
+        val surveyed=count(EnetLoggerService.EXTRA_STEADY_SURVEY)
+        val covered=count(EnetLoggerService.EXTRA_STEADY_CELLS)
+        steadySurvey.text="STEADY v0.8 • наблюдений $surveyed • ячеек $covered"+
+            " • пробный балл, не лабораторный RON"
+        val newAccel=number(EnetLoggerService.EXTRA_ACCEL_V08_SCORE)
+        val newAccelPoints=count(EnetLoggerService.EXTRA_ACCEL_V08_POINTS)
+        accelCalibration.text="ACCEL v0.8 (проверочная): "+format(newAccel,1)+
+            " • точек $newAccelPoints"
 
         val tankPct=number(EnetLoggerService.EXTRA_FUEL_PCT)
         val fuelId=intent.getIntExtra(EnetLoggerService.EXTRA_FUEL_ID,1)
