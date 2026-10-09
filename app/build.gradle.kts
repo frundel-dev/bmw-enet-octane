@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 28
-        versionName = "1.7.10"
+        versionCode = 29
+        versionName = "1.7.11"
     }
 }
 
-// v1.7.6: confidence engine and measurement dashboard
+// v1.7.11: two-mode AUTO, optional fuel-level refuel events and fuel-session history
