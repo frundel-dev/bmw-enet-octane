@@ -294,7 +294,7 @@ class EnetLoggerService : Service() {
                     previousRpm=r; previousMap=m; previousSampleTime=now
                     val highConfidenceWindow=r!=null && l!=null && m!=null && r>=2200.0 && r<=4000.0 && l>=70.0 && m>=160.0
                     val b95=if(measurementWindow) baseline95(r,m) else null
-                    val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5 && !fuelDetector.pending && mixingKm<=0.0))) knockMean/b95.v else null
+                    val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && !fuelDetector.pending && mixingKm<=0.0 && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5))) knockMean/b95.v else null
                     if(autoMode && measurementWindow && ratio95!=null) lastQualified=now
                     if(captureActive && measurementWindow && ratio95!=null && (!autoMode || now-lastAutoAcceptedTime>=1200L)) {
                         if(autoMode) {
