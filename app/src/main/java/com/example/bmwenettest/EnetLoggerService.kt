@@ -88,7 +88,7 @@ class EnetLoggerService : Service() {
         return START_STICKY
     }
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
-        .setContentTitle("BMW ENET Logger v1.7.15").setContentText(text)
+        .setContentTitle("BMW ENET Logger v1.7.16").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
 
     private fun startLogger() {
@@ -113,12 +113,12 @@ class EnetLoggerService : Service() {
     }
     private fun createLogFile(fuelId:Int): File {
         val dir=getExternalFilesDir(null)?:filesDir
-        val file=File(dir,"bmw_enet_v1715_fuel${fuelId}_${System.currentTimeMillis()}.csv")
+        val file=File(dir,"bmw_enet_v1716_fuel${fuelId}_${System.currentTimeMillis()}.csv")
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val profile=prefs.getString("prg_profile","DME8FF_R_EMBEDDED") ?: "DME8FF_R_EMBEDDED"
         val prgName=prefs.getString("prg_name","") ?: ""
         val prgSha=prefs.getString("prg_sha256","") ?: ""
-        file.writeText("# app=v1.7.15,fuel_session_id=$fuelId,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz,ecu_fuel_factor,ecu_ron_equiv,knock_mean_vms,ign_spread_deg,octane_confidence_pct,run_id,reconnects,measurement_window,high_confidence_window,baseline95_knock_vms,baseline95_samples,knock_ratio95,run_fuel_score,run_quality_pct,run_valid_points,session_fuel_score,session_confidence_pct,session_valid_runs,oil_temp_c,measurement_mode,coverage_cells,speed_kmh,fuel_level_pct,fuel_session_id,driving_phase,steady_points,accel_points,steady_score,accel_score,refuel_pending,mixing_km,steady_confidence_pct,accel_confidence_pct,steady_segments,accel_segments,high_rpm_ratio95_mean,high_rpm_points,high_rpm_over120_count,high_rpm_baseline_support_avg,auto_phase_segments\n")
+        file.writeText("# app=v1.7.16,fuel_session_id=$fuelId,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz,ecu_fuel_factor,ecu_ron_equiv,knock_mean_vms,ign_spread_deg,octane_confidence_pct,run_id,reconnects,measurement_window,high_confidence_window,baseline95_knock_vms,baseline95_samples,knock_ratio95,run_fuel_score,run_quality_pct,run_valid_points,session_fuel_score,session_confidence_pct,session_valid_runs,oil_temp_c,measurement_mode,coverage_cells,speed_kmh,fuel_level_pct,fuel_session_id,driving_phase,steady_points,accel_points,steady_score,accel_score,refuel_pending,mixing_km,steady_confidence_pct,accel_confidence_pct,steady_segments,accel_segments,high_rpm_ratio95_mean,high_rpm_points,high_rpm_over120_count,high_rpm_baseline_support_avg,auto_phase_segments\n")
         return file
     }
 
@@ -267,6 +267,9 @@ class EnetLoggerService : Service() {
                         } catch(e:Exception) {
                             connectionEvent("FAST_RETRY_FAILED",reconnects+1,connectionStage,kind,rememberedIp,
                                 "${e.javaClass.simpleName}: ${e.message?:"no details"}")
+                            // On a call-related network block, prefer another quick TCP attempt
+                            // over full UDP discovery. After two failures, rediscover.
+                            if(consecutiveFailures<2) continue
                         }
                     }
                     connectionStage="DISCOVERY"
@@ -291,6 +294,7 @@ class EnetLoggerService : Service() {
                 if(activeNet==null || gatewayIp==null) throw IOException("HSFZ gateway unavailable after cached TCP and UDP discovery")
                 cachedIp=gatewayIp; cachedTransport=transport; connectionIp=gatewayIp
                 connectionTransport=transport; connectionStage="POLL"; emptyPolls=0
+                consecutiveFailures=0
                 prefs.edit().putString("last_gateway_ip",gatewayIp)
                     .putString("last_gateway_transport",transport).apply()
                 sampleTimes.clear()
@@ -298,6 +302,8 @@ class EnetLoggerService : Service() {
                 connectionEvent(if(gap>0)"RECOVERED" else "CONNECTED",reconnects,connectionStage,
                     transport,gatewayIp,if(viaFastPath)"cached TCP" else "UDP discovery + TCP",gap)
                 outageFrom=null
+                telemetryRow(SystemClock.elapsedRealtime()-started,"CONNECTED",transport,
+                    fuelId=fuelSessionId,reconnects=reconnects)
                 emit("CONNECTED $transport $gatewayIp:6801 • reconnects $reconnects" +
                     if(gap>0)" • recovered in ${gap} ms" else "")
                 while(running && socket?.isClosed==false) {
@@ -382,7 +388,7 @@ class EnetLoggerService : Service() {
                         lastFoctan=now
                     }
                                         val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
-                    // v1.7.15 measurement assistant: keep polling continuously, persist only measurement segments.
+                    // v1.7.16 measurement assistant: keep polling continuously, persist only measurement segments.
                     if(((autoMode && r!=null && l!=null && m!=null && r>=2000.0 && r<=4500.0 && l>=55.0 && m>=130.0) || (!autoMode && r!=null && r>=1800.0)) && !captureActive) {
                         captureActive=true; runId++; armed2000=false; signaled4500=false; runStart=now; runStartRpm=r; runMaxRpm=r; runMaxLoad=l?:0.0; runMaxMap=m?:0.0; runSamples=0; lastSummary=""; runWeightedRatio=0.0; runWeight=0.0; runValidPoints=0; runHighPoints=0; runKnockEvents=0; runSuperEvents=0; lastRunScore=null; lastRunQuality=0
                         if(!autoMode) tone.startTone(ToneGenerator.TONE_PROP_BEEP,120)
@@ -479,15 +485,22 @@ class EnetLoggerService : Service() {
                     val highRpmMean=if(highRpmPoints>0) highRpmRatioSum/highRpmPoints else null
                     val highRpmBaselineAvg=if(highRpmPoints>0) highRpmBaselineSum.toDouble()/highRpmPoints else null
                     val resultState=when { mixingKm>0.0 -> "MIXING"; fuelDetector.pending -> "REFUEL CHECK"; sessionConfidence<60 -> "COLLECTING"; sessionScore==null -> "COLLECTING"; sessionScore>=95.0 -> "NORMAL"; sessionScore>=92.0 -> "BORDERLINE"; else -> "BELOW BASELINE" }
+                    // Heartbeat is written regardless of captureActive. Keep measurement
+                    // CSV unchanged, but make short connection tests analyzable.
+                    if(now-lastTelemetryTime>=2500L) {
+                        telemetryRow(t,if(captureActive)"CAPTURE" else "IDLE",transport,
+                            r,l,m,speed,coolant,slowFuel,fuelSessionId,runId,reconnects,drivePhase)
+                        lastTelemetryTime=now
+                    }
                     if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns,oil?:"",if(autoMode)"AUTO" else "TEST",coverageBins.size,speed?:"",slowFuel?:"",fuelSessionId,drivePhase,steadyPoints,accelPoints,steadyScore?:"",accelScore?:"",if(fuelDetector.pending)1 else 0,"%.2f".format(java.util.Locale.US,mixingKm),steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,highRpmMean?:"",highRpmPoints,highRpmOver120,highRpmBaselineAvg?:"",acceptedAutoSegments.size)).joinToString(","))}
                     samples++
-                    if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.15 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
+                    if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.16 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
                         steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,
                         steadyScore,accelScore,highRpmMean,highRpmPoints,highRpmOver120) }
                 }
             } catch(e:Exception) {
                 if(!running) break
-                reconnects++; sampleTimes.clear()
+                reconnects++; consecutiveFailures++; sampleTimes.clear()
                 if(outageFrom==null) outageFrom=SystemClock.elapsedRealtime()
                 // Do not combine samples on opposite sides of a network interruption.
                 captureActive=false; captureTailUntil=0L; previousSampleTime=0L
@@ -495,10 +508,29 @@ class EnetLoggerService : Service() {
                 runWeightedRatio=0.0; runWeight=0.0; runValidPoints=0; runHighPoints=0
                 connectionEvent("DISCONNECTED",reconnects,connectionStage,connectionTransport,connectionIp,
                     "${e.javaClass.simpleName}: ${e.message?:"no details"};${networkSnapshot()}")
+                telemetryRow(SystemClock.elapsedRealtime()-started,"DISCONNECTED",connectionTransport,
+                    fuelId=fuelSessionId,reconnects=reconnects,phase=connectionStage)
                 tone.startTone(ToneGenerator.TONE_SUP_ERROR,600)
                 emit("ENET reconnect #$reconnects [$connectionStage]: ${e.javaClass.simpleName}: ${e.message ?: "no details"}")
                 try{socket?.close()}catch(_:Exception){}; socket=null
-                SystemClock.sleep(1500)
+                // Wait briefly if Android reports that the Wi-Fi is blocked, then
+                // retry rapidly. Repeated failures use bounded exponential backoff.
+                if(vxscanWifiBlocked) {
+                    val deadline=SystemClock.elapsedRealtime()+1200L
+                    while(running && vxscanWifiBlocked && SystemClock.elapsedRealtime()<deadline) {
+                        SystemClock.sleep(30L)
+                    }
+                }
+                val retryMs=when(consecutiveFailures) {
+                    1 -> 70L
+                    2 -> 170L
+                    3 -> 360L
+                    4 -> 700L
+                    else -> 1200L
+                }
+                connectionEvent("RETRY",reconnects,"BACKOFF",connectionTransport,connectionIp,
+                    "delay_ms=$retryMs;wifi_blocked=$vxscanWifiBlocked;failures=$consecutiveFailures")
+                if(running) SystemClock.sleep(retryMs)
             }
         }
     }
