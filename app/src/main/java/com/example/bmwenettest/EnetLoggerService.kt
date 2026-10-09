@@ -134,7 +134,7 @@ class EnetLoggerService : Service() {
         val dir=getExternalFilesDir(null)?:filesDir
         return File(dir,"bmw_dme_probe_v1720_fuel${fuelId}_${System.currentTimeMillis()}.csv").apply {
             writeText("wall_time_ms,elapsed_ms,fuel_session_id,transport,did_hex,parameter,"+
-                "status,nrc,raw_hex,decoded_candidate,rpm,load_pct,map_kpa_abs,note\\n")
+                "status,nrc,raw_hex,decoded_candidate,rpm,load_pct,map_kpa_abs,note\n")
         }
     }
 
