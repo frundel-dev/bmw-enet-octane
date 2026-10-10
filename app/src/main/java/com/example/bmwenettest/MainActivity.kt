@@ -167,7 +167,20 @@ class MainActivity : Activity() {
             }
         }
         val filter=IntentFilter(EnetLoggerService.ACTION_STATUS)
-        if(Build.VERSION.SDK_INT>=33) registerReceiver(statusReceiver,filter,RECEIVER_NOT_EXPORTED) else @Suppress("DEPRECATION") registerReceiver(statusReceiver,filter)
+        if(Build.VERSION.SDK_INT>=33) {
+            registerReceiver(statusReceiver,filter,RECEIVER_NOT_EXPORTED)
+        } else {
+            registerStatusReceiverPre33(filter)
+        }
+    }
+
+    // Android < 13 has no RECEIVER_NOT_EXPORTED overload. The only caller
+    // checks SDK_INT, and this receiver listens solely for our internal
+    // app-scoped broadcasts sent with Intent.setPackage(packageName).
+    @android.annotation.SuppressLint("UnspecifiedRegisterReceiverFlag")
+    private fun registerStatusReceiverPre33(filter:IntentFilter) {
+        @Suppress("DEPRECATION")
+        registerReceiver(statusReceiver,filter)
     }
 
 
