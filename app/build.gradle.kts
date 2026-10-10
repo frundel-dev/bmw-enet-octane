@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 40
-        versionName = "1.7.22"
+        versionCode = 41
+        versionName = "1.7.23"
     }
 }
 
-// v1.7.22: A/B/C/D read-only DME polling comparison, safe fallbacks, compact overflow menu
+// v1.7.23: automatic in-session A/B/C/D tuning with safe live switching, confidence checks and comparison CSV
