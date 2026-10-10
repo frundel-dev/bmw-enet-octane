@@ -16,9 +16,9 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 39
-        versionName = "1.7.21"
+        versionCode = 40
+        versionName = "1.7.22"
     }
 }
 
-// v1.7.21: compact aligned engine readings, no speed on screen, letter-free roundel icon
+// v1.7.22: A/B/C/D read-only DME polling comparison, safe fallbacks, compact overflow menu
