@@ -44,46 +44,11 @@ class DualTcpSampler(
         thread.interrupt()
     }
 
-    private fun exact(input:InputStream,size:Int):ByteArray? {
-        val dst=ByteArray(size)
-        var count=0
-        while(count<size) {
-            val n=input.read(dst,count,size-count)
-            if(n<0)return null
-            count+=n
-        }
-        return dst
-    }
-
-    private fun hsfz(data:ByteArray):ByteArray {
-        val length=2+data.size
-        return byteArrayOf(
-            (length ushr 24).toByte(),(length ushr 16).toByte(),
-            (length ushr 8).toByte(),length.toByte(),
-            0,1,0xF4.toByte(),0x12
-        )+data
-    }
-
     private fun send(s:Socket,body:ByteArray):ByteArray? {
-        s.getOutputStream().write(hsfz(body))
+        s.getOutputStream().write(HsfzCodec.encode(body))
         s.getOutputStream().flush()
-        // HSFZ can include a preliminary non-data frame.
-        repeat(2) {
-            try {
-                val header=exact(s.getInputStream(),6)?:return null
-                val length=((header[0].toInt() and 255) shl 24) or
-                    ((header[1].toInt() and 255) shl 16) or
-                    ((header[2].toInt() and 255) shl 8) or
-                    (header[3].toInt() and 255)
-                if(length !in 2..65536)throw java.io.IOException("Invalid HSFZ length")
-                val payload=exact(s.getInputStream(),length)?:return null
-                if(header[4].toInt()==0 && header[5].toInt()==1 &&
-                    payload.size>=2) {
-                    return payload.copyOfRange(2,payload.size)
-                }
-            } catch(_:SocketTimeoutException) { return null }
-        }
-        return null
+        return HsfzCodec.readFrames(s.getInputStream())
+            .firstNotNullOfOrNull { HsfzCodec.payload(it) }
     }
 
     private fun obd(s:Socket,pid:Int):ByteArray? {
