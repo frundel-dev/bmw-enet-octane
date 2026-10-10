@@ -360,6 +360,38 @@ class EnetLoggerService : Service() {
         val dmeProbeResults=linkedMapOf<Int,DmeReadOnlyProbe.Result>()
         var dmeProbeIndex=0
         var lastDmeProbeMs=0L
+
+        // All mode changes happen on the primary polling thread, between
+        // complete request/response cycles. The primary TCP remains open.
+        fun activatePollingMode(mode:String,net:Network,host:String,
+                                kind:String,reason:String) {
+            secondarySampler?.close()
+            secondarySampler=null
+            pollModeActive=if(experimentalRollback)"A" else mode
+            batchEnabled=(pollModeActive=="B" || pollModeActive=="D")
+            lastBatchFallback=if(experimentalRollback)"safe A after TCP errors" else ""
+            secondTcpFallback=""
+            lastSecondarySnapshot=0L
+            lastSlow=0L
+            lastBenchmarkMs=0L
+            sampleTimes.clear()
+            // Do not merge one ACCEL/STEADY segment across poll topologies.
+            captureActive=false
+            captureTailUntil=0L
+            previousSampleTime=0L
+            previousRpm=null
+            previousMap=null
+            lastSteadyObservation=0L
+            if((pollModeActive=="C" || pollModeActive=="D") && running) {
+                secondConnectedAt=SystemClock.elapsedRealtime()
+                secondarySampler=DualTcpSampler(net,host) { event,detail ->
+                    connectionEvent(event,reconnects,connectionStage,kind,host,detail)
+                }
+            }
+            connectionEvent("POLL_MODE_CHANGE",reconnects,connectionStage,
+                kind,host,"mode="+pollModeActive+";"+reason)
+        }
+
         while(running) {
             try {
                 connectionStage="NETWORK"; connectionTransport=""; connectionIp=null
@@ -477,18 +509,16 @@ class EnetLoggerService : Service() {
                 deniedNetworks.remove(activeNet)
                 connectionTransport=transport; connectionStage="POLL"; emptyPolls=0
                 consecutiveFailures=0
-                batchEnabled=wantsBatch && !experimentalRollback
-                lastBatchFallback=if(experimentalRollback)"safe serial after reconnect failures" else ""
-                secondTcpFallback=""
-                lastSecondarySnapshot=0L
-                secondarySampler?.close()
-                secondarySampler=null
-                if(wantsSecondTcp && !experimentalRollback) {
-                    secondConnectedAt=SystemClock.elapsedRealtime()
-                    secondarySampler=DualTcpSampler(activeNet!!,gatewayIp!!) { event,detail ->
-                        connectionEvent(event,reconnects,connectionStage,transport,gatewayIp,detail)
-                    }
+                if(requestedPollMode=="AUTO" && !experimentalRollback) {
+                    if(pollTuner==null)pollTuner=PollModeAutoTuner()
+                    else pollTuner?.restartAfterReconnect()
+                    pollModeActive="A"
+                } else {
+                    pollTuner=null
+                    pollModeActive=if(experimentalRollback)"A" else requestedPollMode
                 }
+                activatePollingMode(pollModeActive,activeNet!!,gatewayIp!!,
+                    transport,"new primary TCP")
                 // Keep optional DME probes out of the first 12 s after every reconnect.
                 lastDmeProbeMs=SystemClock.elapsedRealtime()
                 prefs.edit().putString("last_gateway_ip",gatewayIp)
@@ -503,6 +533,20 @@ class EnetLoggerService : Service() {
                 emit("CONNECTED $transport $gatewayIp:6801 • reconnects $reconnects" +
                     if(gap>0)" • recovered in ${gap} ms" else "")
                 while(running && socket?.isClosed==false) {
+                    // User can select AUTO or a fixed mode while LOGGER runs.
+                    // Apply the change at a safe boundary, never mid-UDS frame.
+                    val newRequest=prefs.getString("poll_mode","AUTO")?.takeIf {
+                        it=="AUTO" || it=="A" || it=="B" ||
+                            it=="C" || it=="D"
+                    } ?: "AUTO"
+                    if(newRequest!=requestedPollMode) {
+                        requestedPollMode=newRequest
+                        pollTuner=if(newRequest=="AUTO" && !experimentalRollback)
+                            PollModeAutoTuner() else null
+                        val initial=if(newRequest=="AUTO")"A" else newRequest
+                        activatePollingMode(initial,activeNet!!,gatewayIp!!,
+                            transport,"user changed poll mode without restart")
+                    }
                     val cycleStart=SystemClock.elapsedRealtime()
                     fun pid(id:Int):ByteArray? {
                         val q=hsfz(byteArrayOf(0x01,id.toByte())); socket!!.getOutputStream().write(q); socket!!.getOutputStream().flush()
