@@ -170,9 +170,11 @@ class PollModeAutoTuner {
             // Require a material performance improvement to justify a more
             // complex polling topology. If none is demonstrated, choose A.
             val candidates=trials.filter { it.usable }
-            var best=candidates.firstOrNull() ?: trials.firstOrNull { it.mode=="A" }
-            if(best!=null) for(t in candidates) {
-                if(t.completeHz>best.completeHz*1.12) best=t
+            var best:Trial?=candidates.firstOrNull() ?: trials.firstOrNull { it.mode=="A" }
+            for(t in candidates) {
+                val incumbent=best
+                if(incumbent==null || t.completeHz>incumbent.completeHz*1.12)
+                    best=t
             }
             chosenMode=best?.mode ?: "A"
             currentMode=chosenMode!!
