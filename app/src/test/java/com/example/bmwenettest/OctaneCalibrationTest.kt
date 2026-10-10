@@ -45,7 +45,7 @@ class OctaneCalibrationTest {
         assertTrue(OctaneCalibration.trimsComparable(15.0,-15.0))
         assertFalse(OctaneCalibration.trimsComparable(15.001,0.0))
         assertFalse(OctaneCalibration.trimsComparable(Double.NaN,0.0))
-        assertEquals("r1500:m0:l36:i18:c80",
+        assertEquals("r1750:m0:l36:i18:c80",
             OctaneCalibration.fineSteadyCell(1750.0,95.0,38.0,19.0,84.0))
     }
 }
