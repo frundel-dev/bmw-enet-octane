@@ -210,8 +210,7 @@ class MainActivity : Activity() {
             .getString("poll_mode","A") ?: "A"
         val selected=listOf("A","B","C","D").indexOf(current).coerceAtLeast(0)
         AlertDialog.Builder(this)
-            .setTitle("Режим опроса DME")
-            .setMessage("Экспериментальные режимы B/C/D. При отказе пакетного запроса или второго TCP приложение вернётся к последовательному опросу. Fuel Score не меняется.")
+            .setTitle("Режим опроса DME • B–D экспериментальные")
             .setSingleChoiceItems(options,selected) { dialog,which ->
                 val mode=listOf("A","B","C","D")[which]
                 getSharedPreferences("bmw_native",MODE_PRIVATE).edit()
@@ -237,7 +236,9 @@ class MainActivity : Activity() {
             val content=try { recent.useLines { it.toList().takeLast(20).joinToString("\n") } }
                 catch(_:Exception) { "Не удалось прочитать CSV" }
             runOnUiThread {
-                val scroller=ScrollView(this)
+                val scroller=ScrollView(this).apply {
+                    setBackgroundColor(Color.rgb(12,19,32))
+                }
                 scroller.addView(TextView(this).apply {
                     text=recent.name+"\n\n"+content
                     textSize=11f
