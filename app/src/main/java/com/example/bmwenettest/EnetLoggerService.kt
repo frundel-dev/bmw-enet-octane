@@ -87,6 +87,7 @@ class EnetLoggerService : Service() {
     private var steadySurveyFile: File? = null
     private var dmeProbeFile: File? = null
     private var benchmarkFile: File? = null
+    private var autoPollingFile: File? = null
     @Volatile private var secondarySampler:DualTcpSampler?=null
     private val connectionLogLock = Any()
     private var socket: Socket? = null
@@ -131,11 +132,18 @@ class EnetLoggerService : Service() {
         steadySurveyFile=createSteadySurveyFile(
             getSharedPreferences("bmw_native",MODE_PRIVATE).getInt("fuel_session_id",1))
         benchmarkFile=File(getExternalFilesDir(null)?:filesDir,
-            "bmw_poll_benchmark_v1722_${System.currentTimeMillis()}.csv").apply {
+            "bmw_poll_benchmark_v1723_${System.currentTimeMillis()}.csv").apply {
             writeText("wall_time_ms,elapsed_ms,requested_mode,effective_mode,"+
                 "fast_hz,cycle_ms,fast_dme_ms,batch_enabled,second_tcp_enabled,"+
                 "second_tcp_age_ms,second_tcp_cycle_ms,batch_ok,batch_errors,"+
-                "fast_knock_valid,fast_ign_valid,secondary_responses,transport,notes\n")
+                "fast_knock_valid,fast_ign_valid,secondary_responses,transport,notes,"+
+                "auto_status,auto_trial,auto_stage,auto_winner\n")
+        }
+        autoPollingFile=File(getExternalFilesDir(null)?:filesDir,
+            "bmw_poll_auto_v1723_${System.currentTimeMillis()}.csv").apply {
+            writeText("wall_time_ms,elapsed_ms,event,trial_mode,duration_ms,"+
+                "cycles,complete,complete_hz,complete_pct,median_cycle_ms,"+
+                "p95_cycle_ms,usable,reason,selected_mode,transport\n")
         }
         dmeProbeFile=createDmeProbeFile(
             getSharedPreferences("bmw_native",MODE_PRIVATE).getInt("fuel_session_id",1))
@@ -297,11 +305,12 @@ class EnetLoggerService : Service() {
         val sampleTimes=java.util.ArrayDeque<Long>(); var validOctaneSamples=0
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val autoMode=prefs.getString("measurement_mode","AUTO")=="AUTO"
-        val requestedPollMode=prefs.getString("poll_mode","A")?.takeIf {
-            it=="A" || it=="B" || it=="C" || it=="D"
-        } ?: "A"
-        val wantsBatch=requestedPollMode=="B" || requestedPollMode=="D"
-        val wantsSecondTcp=requestedPollMode=="C" || requestedPollMode=="D"
+        var requestedPollMode=prefs.getString("poll_mode","AUTO")?.takeIf {
+            it=="AUTO" || it=="A" || it=="B" || it=="C" || it=="D"
+        } ?: "AUTO"
+        var pollTuner:PollModeAutoTuner?=if(requestedPollMode=="AUTO")
+            PollModeAutoTuner() else null
+        var pollModeActive=if(requestedPollMode=="AUTO")"A" else requestedPollMode
         var batchEnabled=false
         var batchOk=0
         var batchErrors=0
