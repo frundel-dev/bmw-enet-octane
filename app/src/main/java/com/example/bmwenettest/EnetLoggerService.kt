@@ -474,7 +474,7 @@ class EnetLoggerService : Service() {
                 secondarySampler=null
                 if(wantsSecondTcp) {
                     secondConnectedAt=SystemClock.elapsedRealtime()
-                    secondarySampler=DualTcpSampler(activeNet!!,gatewayIp) { event,detail ->
+                    secondarySampler=DualTcpSampler(activeNet!!,gatewayIp!!) { event,detail ->
                         connectionEvent(event,reconnects,connectionStage,transport,gatewayIp,detail)
                     }
                 }
@@ -506,7 +506,43 @@ class EnetLoggerService : Service() {
                         if(emptyPolls>=3) throw IOException("No ECU OBD reply for 3 consecutive polls")
                     } else emptyPolls=0
                     val now=SystemClock.elapsedRealtime()
+                    // A second HSFZ session may provide SLOW data without
+                    // blocking the FAST loop. A failed/stale session falls
+                    // back to primary polling automatically.
+                    val slowWorker=secondarySampler
+                    val slowSnapshot=slowWorker?.latest
+                    if(slowWorker!=null && (slowWorker.state=="FAILED" ||
+                        (now-secondConnectedAt>12000L &&
+                            (slowSnapshot==null || now-slowSnapshot.whenMs>12000L)))) {
+                        secondTcpFallback=if(slowWorker.state=="FAILED")
+                            "second TCP failed" else "SLOW snapshot stale"
+                        connectionEvent("SECOND_TCP_FALLBACK",reconnects,connectionStage,
+                            transport,gatewayIp,secondTcpFallback)
+                        slowWorker.close()
+                        secondarySampler=null
+                    }
                     if(now-lastSlow>=2000L) {
+                        val fresh=secondarySampler?.latest?.takeIf {
+                            it.whenMs>lastSecondarySnapshot &&
+                            SystemClock.elapsedRealtime()-it.whenMs<12000L
+                        }
+                        if(fresh!=null) {
+                            lastSecondarySnapshot=fresh.whenMs
+                            fun sv(id:Int)=fresh.obd[id]
+                            slowSpeed=sv(0x0D)?.firstOrNull()?.let{(it.toInt() and 255).toDouble()}
+                            slowIat=sv(0x0F)?.firstOrNull()?.let{((it.toInt() and 255)-40).toDouble()}
+                            slowIgn=sv(0x0E)?.firstOrNull()?.let{(it.toInt() and 255)/2.0-64.0}
+                            slowCoolant=sv(0x05)?.firstOrNull()?.let{((it.toInt() and 255)-40).toDouble()}
+                            slowThrottle=sv(0x11)?.firstOrNull()?.let{(it.toInt() and 255)*100.0/255.0}
+                            slowStft=sv(0x06)?.firstOrNull()?.let{((it.toInt() and 255)-128)*100.0/128.0}
+                            slowLtft=sv(0x07)?.firstOrNull()?.let{((it.toInt() and 255)-128)*100.0/128.0}
+                            slowLambda=sv(0x44)?.takeIf{it.size>=2}?.let{
+                                (((it[0].toInt() and 255)*256)+(it[1].toInt() and 255))*2.0/65535.0
+                            }
+                            slowOil=sv(0x5C)?.firstOrNull()?.let{((it.toInt() and 255)-40).toDouble()}
+                            slowSuperKnock=fresh.superKnock
+                            lastSlow=now
+                        } else if(secondarySampler==null) {
                         slowSpeed=obd(pid(0x0D),0x0D)?.firstOrNull()?.let{(it.toInt() and 255).toDouble()}
                         slowIat=obd(pid(0x0F),0x0F)?.let{((it[0].toInt()and 255)-40).toDouble()}
                         slowIgn=obd(pid(0x0E),0x0E)?.let{(it[0].toInt()and 255)/2.0-64.0}
@@ -518,10 +554,14 @@ class EnetLoggerService : Service() {
                         slowOil=obd(pid(0x5C),0x5C)?.firstOrNull()?.let{((it.toInt()and 255)-40).toDouble()}
                         slowSuperKnock=udsData(0x5728)?.firstOrNull()?.let{it.toInt() and 255}
                         lastSlow=now
+                        }
                     }
                     // Tank level is a slow optional OBD parameter. No value means unsupported/unavailable.
                     if(now-lastFuelPoll>=15000L) {
-                        slowFuel=obd(pid(0x2F),0x2F)?.firstOrNull()?.let { (it.toInt() and 255)*100.0/255.0 }
+                        slowFuel=(secondarySampler?.latest?.obd?.get(0x2F)
+                            ?: obd(pid(0x2F),0x2F))?.firstOrNull()?.let {
+                            (it.toInt() and 255)*100.0/255.0
+                        }
                         lastFuelPoll=now
                         if(slowFuel!=null) fuelSupported=true
                         val tankUpdate=fuelDetector.observe(slowFuel,now)
