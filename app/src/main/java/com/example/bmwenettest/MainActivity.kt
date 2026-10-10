@@ -70,7 +70,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.21"
+            text="v1.7.22"
             textSize=13f
             setTextColor(sky)
         })
@@ -128,7 +128,22 @@ class MainActivity : Activity() {
                 }
             }
         }
-        controls.addView(startButton,LinearLayout.LayoutParams(0,dp(54),1.15f))
+        controls.addView(startButton,LinearLayout.LayoutParams(0,dp(54),1.15f).apply {
+            rightMargin=dp(5)
+        })
+        // Compact overflow replaces the full-width footer button.
+        controls.addView(Button(this).apply {
+            text="⋮"
+            textSize=26f
+            isAllCaps=false
+            contentDescription="Дополнительно"
+            minWidth=0
+            minHeight=dp(52)
+            setPadding(0,0,0,dp(3))
+            setTextColor(Color.WHITE)
+            backgroundTintList=ColorStateList.valueOf(Color.rgb(41,60,84))
+            setOnClickListener { showAdditionalMenu() }
+        },LinearLayout.LayoutParams(dp(47),dp(54)))
         root.addView(controls)
         dashboard=OctaneDashboard(this)
         status=dashboard.connectionView
@@ -138,17 +153,6 @@ class MainActivity : Activity() {
         }
         root.addView(scroll,LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,0,1f
-        ))
-        root.addView(Button(this).apply {
-            text="ДОПОЛНИТЕЛЬНО"
-            textSize=14f
-            isAllCaps=false
-            minHeight=dp(46)
-            setTextColor(Color.WHITE)
-            backgroundTintList=ColorStateList.valueOf(Color.rgb(41,60,84))
-            setOnClickListener { showAdditionalMenu() }
-        },LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,dp(48)
         ))
         setContentView(root)
         statusReceiver=object:BroadcastReceiver() {
@@ -169,7 +173,8 @@ class MainActivity : Activity() {
 
     private fun showAdditionalMenu() {
         val items=arrayOf("Импорт BMW DME .PRG", "История замеров", "Журнал VXSCAN + Android",
-            "События сети Android", "Только TCP-реконнекты", "Проверки DME • только чтение")
+            "События сети Android", "Только TCP-реконнекты", "Проверки DME • только чтение",
+            "Режим опроса DME", "Журнал производительности опроса")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -186,17 +191,72 @@ class MainActivity : Activity() {
                     3 -> showConnectionHistory("ANDROID")
                     4 -> showConnectionHistory("TCP")
                     5 -> showDmeProbeHistory()
+                    6 -> showPollingModeDialog()
+                    7 -> showPollingPerformance()
                 }
             }
             .setNegativeButton("Закрыть",null)
             .show()
     }
 
+    private fun showPollingModeDialog() {
+        val options=arrayOf(
+            "A • один TCP, последовательный (стабильный)",
+            "B • один TCP, пакетные DID",
+            "C • два TCP, параллельный медленный опрос",
+            "D • два TCP + пакетные DID"
+        )
+        val current=getSharedPreferences("bmw_native",MODE_PRIVATE)
+            .getString("poll_mode","A") ?: "A"
+        val selected=listOf("A","B","C","D").indexOf(current).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("Режим опроса DME")
+            .setMessage("Экспериментальные режимы B/C/D. При отказе пакетного запроса или второго TCP приложение вернётся к последовательному опросу. Fuel Score не меняется.")
+            .setSingleChoiceItems(options,selected) { dialog,which ->
+                val mode=listOf("A","B","C","D")[which]
+                getSharedPreferences("bmw_native",MODE_PRIVATE).edit()
+                    .putString("poll_mode",mode).apply()
+                dialog.dismiss()
+                Toast.makeText(this,"Режим "+mode+" • действует после перезапуска логгера",
+                    Toast.LENGTH_LONG).show()
+            }.setNegativeButton("Отмена",null).show()
+    }
+
+    private fun showPollingPerformance() {
+        val dir=getExternalFilesDir(null)?:filesDir
+        val recent=dir.listFiles()?.filter { it.isFile &&
+            it.name.startsWith("bmw_poll_benchmark_v1722_") && it.name.endsWith(".csv")
+        }?.maxByOrNull { it.lastModified() }
+        if(recent==null) {
+            AlertDialog.Builder(this).setTitle("Производительность DME")
+                .setMessage("Пока нет журнала. Запустите логгер и подождите несколько секунд.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        executor.execute {
+            val content=try { recent.useLines { it.toList().takeLast(20).joinToString("\n") } }
+                catch(_:Exception) { "Не удалось прочитать CSV" }
+            runOnUiThread {
+                val scroller=ScrollView(this)
+                scroller.addView(TextView(this).apply {
+                    text=recent.name+"\n\n"+content
+                    textSize=11f
+                    setTextColor(Color.WHITE)
+                    setPadding(20,16,20,16)
+                    setTextIsSelectable(true)
+                })
+                AlertDialog.Builder(this).setTitle("Замеры скорости • CSV")
+                    .setView(scroller).setPositiveButton("OK",null).show()
+            }
+        }
+    }
+
     private fun showDmeProbeHistory() {
         val dir=getExternalFilesDir(null)?:filesDir
         val newest=dir.listFiles()?.filter {
             it.isFile && (it.name.startsWith("bmw_dme_probe_v1720_") ||
-                it.name.startsWith("bmw_dme_probe_v1721_")) &&
+                it.name.startsWith("bmw_dme_probe_v1721_") ||
+                it.name.startsWith("bmw_dme_probe_v1722_")) &&
                 it.name.endsWith(".csv",true)
         }?.maxByOrNull { it.lastModified() }
         if(newest==null) {
