@@ -610,16 +610,43 @@ class EnetLoggerService : Service() {
                     val speed=slowSpeed; val i=slowIat; val a=slowIgn; val coolant=slowCoolant; val oil=slowOil; val throttle=slowThrottle; val stft1=slowStft; val ltft1=slowLtft; val lambdaEq=slowLambda
                     val combinedTrim=if(stft1!=null && ltft1!=null)
                         ((1.0+stft1/100.0)*(1.0+ltft1/100.0)-1.0)*100.0 else null
+                    val fastDmeStarted=SystemClock.elapsedRealtime()
                     val knockStatus=udsData(0x4A36)?.firstOrNull()?.let{it.toInt() and 255}
-                    fun knock(did:Int)=udsData(did)?.takeIf{it.size>=4}?.let{
+                    // Batch read only if the ECU returns every DID, in order
+                    // and with the exact declared width. Any failure disables
+                    // batching for the rest of this TCP connection.
+                    val knockBatch=if(batchEnabled) {
+                        udsBatch(DmeBatchParser.knockDids,4).also {
+                            if(it==null) {
+                                batchErrors++
+                                lastBatchFallback="batch knock rejected"
+                                batchEnabled=false
+                                connectionEvent("BATCH_FALLBACK",reconnects,connectionStage,
+                                    transport,gatewayIp,lastBatchFallback)
+                            } else batchOk++
+                        }
+                    } else null
+                    fun knock(did:Int)=(knockBatch?.get(did) ?: udsData(did))?.takeIf{it.size>=4}?.let{
                         val raw=((it[0].toLong()and 255) shl 24) or ((it[1].toLong()and 255) shl 16) or ((it[2].toLong()and 255) shl 8) or (it[3].toLong()and 255)
                         raw*0.05/65536.0
                     }
-                    fun ign(did:Int)=udsData(did)?.takeIf{it.size>=2}?.let{
+                    fun ign(did:Int)=(ignitionBatch?.get(did) ?: udsData(did))?.takeIf{it.size>=2}?.let{
                         val u=((it[0].toInt()and 255) shl 8) or (it[1].toInt()and 255); val signed=if(u>=0x8000)u-0x10000 else u; signed/10.0
                     }
                     val kz1=knock(0x4A37); val kz2=knock(0x4A38); val kz3=knock(0x4A39); val kz4=knock(0x4A3A)
+                    val ignitionBatch=if(batchEnabled) {
+                        udsBatch(DmeBatchParser.ignitionDids,2).also {
+                            if(it==null) {
+                                batchErrors++
+                                lastBatchFallback="batch ignition rejected"
+                                batchEnabled=false
+                                connectionEvent("BATCH_FALLBACK",reconnects,connectionStage,
+                                    transport,gatewayIp,lastBatchFallback)
+                            } else batchOk++
+                        }
+                    } else null
                     val iz1=ign(0x4A49); val iz2=ign(0x4A4A); val iz3=ign(0x4A4C); val iz4=ign(0x4A4D)
+                    val fastDmeMs=SystemClock.elapsedRealtime()-fastDmeStarted
                     val superKnock=slowSuperKnock
                     // Verify DME8FF_R candidate identifiers with READ-ONLY UDS 0x22.
                     // Exactly one probe no more frequently than every 12 s.
@@ -921,6 +948,17 @@ class EnetLoggerService : Service() {
         s.getOutputStream().flush()
         val payloads=readFrames(s.getInputStream()).mapNotNull { payload(it) }
         return DmeReadOnlyProbe.parse(spec,payloads)
+    }
+
+    private fun udsBatch(dids:List<Int>,dataBytes:Int):Map<Int,ByteArray>? {
+        val s=socket ?: return null
+        val message=hsfz(DmeBatchParser.request(dids))
+        s.getOutputStream().write(message)
+        s.getOutputStream().flush()
+        val payloads=readFrames(s.getInputStream()).mapNotNull { payload(it) }
+        return payloads.firstNotNullOfOrNull { p ->
+            DmeBatchParser.parse(p,dids,dataBytes)
+        }
     }
 
     private fun udsData(did:Int):ByteArray? {
