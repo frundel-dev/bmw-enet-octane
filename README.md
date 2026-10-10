@@ -20,7 +20,7 @@ It automatically builds the debug APK on pushes to `main`/`master`, pull request
 To download the APK on GitHub:
 1. Open **Actions** → **Build Android APK**.
 2. Open the latest successful run.
-3. In **Artifacts**, download **BmwEnetTest-v0.2-debug-apk**.
+3. In **Artifacts**, download **BMW-OCTANE-v1.7.24-debug-apk**.
 4. Unzip it to get `app-debug.apk`.
 
 The CI build uses JDK 17, Gradle 8.9, Android SDK 35 and Android Build Tools 35.0.0. No signing secrets are required for this debug APK.

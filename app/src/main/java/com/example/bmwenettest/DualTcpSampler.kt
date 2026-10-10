@@ -22,7 +22,9 @@ class DualTcpSampler(
     data class Snapshot(
         val whenMs:Long,
         val obd:Map<Int,ByteArray>,
+        val obdAtMs:Map<Int,Long>,
         val superKnock:Int?,
+        val superKnockAtMs:Long?,
         val durationMs:Long,
         val responses:Int
     )
@@ -44,27 +46,22 @@ class DualTcpSampler(
         thread.interrupt()
     }
 
-    private fun send(s:Socket,body:ByteArray):ByteArray? {
+    private fun send(s:Socket,body:ByteArray,accept:(ByteArray)->Boolean):ByteArray? {
         s.getOutputStream().write(HsfzCodec.encode(body))
         s.getOutputStream().flush()
         return HsfzCodec.readFrames(s.getInputStream())
-            .firstNotNullOfOrNull { HsfzCodec.payload(it) }
+            .mapNotNull { HsfzCodec.payload(it) }.firstOrNull(accept)
     }
 
-    private fun obd(s:Socket,pid:Int):ByteArray? {
-        val p=send(s,byteArrayOf(0x01,pid.toByte())) ?: return null
-        val idx=(0 until p.size-1).firstOrNull {
-            p[it]==0x41.toByte() && (p[it+1].toInt() and 255)==pid
-        } ?: return null
-        return p.copyOfRange(idx+2,p.size)
-    }
+    private fun obd(s:Socket,pid:Int):ByteArray? =
+        send(s,byteArrayOf(0x01,pid.toByte())) {
+            DiagnosticResponse.obd(it,pid)!=null
+        }?.let { DiagnosticResponse.obd(it,pid) }
 
-    private fun superKnock(s:Socket):Int? {
-        val p=send(s,byteArrayOf(0x22,0x57,0x28)) ?: return null
-        return if(p.size>=4 && (p[0].toInt() and 255)==0x62 &&
-            (p[1].toInt() and 255)==0x57 && (p[2].toInt() and 255)==0x28)
-            p[3].toInt() and 255 else null
-    }
+    private fun superKnock(s:Socket):Int? =
+        send(s,byteArrayOf(0x22,0x57,0x28)) {
+            DiagnosticResponse.uds(it,0x5728)?.isNotEmpty()==true
+        }?.let { DiagnosticResponse.uds(it,0x5728)?.firstOrNull()?.toInt()?.and(255) }
 
     private fun work() {
         try {
@@ -79,18 +76,23 @@ class DualTcpSampler(
             while(alive.get()) {
                 val started=SystemClock.elapsedRealtime()
                 val values=linkedMapOf<Int,ByteArray>()
+                val observed=linkedMapOf<Int,Long>()
                 for(pid in slowPids) {
                     if(!alive.get())break
-                    obd(s,pid)?.let { values[pid]=it }
+                    obd(s,pid)?.let {
+                        values[pid]=it
+                        observed[pid]=SystemClock.elapsedRealtime()
+                    }
                 }
                 if(!alive.get())break
                 val superKnock=superKnock(s)
+                val superKnockAtMs=if(superKnock!=null)SystemClock.elapsedRealtime() else null
                 if(values.isEmpty() && superKnock==null) consecutiveEmpty++
                 else consecutiveEmpty=0
                 if(consecutiveEmpty>=3)throw java.io.IOException("No valid SLOW DME replies")
                 if(values.isNotEmpty()) {
-                    latest=Snapshot(SystemClock.elapsedRealtime(),values.toMap(),
-                        superKnock,SystemClock.elapsedRealtime()-started,
+                    latest=Snapshot(SystemClock.elapsedRealtime(),values.toMap(),observed.toMap(),
+                        superKnock,superKnockAtMs,SystemClock.elapsedRealtime()-started,
                         values.size+(if(superKnock!=null)1 else 0))
                 }
                 val timeLeft=(2000L-(SystemClock.elapsedRealtime()-started)).coerceAtLeast(0L)

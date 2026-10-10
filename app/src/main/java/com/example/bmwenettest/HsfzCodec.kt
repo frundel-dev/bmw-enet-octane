@@ -24,13 +24,33 @@ internal object HsfzCodec {
         )+request
     }
 
-    private fun exact(input:InputStream,length:Int):ByteArray? {
+    /**
+     * A timed-out or disconnected stream may only be reused if no part of
+     * the next HSFZ header has been consumed. Otherwise framing is lost and
+     * the owning socket MUST be closed/reconnected by the caller.
+     */
+    private fun exact(input:InputStream,length:Int,idleHeader:Boolean=false):ByteArray? {
         val out=ByteArray(length)
         var count=0
+        var zeroReads=0
         while(count<length) {
-            val received=input.read(out,count,length-count)
-            if(received<0)return null
-            if(received==0)continue
+            val received=try {
+                input.read(out,count,length-count)
+            } catch(e:SocketTimeoutException) {
+                if(count>0 || !idleHeader)
+                    throw IOException("Incomplete HSFZ frame on timeout ($count/$length)",e)
+                throw e
+            }
+            if(received<0) {
+                if(count>0 || !idleHeader)
+                    throw IOException("Incomplete HSFZ frame on EOF ($count/$length)")
+                return null
+            }
+            if(received==0) {
+                if(++zeroReads>3)throw IOException("HSFZ input repeatedly returned zero bytes")
+                continue
+            }
+            zeroReads=0
             count+=received
         }
         return out
@@ -45,7 +65,7 @@ internal object HsfzCodec {
         val frames=ArrayList<ByteArray>(maxFrames)
         repeat(maxFrames) {
             try {
-                val header=exact(input,6) ?: return frames
+                val header=exact(input,6,idleHeader=true) ?: return frames
                 val length=bodyLength(header)
                 if(length !in 2..MAX_FRAME_BODY_BYTES)
                     throw IOException("Invalid HSFZ frame size: $length")

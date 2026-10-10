@@ -70,7 +70,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.23"
+            text="v1.7.24"
             textSize=13f
             setTextColor(sky)
         })
@@ -242,7 +242,7 @@ class MainActivity : Activity() {
     private fun showAutoPollingReport() {
         val dir=getExternalFilesDir(null) ?: filesDir
         val file=dir.listFiles()?.filter {
-            it.isFile && it.name.startsWith("bmw_poll_auto_v1723_") &&
+            it.isFile && it.name.startsWith("bmw_poll_auto_") &&
                 it.name.endsWith(".csv",true)
         }?.maxByOrNull { it.lastModified() }
         if(file==null) {
@@ -278,7 +278,7 @@ class MainActivity : Activity() {
         val dir=getExternalFilesDir(null)?:filesDir
         val recent=dir.listFiles()?.filter { it.isFile &&
             (it.name.startsWith("bmw_poll_benchmark_v1722_") ||
-                it.name.startsWith("bmw_poll_benchmark_v1723_")) &&
+                it.name.startsWith("bmw_poll_benchmark_")) &&
                 it.name.endsWith(".csv")
         }?.maxByOrNull { it.lastModified() }
         if(recent==null) {
@@ -313,7 +313,7 @@ class MainActivity : Activity() {
             it.isFile && (it.name.startsWith("bmw_dme_probe_v1720_") ||
                 it.name.startsWith("bmw_dme_probe_v1721_") ||
                 it.name.startsWith("bmw_dme_probe_v1722_") ||
-                it.name.startsWith("bmw_dme_probe_v1723_")) &&
+                it.name.startsWith("bmw_dme_probe_")) &&
                 it.name.endsWith(".csv",true)
         }?.maxByOrNull { it.lastModified() }
         if(newest==null) {
@@ -784,33 +784,9 @@ READ-ONLY."""
         return byteArrayOf((len ushr 24).toByte(),(len ushr 16).toByte(),(len ushr 8).toByte(),len.toByte(),0x00,0x01,src.toByte(),dst.toByte()) + uds
     }
 
-    private fun readFrames(input:InputStream, max:Int):List<ByteArray> {
-        val result= mutableListOf<ByteArray>()
-        repeat(max) {
-            try {
-                val h=readExact(input,6) ?: return@repeat
-                val len=((h[0].toInt() and 255) shl 24) or ((h[1].toInt() and 255) shl 16) or ((h[2].toInt() and 255) shl 8) or (h[3].toInt() and 255)
-                if(len<0 || len>65536) return result
-                val body=readExact(input,len) ?: return result
-                result += h+body
-                val type=((h[4].toInt() and 255) shl 8) or (h[5].toInt() and 255)
-                if(type==1) return result
-            } catch(_:SocketTimeoutException){ return result }
-        }
-        return result
-    }
-
-    private fun readExact(input:InputStream,n:Int):ByteArray? {
-        val b=ByteArray(n); var off=0
-        while(off<n){ val r=input.read(b,off,n-off); if(r<0)return null; off+=r }
-        return b
-    }
-
-    private fun payload(frame:ByteArray):ByteArray? {
-        if(frame.size<8)return null
-        val type=((frame[4].toInt() and 255) shl 8) or (frame[5].toInt() and 255)
-        return if(type==1) frame.copyOfRange(8,frame.size) else null
-    }
+    // UI diagnostics share the same bounded, fail-closed HSFZ framing as the logger.
+    private fun readFrames(input:InputStream, max:Int)=HsfzCodec.readFrames(input,max)
+    private fun payload(frame:ByteArray)=HsfzCodec.payload(frame)
 
     private fun decodeVin(frame:ByteArray):String? {
         val p=payload(frame)?:return null

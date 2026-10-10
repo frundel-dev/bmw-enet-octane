@@ -45,7 +45,10 @@ class HsfzCodecTest {
     @Test fun neverPublishesTruncatedFrame() {
         val full=HsfzCodec.encode(bytes(0x62,0x4A,0x37,0x12,0x34))
         val truncated=full.copyOf(full.size-2)
-        assertTrue(HsfzCodec.readFrames(ByteArrayInputStream(truncated)).isEmpty())
+        try {
+            HsfzCodec.readFrames(ByteArrayInputStream(truncated))
+            fail("Truncated HSFZ must force socket recovery")
+        } catch(_:IOException) { }
     }
 
     @Test fun malformedLengthsAreRejectedBeforeAllocation() {
