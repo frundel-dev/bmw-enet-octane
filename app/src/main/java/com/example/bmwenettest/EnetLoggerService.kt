@@ -310,6 +310,8 @@ class EnetLoggerService : Service() {
         var secondConnectedAt=0L
         var lastBenchmarkMs=0L
         var secondTcpFallback=""
+        val recentPollFailures=java.util.ArrayDeque<Long>()
+        var experimentalRollback=false
         val fuelDetector=FuelRefillDetector(prefs.getFloat("last_fuel_pct",Float.NaN).toDouble())
         var fuelSessionId=prefs.getInt("fuel_session_id",1)
         var mixingKm=prefs.getFloat("mixing_remaining_km",0f).toDouble()
@@ -466,13 +468,13 @@ class EnetLoggerService : Service() {
                 deniedNetworks.remove(activeNet)
                 connectionTransport=transport; connectionStage="POLL"; emptyPolls=0
                 consecutiveFailures=0
-                batchEnabled=wantsBatch
-                lastBatchFallback=""
+                batchEnabled=wantsBatch && !experimentalRollback
+                lastBatchFallback=if(experimentalRollback)"safe serial after reconnect failures" else ""
                 secondTcpFallback=""
                 lastSecondarySnapshot=0L
                 secondarySampler?.close()
                 secondarySampler=null
-                if(wantsSecondTcp) {
+                if(wantsSecondTcp && !experimentalRollback) {
                     secondConnectedAt=SystemClock.elapsedRealtime()
                     secondarySampler=DualTcpSampler(activeNet!!,gatewayIp!!) { event,detail ->
                         connectionEvent(event,reconnects,connectionStage,transport,gatewayIp,detail)
@@ -922,6 +924,19 @@ class EnetLoggerService : Service() {
             } catch(e:Exception) {
                 if(!running) break
                 secondarySampler?.close();secondarySampler=null
+                val failureAt=SystemClock.elapsedRealtime()
+                recentPollFailures.addLast(failureAt)
+                while(recentPollFailures.isNotEmpty() &&
+                    failureAt-recentPollFailures.first()>90000L) {
+                    recentPollFailures.removeFirst()
+                }
+                if(!experimentalRollback && requestedPollMode!="A" &&
+                    recentPollFailures.size>=2) {
+                    experimentalRollback=true
+                    connectionEvent("EXPERIMENT_ROLLBACK",reconnects,
+                        connectionStage,connectionTransport,connectionIp,
+                        "2 TCP interruptions within 90s; use safe mode A until STOP/START")
+                }
                 reconnects++; consecutiveFailures++; sampleTimes.clear()
                 if(outageFrom==null) outageFrom=SystemClock.elapsedRealtime()
                 // Do not combine samples on opposite sides of a network interruption.
