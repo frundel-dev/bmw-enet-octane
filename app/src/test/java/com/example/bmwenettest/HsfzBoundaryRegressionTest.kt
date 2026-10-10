@@ -35,17 +35,24 @@ class HsfzBoundaryRegressionTest {
     @Test fun eofAtEveryByteCannotPublishPartialFrame() {
         val frame=HsfzCodec.encode(b(0x62,0x4A,0x37,0x12,0x34))
         for(length in 0 until frame.size) {
-            assertTrue("truncation=$length",
-                HsfzCodec.readFrames(ByteArrayInputStream(frame.copyOf(length))).isEmpty())
+            if(length==0) {
+                assertTrue(HsfzCodec.readFrames(ByteArrayInputStream(byteArrayOf())).isEmpty())
+            } else {
+                try {
+                    HsfzCodec.readFrames(ByteArrayInputStream(frame.copyOf(length)))
+                    fail("truncation=$length must force reconnect")
+                } catch(_:IOException) { }
+            }
         }
     }
 
     @Test fun incompleteSecondFrameNeverBecomesDiagnosticData() {
         val control=b(0,0,0,2,0,2,0xF4,0x12)
         val reply=HsfzCodec.encode(b(0x62,0x4A,0x37,1,2))
-        val decoded=HsfzCodec.readFrames(ByteArrayInputStream(control+reply.copyOf(9)))
-        assertEquals(1,decoded.size)
-        assertNull(HsfzCodec.payload(decoded.single()))
+        try {
+            HsfzCodec.readFrames(ByteArrayInputStream(control+reply.copyOf(9)))
+            fail("Partial diagnostic response must not be ignored")
+        } catch(_:IOException) { }
     }
 
     @Test fun timeoutWhileReadingBodyNeverPublishesPartialFrame() {
@@ -61,7 +68,34 @@ class HsfzBoundaryRegressionTest {
                 return n
             }
         }
-        assertTrue(HsfzCodec.readFrames(input).isEmpty())
+        try {
+            HsfzCodec.readFrames(input)
+            fail("Mid-frame timeout must force reconnect")
+        } catch(_:IOException) { }
+    }
+
+    @Test fun idleHeaderTimeoutIsSafeButPartialHeaderIsFatal() {
+        val idle=object:InputStream() {
+            override fun read():Int=throw SocketTimeoutException()
+            override fun read(dst:ByteArray,off:Int,len:Int):Int=throw SocketTimeoutException()
+        }
+        assertTrue(HsfzCodec.readFrames(idle).isEmpty())
+        val partial=object:InputStream() {
+            var first=true
+            override fun read():Int=throw SocketTimeoutException()
+            override fun read(dst:ByteArray,off:Int,len:Int):Int {
+                if(first) {
+                    first=false
+                    dst[off]=0
+                    return 1
+                }
+                throw SocketTimeoutException()
+            }
+        }
+        try {
+            HsfzCodec.readFrames(partial)
+            fail("Partial header timeout must force reconnect")
+        } catch(_:IOException) { }
     }
 
     @Test fun declaredLengthMustMatchActualBytesAndDiagnosticType() {
