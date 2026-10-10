@@ -52,6 +52,7 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
     private lateinit var fuelTrims:TextView
     private lateinit var ignitionStatus:TextView
     private lateinit var dmeProbeStatus:TextView
+    private lateinit var pollingStatus:TextView
     val connectionView:TextView
 
     private fun dp(value:Int)=(value*resources.displayMetrics.density+0.5f).toInt()
@@ -202,6 +203,9 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         val diagnostic=card("СВЯЗЬ И ДИАГНОСТИКА")
         network=text("Ожидание VXSCAN",13f,blue,true)
         diagnostic.addView(network)
+        pollingStatus=text("Опрос DME • режим A, последовательный",12f,blue)
+        pollingStatus.setPadding(0,dp(7),0,0)
+        diagnostic.addView(pollingStatus)
         diagnostic.addView(View(context),LayoutParams(1,dp(9)))
         knock=text("Детонация: —  •  Superknock: —",12f,muted)
         diagnostic.addView(knock)
@@ -332,6 +336,11 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
             dmeProbeStatus.text=dmeSummary
             dmeProbeStatus.setTextColor(blue)
         }
+        val pollMode=intent.getStringExtra(EnetLoggerService.EXTRA_POLL_MODE)
+        val pollDetail=intent.getStringExtra(EnetLoggerService.EXTRA_POLL_DETAIL)
+        if(pollMode!=null)
+            pollingStatus.text="Опрос DME: "+pollMode+
+                (if(pollDetail.isNullOrBlank()) "" else "\n"+pollDetail)
         val highRatio=number(EnetLoggerService.EXTRA_HIGH_RPM_RATIO)
         val highPoints=count(EnetLoggerService.EXTRA_HIGH_RPM_POINTS)
         highRpm.text="3500+ RPM • MAP 180+: "+highPoints+" точек"+
