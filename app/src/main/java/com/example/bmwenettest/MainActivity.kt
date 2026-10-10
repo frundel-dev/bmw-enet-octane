@@ -70,7 +70,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.22"
+            text="v1.7.23"
             textSize=13f
             setTextColor(sky)
         })
@@ -174,7 +174,8 @@ class MainActivity : Activity() {
     private fun showAdditionalMenu() {
         val items=arrayOf("Импорт BMW DME .PRG", "История замеров", "Журнал VXSCAN + Android",
             "События сети Android", "Только TCP-реконнекты", "Проверки DME • только чтение",
-            "Режим опроса DME", "Журнал производительности опроса")
+            "Режим опроса DME", "Журнал производительности опроса",
+            "Результаты AUTO-сравнения")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -193,6 +194,7 @@ class MainActivity : Activity() {
                     5 -> showDmeProbeHistory()
                     6 -> showPollingModeDialog()
                     7 -> showPollingPerformance()
+                    8 -> showAutoPollingReport()
                 }
             }
             .setNegativeButton("Закрыть",null)
@@ -201,30 +203,70 @@ class MainActivity : Activity() {
 
     private fun showPollingModeDialog() {
         val options=arrayOf(
+            "AUTO • сравнить A/B/C/D и выбрать лучший",
             "A • один TCP, последовательный (стабильный)",
             "B • один TCP, пакетные DID",
             "C • два TCP, параллельный медленный опрос",
             "D • два TCP + пакетные DID"
         )
         val current=getSharedPreferences("bmw_native",MODE_PRIVATE)
-            .getString("poll_mode","A") ?: "A"
-        val selected=listOf("A","B","C","D").indexOf(current).coerceAtLeast(0)
+            .getString("poll_mode","AUTO") ?: "AUTO"
+        val selected=listOf("AUTO","A","B","C","D").indexOf(current).coerceAtLeast(0)
         AlertDialog.Builder(this)
-            .setTitle("Режим опроса DME • B–D экспериментальные")
+            .setTitle("DME • режим опроса (B–D экспериментальные)")
             .setSingleChoiceItems(options,selected) { dialog,which ->
-                val mode=listOf("A","B","C","D")[which]
+                val mode=listOf("AUTO","A","B","C","D")[which]
                 getSharedPreferences("bmw_native",MODE_PRIVATE).edit()
                     .putString("poll_mode",mode).apply()
                 dialog.dismiss()
-                Toast.makeText(this,"Режим "+mode+" • действует после перезапуска логгера",
+                Toast.makeText(this,
+                    if(mode=="AUTO") "AUTO: сравнительный тест начнётся без перезапуска логгера"
+                    else "Опрос "+mode+" • переключение без перезапуска",
                     Toast.LENGTH_LONG).show()
             }.setNegativeButton("Отмена",null).show()
+    }
+
+    private fun showAutoPollingReport() {
+        val dir=getExternalFilesDir(null) ?: filesDir
+        val file=dir.listFiles()?.filter {
+            it.isFile && it.name.startsWith("bmw_poll_auto_v1723_") &&
+                it.name.endsWith(".csv",true)
+        }?.maxByOrNull { it.lastModified() }
+        if(file==null) {
+            AlertDialog.Builder(this).setTitle("AUTO • сравнение режимов")
+                .setMessage("Пока нет результатов. Выбери AUTO в меню режима опроса.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        executor.execute {
+            val lines=try { file.useLines { it.toList().takeLast(16) } }
+                catch(_:Exception) { emptyList<String>() }
+            val report=if(lines.isEmpty()) "Пока нет завершённых тестовых окон."
+                else lines.joinToString("\\n")
+            runOnUiThread {
+                AlertDialog.Builder(this)
+                    .setTitle("AUTO • результаты испытания A/B/C/D")
+                    .setView(ScrollView(this).apply {
+                        setBackgroundColor(Color.rgb(12,19,32))
+                        addView(TextView(this@MainActivity).apply {
+                            text=file.name+"\\n\\n"+report
+                            textSize=11f
+                            setTextColor(Color.WHITE)
+                            setPadding(20,18,20,20)
+                            setTextIsSelectable(true)
+                        })
+                    })
+                    .setPositiveButton("OK",null).show()
+            }
+        }
     }
 
     private fun showPollingPerformance() {
         val dir=getExternalFilesDir(null)?:filesDir
         val recent=dir.listFiles()?.filter { it.isFile &&
-            it.name.startsWith("bmw_poll_benchmark_v1722_") && it.name.endsWith(".csv")
+            (it.name.startsWith("bmw_poll_benchmark_v1722_") ||
+                it.name.startsWith("bmw_poll_benchmark_v1723_")) &&
+                it.name.endsWith(".csv")
         }?.maxByOrNull { it.lastModified() }
         if(recent==null) {
             AlertDialog.Builder(this).setTitle("Производительность DME")
@@ -257,7 +299,8 @@ class MainActivity : Activity() {
         val newest=dir.listFiles()?.filter {
             it.isFile && (it.name.startsWith("bmw_dme_probe_v1720_") ||
                 it.name.startsWith("bmw_dme_probe_v1721_") ||
-                it.name.startsWith("bmw_dme_probe_v1722_")) &&
+                it.name.startsWith("bmw_dme_probe_v1722_") ||
+                it.name.startsWith("bmw_dme_probe_v1723_")) &&
                 it.name.endsWith(".csv",true)
         }?.maxByOrNull { it.lastModified() }
         if(newest==null) {
