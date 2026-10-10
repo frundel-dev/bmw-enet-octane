@@ -73,6 +73,8 @@ class EnetLoggerService : Service() {
         const val EXTRA_REPEATABLE_STEADY_CELLS = "repeatable_steady_cells"
         const val EXTRA_DME_PROBE_SUMMARY = "dme_probe_summary"
         const val EXTRA_DME_PROBE_TESTED = "dme_probe_tested"
+        const val EXTRA_POLL_MODE = "poll_mode"
+        const val EXTRA_POLL_DETAIL = "poll_detail"
         const val CHANNEL = "enet_logger"
     }
     private val executor = Executors.newSingleThreadExecutor()
@@ -84,6 +86,8 @@ class EnetLoggerService : Service() {
     private var telemetryFile: File? = null
     private var steadySurveyFile: File? = null
     private var dmeProbeFile: File? = null
+    private var benchmarkFile: File? = null
+    @Volatile private var secondarySampler:DualTcpSampler?=null
     private val connectionLogLock = Any()
     private var socket: Socket? = null
     private var logFile: File? = null
@@ -126,6 +130,13 @@ class EnetLoggerService : Service() {
         }.also { it.start() }
         steadySurveyFile=createSteadySurveyFile(
             getSharedPreferences("bmw_native",MODE_PRIVATE).getInt("fuel_session_id",1))
+        benchmarkFile=File(getExternalFilesDir(null)?:filesDir,
+            "bmw_poll_benchmark_v1722_${System.currentTimeMillis()}.csv").apply {
+            writeText("wall_time_ms,elapsed_ms,requested_mode,effective_mode,"+
+                "fast_hz,cycle_ms,fast_dme_ms,batch_enabled,second_tcp_enabled,"+
+                "second_tcp_age_ms,second_tcp_cycle_ms,batch_ok,batch_errors,"+
+                "fast_knock_valid,fast_ign_valid,secondary_responses,transport,notes\n")
+        }
         dmeProbeFile=createDmeProbeFile(
             getSharedPreferences("bmw_native",MODE_PRIVATE).getInt("fuel_session_id",1))
         executor.execute { loop() }
@@ -168,13 +179,14 @@ class EnetLoggerService : Service() {
 
     private fun stopLogger() {
         running=false
+        secondarySampler?.close();secondarySampler=null
         androidNetworkMonitor?.stop(); androidNetworkMonitor=null
         try{socket?.close()}catch(_:Exception){}
         stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
     }
     override fun onDestroy() {
         androidNetworkMonitor?.stop(); androidNetworkMonitor=null
-        running=false; try{socket?.close()}catch(_:Exception){}
+        running=false;secondarySampler?.close();secondarySampler=null;try{socket?.close()}catch(_:Exception){}
         if(wakeLock?.isHeld==true) wakeLock?.release()
         if(wifiLock?.isHeld==true) wifiLock?.release()
         tone.release()
@@ -189,6 +201,7 @@ class EnetLoggerService : Service() {
         accelV08Score:Double?=null,accelV08Points:Int?=null,
         stft:Double?=null,ltft:Double?=null,combinedTrim:Double?=null,
         ignitionSpread:Double?=null,fineCells:Int?=null,repeatableCells:Int?=null,
+        pollMode:String?=null,pollDetail:String?=null,
         dmeProbeSummary:String?=null,dmeProbeTested:Int?=null) {
         val intent=Intent(ACTION_STATUS).setPackage(packageName).putExtra(EXTRA_STATUS,s)
         state?.let{intent.putExtra(EXTRA_STATE,it)}; rpm?.let{intent.putExtra(EXTRA_RPM,it)}; transport?.let{intent.putExtra(EXTRA_TRANSPORT,it)}
@@ -209,6 +222,8 @@ class EnetLoggerService : Service() {
         ignitionSpread?.let{intent.putExtra(EXTRA_IGN_SPREAD,it)}
         fineCells?.let{intent.putExtra(EXTRA_FINE_STEADY_CELLS,it)}
         repeatableCells?.let{intent.putExtra(EXTRA_REPEATABLE_STEADY_CELLS,it)}
+        pollMode?.let{intent.putExtra(EXTRA_POLL_MODE,it)}
+        pollDetail?.let{intent.putExtra(EXTRA_POLL_DETAIL,it)}
         dmeProbeSummary?.let{intent.putExtra(EXTRA_DME_PROBE_SUMMARY,it)}
         dmeProbeTested?.let{intent.putExtra(EXTRA_DME_PROBE_TESTED,it)}
         intent.putExtra(EXTRA_CALIBRATION,OctaneCalibration.VERSION)
@@ -282,6 +297,19 @@ class EnetLoggerService : Service() {
         val sampleTimes=java.util.ArrayDeque<Long>(); var validOctaneSamples=0
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val autoMode=prefs.getString("measurement_mode","AUTO")=="AUTO"
+        val requestedPollMode=prefs.getString("poll_mode","A")?.takeIf {
+            it=="A" || it=="B" || it=="C" || it=="D"
+        } ?: "A"
+        val wantsBatch=requestedPollMode=="B" || requestedPollMode=="D"
+        val wantsSecondTcp=requestedPollMode=="C" || requestedPollMode=="D"
+        var batchEnabled=false
+        var batchOk=0
+        var batchErrors=0
+        var lastBatchFallback=""
+        var lastSecondarySnapshot=0L
+        var secondConnectedAt=0L
+        var lastBenchmarkMs=0L
+        var secondTcpFallback=""
         val fuelDetector=FuelRefillDetector(prefs.getFloat("last_fuel_pct",Float.NaN).toDouble())
         var fuelSessionId=prefs.getInt("fuel_session_id",1)
         var mixingKm=prefs.getFloat("mixing_remaining_km",0f).toDouble()
@@ -438,6 +466,18 @@ class EnetLoggerService : Service() {
                 deniedNetworks.remove(activeNet)
                 connectionTransport=transport; connectionStage="POLL"; emptyPolls=0
                 consecutiveFailures=0
+                batchEnabled=wantsBatch
+                lastBatchFallback=""
+                secondTcpFallback=""
+                lastSecondarySnapshot=0L
+                secondarySampler?.close()
+                secondarySampler=null
+                if(wantsSecondTcp) {
+                    secondConnectedAt=SystemClock.elapsedRealtime()
+                    secondarySampler=DualTcpSampler(activeNet!!,gatewayIp) { event,detail ->
+                        connectionEvent(event,reconnects,connectionStage,transport,gatewayIp,detail)
+                    }
+                }
                 // Keep optional DME probes out of the first 12 s after every reconnect.
                 lastDmeProbeMs=SystemClock.elapsedRealtime()
                 prefs.edit().putString("last_gateway_ip",gatewayIp)
@@ -452,6 +492,7 @@ class EnetLoggerService : Service() {
                 emit("CONNECTED $transport $gatewayIp:6801 • reconnects $reconnects" +
                     if(gap>0)" • recovered in ${gap} ms" else "")
                 while(running && socket?.isClosed==false) {
+                    val cycleStart=SystemClock.elapsedRealtime()
                     fun pid(id:Int):ByteArray? {
                         val q=hsfz(byteArrayOf(0x01,id.toByte())); socket!!.getOutputStream().write(q); socket!!.getOutputStream().flush()
                         return readFrames(socket!!.getInputStream()).firstNotNullOfOrNull{payload(it)}
@@ -777,6 +818,7 @@ class EnetLoggerService : Service() {
                 }
             } catch(e:Exception) {
                 if(!running) break
+                secondarySampler?.close();secondarySampler=null
                 reconnects++; consecutiveFailures++; sampleTimes.clear()
                 if(outageFrom==null) outageFrom=SystemClock.elapsedRealtime()
                 // Do not combine samples on opposite sides of a network interruption.
