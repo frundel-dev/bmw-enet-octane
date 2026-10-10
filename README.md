@@ -24,3 +24,23 @@ To download the APK on GitHub:
 4. Unzip it to get `app-debug.apk`.
 
 The CI build uses JDK 17, Gradle 8.9, Android SDK 35 and Android Build Tools 35.0.0. No signing secrets are required for this debug APK.
+
+## Automated quality gates (CI)
+
+Every push or pull request now runs the following **before** the debug APK artifact is published:
+
+1. `gradle :app:testDebugUnitTest` — JVM tests, no car/Android emulator required.
+2. `gradle :app:lintDebug` — Android Lint (fatal and error findings fail CI).
+3. `gradle :app:assembleDebug` — build the APK only after the gates pass.
+
+Tests cover HSFZ stream framing, UDS multi-DID response validation, AUTO A/B/C/D mode selection and fallback, read-only DME probe parsing, fuel-refill detection, frozen octane reference boundaries, and STEADY robust statistics.
+
+CI attaches a `bmw-octane-quality-reports` artifact (JUnit XML, HTML tests and Lint reports), even when tests or Lint fail. The APK artifact is not published on a failing run.
+
+Run the same checks locally with JDK 17, Gradle 8.9 and Android SDK 35:
+
+```sh
+gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+```
+
+These are software tests, **not** verification of ENET/VXSCAN compatibility on a real vehicle. Firmware-specific timing and multi-TCP support still require car-side log validation.

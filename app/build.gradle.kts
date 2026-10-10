@@ -19,6 +19,13 @@ android {
         versionCode = 41
         versionName = "1.7.23"
     }
+    testOptions {
+        unitTests.isIncludeAndroidResources = false
+    }
+}
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
 }
 
 // v1.7.23: automatic in-session A/B/C/D tuning with safe live switching, confidence checks and comparison CSV
