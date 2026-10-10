@@ -956,10 +956,53 @@ class EnetLoggerService : Service() {
                                     batchOk,batchErrors,
                                     listOf(kz1,kz2,kz3,kz4).count { it!=null },
                                     listOf(iz1,iz2,iz3,iz4).count { it!=null },
-                                    secondarySnapshot?.responses?:"",transport,fallbackNote
+                                    secondarySnapshot?.responses?:"",transport,fallbackNote,
+                                    (pollTuner?.status?:"manual").replace(",",";").replace("\n"," "),
+                                    pollTuner?.currentMode?:pollModeActive,
+                                    pollTuner?.stageNumber()?:"",
+                                    pollTuner?.chosenMode?:""
                                 ).joinToString(","))
                             }
                         } catch(_:Exception) { /* Benchmark must not interrupt ECU polling */ }
+                    }
+                    // End the trial only after a complete polling cycle. AUTO
+                    // changes mode on this same thread without closing the
+                    // primary TCP. In-progress diagnostic segments are split.
+                    val autoTransition=pollTuner?.observe(
+                        benchmarkNow,
+                        r!=null && r>=600.0 && l!=null && m!=null,
+                        cycleMs,
+                        listOf(kz1,kz2,kz3,kz4).count { it!=null },
+                        listOf(iz1,iz2,iz3,iz4).count { it!=null },
+                        batchEnabled,
+                        if(secondTcpFallback.isNotEmpty() &&
+                            secondarySampler==null) "FAILED"
+                        else secondarySampler?.state?:"CLOSED",
+                        secondaryAge
+                    )
+                    if(autoTransition!=null) {
+                        try {
+                            val trial=autoTransition.finished
+                            val event=if(autoTransition.selectedMode!=null)
+                                "AUTO_WINNER" else "AUTO_TRIAL"
+                            autoPollingFile?.appendText(listOf(
+                                System.currentTimeMillis(),benchmarkNow-started,
+                                event,trial.csv(),
+                                autoTransition.selectedMode?:"",transport
+                            ).joinToString(",")+"\n")
+                        } catch(_:Exception) { /* Best-effort diagnostics only */ }
+                        connectionEvent(
+                            if(autoTransition.selectedMode!=null)"AUTO_SELECTED"
+                            else "AUTO_STAGE_DONE",
+                            reconnects,connectionStage,transport,gatewayIp,
+                            autoTransition.note+"; "+autoTransition.finished.csv()
+                        )
+                        val nextMode=autoTransition.nextMode
+                            ?: autoTransition.selectedMode
+                        if(nextMode!=null && nextMode!=pollModeActive) {
+                            activatePollingMode(nextMode,activeNet!!,gatewayIp!!,
+                                transport,autoTransition.note)
+                        }
                     }
                     if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.22 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
                         steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,
@@ -967,10 +1010,13 @@ class EnetLoggerService : Service() {
                         steadySurveyPoints,steadySurveyCells.size,accelV08Score,accelV08Points,
                         stft1,ltft1,combinedTrim,ignSpread,
                         steadyFineStats.cells(),steadyFineStats.repeatableCells(),
-                        requestedPollMode+" → "+effectiveMode,
-                        "Пакеты: "+batchOk+" OK / "+batchErrors+" ошибок • "+
+                        (if(requestedPollMode=="AUTO")"AUTO ("+effectiveMode+")"
+                            else requestedPollMode+" → "+effectiveMode),
+                        (pollTuner?.summary() ?: (
+                            "Пакеты: "+batchOk+" OK / "+batchErrors+" ошибок • "+
                             (if(parallelOn)"2 TCP" else "1 TCP")+
-                            (if(fallbackNote.isNotEmpty())" • "+fallbackNote else ""),
+                            (if(fallbackNote.isNotEmpty())" • "+fallbackNote else "")
+                        )),
                         DmeReadOnlyProbe.overview(dmeProbeResults,dmeProbeResults.size),
                         dmeProbeResults.size) }
                 }
@@ -986,6 +1032,7 @@ class EnetLoggerService : Service() {
                 if(!experimentalRollback && requestedPollMode!="A" &&
                     recentPollFailures.size>=2) {
                     experimentalRollback=true
+                    pollTuner=null
                     connectionEvent("EXPERIMENT_ROLLBACK",reconnects,
                         connectionStage,connectionTransport,connectionIp,
                         "2 TCP interruptions within 90s; use safe mode A until STOP/START")
