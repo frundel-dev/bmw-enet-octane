@@ -137,7 +137,8 @@ class EnetLoggerService : Service() {
                 "fast_hz,cycle_ms,fast_dme_ms,batch_enabled,second_tcp_enabled,"+
                 "second_tcp_age_ms,second_tcp_cycle_ms,batch_ok,batch_errors,"+
                 "fast_knock_valid,fast_ign_valid,secondary_responses,transport,notes,"+
-                "auto_status,auto_trial,auto_stage,auto_winner\n")
+                "auto_status,auto_trial,auto_stage,auto_winner,"+
+                 "slow_fresh_pids,slow_oldest_age_ms\n")
         }
         autoPollingFile=File(getExternalFilesDir(null)?:filesDir,
             "bmw_poll_auto_v1724_${System.currentTimeMillis()}.csv").apply {
@@ -629,7 +630,7 @@ class EnetLoggerService : Service() {
                     if(now-lastFuelPoll>=15000L) {
                         val fuelSnapshot=secondarySampler?.latest
                         val secondFuel=fuelSnapshot?.obd?.get(0x2F)?.takeIf {
-                            SampleFreshness.isFresh(SystemClock.elapsedRealtime(),fuelSnapshot.obdAtMs[0x2F])
+                            SampleFreshness.isFresh(SystemClock.elapsedRealtime(),fuelSnapshot?.obdAtMs?.get(0x2F))
                         }
                         slowFuel=(secondFuel
                             ?: obd(pid(0x2F),0x2F))?.firstOrNull()?.let {
@@ -964,6 +965,11 @@ class EnetLoggerService : Service() {
                     val cycleMs=benchmarkNow-cycleStart
                     val secondarySnapshot=secondarySampler?.latest
                     val secondaryAge=secondarySnapshot?.let { benchmarkNow-it.whenMs }
+                    val freshSecondaryPids=secondarySnapshot?.obdAtMs?.values?.count {
+                        SampleFreshness.isFresh(benchmarkNow,it)
+                    }
+                    val oldestSecondaryAge=secondarySnapshot?.obdAtMs?.values
+                        ?.minOrNull()?.let { (benchmarkNow-it).coerceAtLeast(0L) }
                     val fallbackNote=listOf(lastBatchFallback,secondTcpFallback)
                         .filter { it.isNotEmpty() }.joinToString(";").replace(",",";")
                     if(benchmarkNow-lastBenchmarkMs>=3000L) {
@@ -984,7 +990,8 @@ class EnetLoggerService : Service() {
                                     (pollTuner?.status?:"manual").replace(",",";").replace("\n"," "),
                                     pollTuner?.currentMode?:pollModeActive,
                                     pollTuner?.stageNumber()?:"",
-                                    pollTuner?.chosenMode?:""
+                                    pollTuner?.chosenMode?:"",
+                                    freshSecondaryPids?:"",oldestSecondaryAge?:""
                                 ).joinToString(","))
                             }
                         } catch(_:Exception) { /* Benchmark must not interrupt ECU polling */ }
