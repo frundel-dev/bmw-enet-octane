@@ -632,9 +632,6 @@ class EnetLoggerService : Service() {
                         val raw=((it[0].toLong()and 255) shl 24) or ((it[1].toLong()and 255) shl 16) or ((it[2].toLong()and 255) shl 8) or (it[3].toLong()and 255)
                         raw*0.05/65536.0
                     }
-                    fun ign(did:Int)=(ignitionBatch?.get(did) ?: udsData(did))?.takeIf{it.size>=2}?.let{
-                        val u=((it[0].toInt()and 255) shl 8) or (it[1].toInt()and 255); val signed=if(u>=0x8000)u-0x10000 else u; signed/10.0
-                    }
                     val kz1=knock(0x4A37); val kz2=knock(0x4A38); val kz3=knock(0x4A39); val kz4=knock(0x4A3A)
                     val ignitionBatch=if(batchEnabled) {
                         udsBatch(DmeBatchParser.ignitionDids,2).also {
@@ -647,6 +644,9 @@ class EnetLoggerService : Service() {
                             } else batchOk++
                         }
                     } else null
+                    fun ign(did:Int)=(ignitionBatch?.get(did) ?: udsData(did))?.takeIf{it.size>=2}?.let{
+                        val u=((it[0].toInt()and 255) shl 8) or (it[1].toInt()and 255); val signed=if(u>=0x8000)u-0x10000 else u; signed/10.0
+                    }
                     val iz1=ign(0x4A49); val iz2=ign(0x4A4A); val iz3=ign(0x4A4C); val iz4=ign(0x4A4D)
                     val fastDmeMs=SystemClock.elapsedRealtime()-fastDmeStarted
                     val superKnock=slowSuperKnock
