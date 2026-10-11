@@ -32,6 +32,8 @@ class MainActivity : Activity() {
     private val executor = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var logging = false
+    @Volatile private var historyBusy = false
+    @Volatile private var historyCancel = false
     private var logFile: File? = null
     private var supportedPids: Set<Int> = emptySet()
     private var statusReceiver: BroadcastReceiver? = null
@@ -70,7 +72,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.26"
+            text="v1.7.27"
             textSize=13f
             setTextColor(sky)
         })
@@ -112,6 +114,11 @@ class MainActivity : Activity() {
             backgroundTintList=ColorStateList.valueOf(sky)
             setOnClickListener {
                 if(!logging) {
+                    if(historyBusy) {
+                        Toast.makeText(this@MainActivity,
+                            "Сначала заверши чтение истории DME",Toast.LENGTH_LONG).show()
+                        return@setOnClickListener
+                    }
                     logging=true
                     text="STOP LOGGER"
                     backgroundTintList=ColorStateList.valueOf(Color.rgb(255,179,126))
@@ -188,7 +195,9 @@ class MainActivity : Activity() {
         val items=arrayOf("Импорт BMW DME .PRG", "История замеров", "Журнал VXSCAN + Android",
             "События сети Android", "Только TCP-реконнекты", "Проверки DME • только чтение",
             "Режим опроса DME", "Журнал производительности опроса",
-            "Результаты AUTO-сравнения")
+            "Результаты AUTO-сравнения",
+            "Считать историю и адаптации DME (LOGGER STOP)",
+            "Сохранённые снимки истории DME")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -208,10 +217,113 @@ class MainActivity : Activity() {
                     6 -> showPollingModeDialog()
                     7 -> showPollingPerformance()
                     8 -> showAutoPollingReport()
+                    9 -> showDmeHistoryScan()
+                    10 -> showDmeHistoryFiles()
                 }
             }
             .setNegativeButton("Закрыть",null)
             .show()
+    }
+
+    private fun showDmeHistoryScan() {
+        if(historyBusy) {
+            Toast.makeText(this,"Сбор истории уже выполняется",Toast.LENGTH_LONG).show()
+            return
+        }
+        if(logging || EnetLoggerService.isLoggerActive) {
+            AlertDialog.Builder(this).setTitle("Сначала останови LOGGER")
+                .setMessage("История DME считывается только после остановки логгера. Второе TCP-соединение VXSCAN одновременно не используется.")
+                .setPositiveButton("Понятно",null).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("История и адаптации DME • только чтение")
+            .setMessage("Выполнять только на стоянке. Прочитаем кандидатные адаптации 0x554A/0x4A85/0x4A9D, список ошибок UDS 0x19 и доступные Freeze Frame/extended records (не более 12 DTC). Сохраним сырые ответы в отдельный CSV. Ошибки и адаптации НЕ удаляются и НЕ сбрасываются. Некоторые параметры могут не поддерживаться.")
+            .setNegativeButton("Отмена",null)
+            .setPositiveButton("Считать") { _,_ ->
+                if(logging || EnetLoggerService.isLoggerActive || historyBusy) {
+                    Toast.makeText(this,"Останови LOGGER",Toast.LENGTH_LONG).show()
+                } else startDmeHistoryScan()
+            }.show()
+    }
+
+    private fun startDmeHistoryScan() {
+        historyBusy=true
+        historyCancel=false
+        val progress=AlertDialog.Builder(this)
+            .setTitle("DME • чтение истории")
+            .setMessage("Поиск сети BMW…")
+            .setNegativeButton("Отменить") { _,_ -> historyCancel=true }
+            .create()
+        progress.setCancelable(false)
+        progress.show()
+        executor.execute {
+            try {
+                val result=DmeHistoryReader(applicationContext).collect(
+                    { historyCancel || Thread.currentThread().isInterrupted },
+                    { text -> main.post {
+                        if(!isFinishing && !isDestroyed && progress.isShowing)
+                            progress.setMessage(text)
+                    } }
+                )
+                main.post {
+                    if(!isFinishing && !isDestroyed) {
+                        if(progress.isShowing)progress.dismiss()
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle(if(result.successful)"История DME сохранена" else "Частичный журнал DME")
+                            .setMessage(result.summary+"\n\nCSV: "+result.file.absolutePath+
+                                "\n\nСырые данные ECU, не лабораторное измерение октанового числа.")
+                            .setPositiveButton("Посмотреть") { _,_ -> showDmeHistoryFiles() }
+                            .setNegativeButton("Закрыть",null).show()
+                    }
+                }
+            }catch(error:Exception) {
+                main.post {
+                    if(!isFinishing && !isDestroyed) {
+                        if(progress.isShowing)progress.dismiss()
+                        AlertDialog.Builder(this@MainActivity).setTitle("История DME")
+                            .setMessage(error.javaClass.simpleName+": "+(error.message ?: "ошибка"))
+                            .setPositiveButton("OK",null).show()
+                    }
+                }
+            }finally {
+                historyBusy=false
+            }
+        }
+    }
+
+    private fun showDmeHistoryFiles() {
+        val dir=getExternalFilesDir(null) ?: filesDir
+        val files=dir.listFiles()?.filter {
+            it.isFile && it.name.startsWith("bmw_dme_history_v1727_") &&
+                it.name.endsWith(".csv")
+        }?.sortedByDescending { it.lastModified() } ?: emptyList()
+        if(files.isEmpty()) {
+            AlertDialog.Builder(this).setTitle("История DME")
+                .setMessage("Сохранённых снимков ещё нет. Останови LOGGER и запусти чтение.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        AlertDialog.Builder(this).setTitle("Сохранённые снимки DME")
+            .setItems(files.take(20).map { it.name }.toTypedArray()) { _,idx ->
+                val file=files[idx]
+                val contents=try {
+                    file.bufferedReader().useLines { sequence ->
+                        sequence.take(45).joinToString("\n") { it.take(340) }
+                    }
+                }catch(error:Exception){error.message ?: "Ошибка чтения"}
+                val view=ScrollView(this).apply {
+                    addView(TextView(this@MainActivity).apply {
+                        text=file.absolutePath+"\n\n"+contents+
+                            "\n\nВ CSV доступны полные необработанные ответы."
+                        textSize=12f
+                        setPadding(24,20,24,20)
+                        setTextIsSelectable(true)
+                    })
+                }
+                AlertDialog.Builder(this).setTitle(file.name).setView(view)
+                    .setPositiveButton("Закрыть",null).show()
+            }.setNegativeButton("Закрыть",null).show()
     }
 
     private fun showPollingModeDialog() {
@@ -501,6 +613,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        historyCancel=true
         statusReceiver?.let{try{unregisterReceiver(it)}catch(_:Exception){}}
         statusReceiver=null
         super.onDestroy()
