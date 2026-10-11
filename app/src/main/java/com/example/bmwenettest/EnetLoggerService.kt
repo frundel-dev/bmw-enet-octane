@@ -92,7 +92,6 @@ class EnetLoggerService : Service() {
     private var dmeProbeFile: File? = null
     private var benchmarkFile: File? = null
     private var autoPollingFile: File? = null
-    @Volatile private var secondarySampler:DualTcpSampler?=null
     private val connectionLogLock = Any()
     private var socket: Socket? = null
     private var logFile: File? = null
@@ -196,7 +195,6 @@ class EnetLoggerService : Service() {
 
     private fun stopLogger() {
         running=false
-        secondarySampler?.close();secondarySampler=null
         androidNetworkMonitor?.stop(); androidNetworkMonitor=null
         try{socket?.close()}catch(_:Exception){}
         isLoggerActive=false
@@ -204,7 +202,7 @@ class EnetLoggerService : Service() {
     }
     override fun onDestroy() {
         androidNetworkMonitor?.stop(); androidNetworkMonitor=null
-        running=false;secondarySampler?.close();secondarySampler=null;try{socket?.close()}catch(_:Exception){}
+        running=false;try{socket?.close()}catch(_:Exception){}
         isLoggerActive=false
         if(wakeLock?.isHeld==true) wakeLock?.release()
         if(wifiLock?.isHeld==true) wifiLock?.release()
@@ -336,10 +334,7 @@ class EnetLoggerService : Service() {
         var batchOk=0
         var batchErrors=0
         var lastBatchFallback=""
-        var lastSecondarySnapshot=0L
-        var secondConnectedAt=0L
         var lastBenchmarkMs=0L
-        var secondTcpFallback=""
         val recentPollFailures=java.util.ArrayDeque<Long>()
         var experimentalRollback=false
         val fuelDetector=FuelRefillDetector(prefs.getFloat("last_fuel_pct",Float.NaN).toDouble())
@@ -386,18 +381,14 @@ class EnetLoggerService : Service() {
         // complete request/response cycles. The primary TCP remains open.
         fun activatePollingMode(mode:String,net:Network,host:String,
                                 kind:String,reason:String) {
-            secondarySampler?.close()
-            secondarySampler=null
             pollModeActive=when {
                 experimentalRollback -> "A"
                 mode=="B+" && bPlusRejected -> "B"
                 else -> mode
             }
-            batchEnabled=(pollModeActive=="B" || pollModeActive=="B+" || pollModeActive=="D")
+            batchEnabled=(pollModeActive=="B" || pollModeActive=="B+")
             slowScheduler.reset()
             lastBatchFallback=if(experimentalRollback)"safe A after TCP errors" else ""
-            secondTcpFallback=""
-            lastSecondarySnapshot=0L
             lastSlow=0L
             slowSensorAtMs=0L
             slowIat=null; slowIgn=null; slowCoolant=null; slowThrottle=null
@@ -412,12 +403,6 @@ class EnetLoggerService : Service() {
             previousRpm=null
             previousMap=null
             lastSteadyObservation=0L
-            if((pollModeActive=="C" || pollModeActive=="D") && running) {
-                secondConnectedAt=SystemClock.elapsedRealtime()
-                secondarySampler=DualTcpSampler(net,host) { event,detail ->
-                    connectionEvent(event,reconnects,connectionStage,kind,host,detail)
-                }
-            }
             connectionEvent("POLL_MODE_CHANGE",reconnects,connectionStage,
                 kind,host,"mode="+pollModeActive+";"+reason)
         }
@@ -595,25 +580,7 @@ class EnetLoggerService : Service() {
                     } else emptyPolls=0
                     val now=SystemClock.elapsedRealtime()
                     val slowStarted=SystemClock.elapsedRealtime()
-                    // A second HSFZ session may provide SLOW data without
-                    // blocking the FAST loop. A failed/stale session falls
-                    // back to primary polling automatically.
-                    val slowWorker=secondarySampler
-                    val slowSnapshot=slowWorker?.latest
-                    if(slowWorker!=null && (slowWorker.state=="FAILED" ||
-                        (now-secondConnectedAt>12000L &&
-                            (slowSnapshot==null || now-slowSnapshot.whenMs>12000L)))) {
-                        secondTcpFallback=if(slowWorker.state=="FAILED")
-                            "second TCP failed" else "SLOW snapshot stale"
-                        connectionEvent("SECOND_TCP_FALLBACK",reconnects,connectionStage,
-                            transport,gatewayIp,secondTcpFallback)
-                        slowWorker.close()
-                        secondarySampler=null
-                        lastSlow=0L
-                        slowSensorAtMs=0L
-                    }
-                    val optimizedSlow=secondarySampler==null &&
-                        (pollModeActive=="B" || pollModeActive=="B+")
+                    val optimizedSlow=pollModeActive=="B" || pollModeActive=="B+"
                     if(optimizedSlow) {
                         // B/B+ stay single-threaded on one socket. Optional
                         // SLOW reads are spread over FAST cycles (max 2 each).
@@ -639,33 +606,8 @@ class EnetLoggerService : Service() {
                                 0x5728 -> slowSuperKnock=first
                             }
                         }
+
                     } else if(now-lastSlow>=2000L) {
-                        val fresh=secondarySampler?.latest?.takeIf {
-                            it.whenMs>lastSecondarySnapshot &&
-                            SystemClock.elapsedRealtime()-it.whenMs<12000L
-                        }
-                        if(fresh!=null) {
-                            lastSecondarySnapshot=fresh.whenMs
-                            fun sv(id:Int)=fresh.obd[id]?.takeIf {
-                                SampleFreshness.isFresh(SystemClock.elapsedRealtime(),fresh.obdAtMs[id])
-                            }
-                            slowSpeed=sv(0x0D)?.firstOrNull()?.let{(it.toInt() and 255).toDouble()}
-                            slowIat=sv(0x0F)?.firstOrNull()?.let{((it.toInt() and 255)-40).toDouble()}
-                            slowIgn=sv(0x0E)?.firstOrNull()?.let{(it.toInt() and 255)/2.0-64.0}
-                            slowCoolant=sv(0x05)?.firstOrNull()?.let{((it.toInt() and 255)-40).toDouble()}
-                            slowThrottle=sv(0x11)?.firstOrNull()?.let{(it.toInt() and 255)*100.0/255.0}
-                            slowStft=sv(0x06)?.firstOrNull()?.let{((it.toInt() and 255)-128)*100.0/128.0}
-                            slowLtft=sv(0x07)?.firstOrNull()?.let{((it.toInt() and 255)-128)*100.0/128.0}
-                            slowLambda=sv(0x44)?.takeIf{it.size>=2}?.let{
-                                (((it[0].toInt() and 255)*256)+(it[1].toInt() and 255))*2.0/65535.0
-                            }
-                            slowOil=sv(0x5C)?.firstOrNull()?.let{((it.toInt() and 255)-40).toDouble()}
-                            slowSuperKnock=fresh.superKnock?.takeIf {
-                                SampleFreshness.isFresh(SystemClock.elapsedRealtime(),fresh.superKnockAtMs)
-                            }
-                            slowSensorAtMs=now
-                            lastSlow=now
-                        } else if(secondarySampler==null) {
                         slowSpeed=obd(pid(0x0D),0x0D)?.firstOrNull()?.let{(it.toInt() and 255).toDouble()}
                         slowIat=obd(pid(0x0F),0x0F)?.let{((it[0].toInt()and 255)-40).toDouble()}
                         slowIgn=obd(pid(0x0E),0x0E)?.let{(it[0].toInt()and 255)/2.0-64.0}
@@ -673,21 +615,17 @@ class EnetLoggerService : Service() {
                         slowThrottle=obd(pid(0x11),0x11)?.let{(it[0].toInt()and 255)*100.0/255.0}
                         slowStft=obd(pid(0x06),0x06)?.firstOrNull()?.let{((it.toInt()and 255)-128)*100.0/128.0}
                         slowLtft=obd(pid(0x07),0x07)?.firstOrNull()?.let{((it.toInt()and 255)-128)*100.0/128.0}
-                        slowLambda=obd(pid(0x44),0x44)?.takeIf{it.size>=2}?.let{(((it[0].toInt()and 255)*256)+(it[1].toInt()and 255))*2.0/65535.0}
+                        slowLambda=obd(pid(0x44),0x44)?.takeIf{it.size>=2}?.let{
+                            (((it[0].toInt()and 255)*256)+(it[1].toInt()and 255))*2.0/65535.0
+                        }
                         slowOil=obd(pid(0x5C),0x5C)?.firstOrNull()?.let{((it.toInt()and 255)-40).toDouble()}
                         slowSuperKnock=udsData(0x5728)?.firstOrNull()?.let{it.toInt() and 255}
                         slowSensorAtMs=SystemClock.elapsedRealtime()
                         lastSlow=now
-                        }
                     }
                     // Tank level is a slow optional OBD parameter. No value means unsupported/unavailable.
                     if(now-lastFuelPoll>=15000L) {
-                        val fuelSnapshot=secondarySampler?.latest
-                        val secondFuel=fuelSnapshot?.obd?.get(0x2F)?.takeIf {
-                            SampleFreshness.isFresh(SystemClock.elapsedRealtime(),fuelSnapshot?.obdAtMs?.get(0x2F))
-                        }
-                        slowFuel=(secondFuel
-                            ?: obd(pid(0x2F),0x2F))?.firstOrNull()?.let {
+                        slowFuel=obd(pid(0x2F),0x2F)?.firstOrNull()?.let {
                             (it.toInt() and 255)*100.0/255.0
                         }
                         lastFuelPoll=now
@@ -1049,26 +987,15 @@ class EnetLoggerService : Service() {
                         lastFineSummary.medianVms?:"",lastFineSummary.dispersionPct?:"",
                         "", "")).joinToString(","))}
                     samples++
-                    val parallelOn=secondarySampler?.state=="ACTIVE"
                     val effectiveMode=when {
-                        batchEnabled && parallelOn -> "D"
                         batchEnabled && pollModeActive=="B+" -> "B+"
                         batchEnabled -> "B"
-                        parallelOn -> "C"
                         else -> "A"
                     }
                     val benchmarkNow=SystemClock.elapsedRealtime()
                     val postFastMs=benchmarkNow-postFastStarted
                     val cycleMs=benchmarkNow-cycleStart
-                    val secondarySnapshot=secondarySampler?.latest
-                    val secondaryAge=secondarySnapshot?.let { benchmarkNow-it.whenMs }
-                    val freshSecondaryPids=secondarySnapshot?.obdAtMs?.values?.count {
-                        SampleFreshness.isFresh(benchmarkNow,it)
-                    }
-                    val oldestSecondaryAge=secondarySnapshot?.obdAtMs?.values
-                        ?.minOrNull()?.let { (benchmarkNow-it).coerceAtLeast(0L) }
-                    val fallbackNote=listOf(lastBatchFallback,secondTcpFallback)
-                        .filter { it.isNotEmpty() }.joinToString(";").replace(",",";")
+                    val fallbackNote=lastBatchFallback.replace(",",";")
                     if(benchmarkNow-lastBenchmarkMs>=3000L) {
                         lastBenchmarkMs=benchmarkNow
                         try {
@@ -1078,17 +1005,17 @@ class EnetLoggerService : Service() {
                                     requestedPollMode,effectiveMode,
                                     String.format(java.util.Locale.US,"%.3f",hz),
                                     cycleMs,fastDmeMs,if(batchEnabled)1 else 0,
-                                    if(parallelOn)1 else 0,
-                                    secondaryAge?:"",secondarySnapshot?.durationMs?:"",
+                                    0,
+                                    "","",
                                     batchOk,batchErrors,
                                     listOf(kz1,kz2,kz3,kz4).count { it!=null },
                                     listOf(iz1,iz2,iz3,iz4).count { it!=null },
-                                    secondarySnapshot?.responses?:"",transport,fallbackNote,
+                                    "",transport,fallbackNote,
                                     (pollTuner?.status?:"manual").replace(",",";").replace("\n"," "),
                                     pollTuner?.currentMode?:pollModeActive,
                                     pollTuner?.stageNumber()?:"",
                                     pollTuner?.chosenMode?:"",
-                                    freshSecondaryPids?:"",oldestSecondaryAge?:"",
+                                    "","",
                                     obdMs,slowMs,if(optimizedSlow)slowRequestCount else "",
                                     knockStatusMs,knockPhaseMs,ignitionPhaseMs,
                                     probeMs,foctanMs,postFastMs,bPlusRejections,
@@ -1109,10 +1036,8 @@ class EnetLoggerService : Service() {
                         listOf(kz1,kz2,kz3,kz4).count { it!=null },
                         listOf(iz1,iz2,iz3,iz4).count { it!=null },
                         batchEnabled,
-                        if(secondTcpFallback.isNotEmpty() &&
-                            secondarySampler==null) "FAILED"
-                        else secondarySampler?.state?:"CLOSED",
-                        secondaryAge
+                        "CLOSED",
+                        null
                     )
                     if(autoTransition!=null) {
                         try {
@@ -1148,7 +1073,7 @@ class EnetLoggerService : Service() {
                             else requestedPollMode+" → "+effectiveMode),
                         (pollTuner?.summary() ?: (
                             "Пакеты: "+batchOk+" OK / "+batchErrors+" ошибок • "+
-                            (if(parallelOn)"2 TCP" else "1 TCP")+
+                            "1 TCP"+
                             (if(fallbackNote.isNotEmpty())" • "+fallbackNote else "")
                         )),
                         DmeReadOnlyProbe.overview(dmeProbeResults,dmeProbeResults.size),
@@ -1156,8 +1081,7 @@ class EnetLoggerService : Service() {
                 }
             } catch(e:Exception) {
                 if(!running) break
-                secondarySampler?.close();secondarySampler=null
-                val failureAt=SystemClock.elapsedRealtime()
+                        val failureAt=SystemClock.elapsedRealtime()
                 recentPollFailures.addLast(failureAt)
                 while(recentPollFailures.isNotEmpty() &&
                     failureAt-recentPollFailures.first()>90000L) {
