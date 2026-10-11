@@ -70,7 +70,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.24"
+            text="v1.7.25"
             textSize=13f
             setTextColor(sky)
         })
@@ -215,27 +215,35 @@ class MainActivity : Activity() {
     }
 
     private fun showPollingModeDialog() {
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        val migrated=prefs.getBoolean(PollModePolicy.MIGRATED_KEY,false)
+        val current=PollModePolicy.resolve(prefs.getString("poll_mode",null),migrated)
+        if(!migrated) {
+            prefs.edit().putString("poll_mode",current)
+                .putBoolean(PollModePolicy.MIGRATED_KEY,true).commit()
+        }
+        val modes=PollModePolicy.manualModes
         val options=arrayOf(
-            "AUTO • сравнить A/B/C/D и выбрать лучший",
-            "A • один TCP, последовательный (стабильный)",
-            "B • один TCP, пакетные DID",
-            "C • два TCP, параллельный медленный опрос",
-            "D • два TCP + пакетные DID"
+            "B • рекомендуемый, один TCP, пакетные DID",
+            "A • резервный, один TCP, последовательный",
+            "AUTO • сравнить только безопасные A/B",
+            "C • экспериментальный, два TCP (нестабилен на VXSCAN)",
+            "D • экспериментальный, два TCP + пакетные DID"
         )
-        val current=getSharedPreferences("bmw_native",MODE_PRIVATE)
-            .getString("poll_mode","AUTO") ?: "AUTO"
-        val selected=listOf("AUTO","A","B","C","D").indexOf(current).coerceAtLeast(0)
+        val selected=modes.indexOf(current).coerceAtLeast(0)
         AlertDialog.Builder(this)
-            .setTitle("DME • режим опроса (B–D экспериментальные)")
+            .setTitle("DME • опрос (по умолчанию B)")
             .setSingleChoiceItems(options,selected) { dialog,which ->
-                val mode=listOf("AUTO","A","B","C","D")[which]
-                getSharedPreferences("bmw_native",MODE_PRIVATE).edit()
-                    .putString("poll_mode",mode).apply()
+                val mode=modes[which]
+                prefs.edit().putString("poll_mode",mode)
+                    .putBoolean(PollModePolicy.MIGRATED_KEY,true).apply()
                 dialog.dismiss()
                 Toast.makeText(this,
-                    if(mode=="AUTO") "AUTO: сравнительный тест начнётся без перезапуска логгера"
-                    else "Опрос "+mode+" • переключение без перезапуска",
-                    Toast.LENGTH_LONG).show()
+                    when(mode) {
+                        "AUTO" -> "AUTO: сравнение только A/B, без второго TCP"
+                        "C","D" -> "Режим "+mode+" экспериментальный: второе TCP может обрывать связь"
+                        else -> "Опрос "+mode+" • переключение без перезапуска"
+                    },Toast.LENGTH_LONG).show()
             }.setNegativeButton("Отмена",null).show()
     }
 
@@ -258,7 +266,7 @@ class MainActivity : Activity() {
                 else lines.joinToString("\\n")
             runOnUiThread {
                 AlertDialog.Builder(this)
-                    .setTitle("AUTO • результаты испытания A/B/C/D")
+                    .setTitle("AUTO • результаты испытания A/B")
                     .setView(ScrollView(this).apply {
                         setBackgroundColor(Color.rgb(12,19,32))
                         addView(TextView(this@MainActivity).apply {

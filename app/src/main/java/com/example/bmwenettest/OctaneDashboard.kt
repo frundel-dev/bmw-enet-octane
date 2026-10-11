@@ -203,7 +203,7 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         val diagnostic=card("СВЯЗЬ И ДИАГНОСТИКА")
         network=text("Ожидание VXSCAN",13f,blue,true)
         diagnostic.addView(network)
-        pollingStatus=text("Опрос DME • режим A, последовательный",12f,blue)
+        pollingStatus=text("Опрос DME • режим B, пакетный UDS (по умолчанию)",12f,blue)
         pollingStatus.setPadding(0,dp(7),0,0)
         diagnostic.addView(pollingStatus)
         diagnostic.addView(View(context),LayoutParams(1,dp(9)))
