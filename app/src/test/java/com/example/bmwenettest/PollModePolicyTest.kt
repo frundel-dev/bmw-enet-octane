@@ -4,28 +4,29 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PollModePolicyTest {
-    @Test fun freshInstallsStartInBPlus() {
+    @Test fun defaultsToBPlus() {
         assertEquals("B+",PollModePolicy.resolve(null,false))
         assertEquals("B+",PollModePolicy.resolve("",false))
-        assertEquals("B+",PollModePolicy.resolve("unknown",true))
+        assertEquals("B+",PollModePolicy.resolve("garbage",true))
     }
 
-    @Test fun oneTimeMigrationMovesOldDefaultBToBPlus() {
+    @Test fun oldAutoAndTwoTcpSettingsBecomeBPlus() {
+        for(old in listOf("AUTO","C","D"))
+            assertEquals("B+",PollModePolicy.resolve(old,true))
+    }
+
+    @Test fun retainsExplicitManualFallbackSelections() {
+        assertEquals("B",PollModePolicy.resolve("B",true))
+        assertEquals("A",PollModePolicy.resolve("A",true))
+        assertEquals("B+",PollModePolicy.resolve("B+",true))
+    }
+
+    @Test fun oldDefaultMigratesOnceButExplicitBRemains() {
         assertEquals("B+",PollModePolicy.resolve("B",false))
         assertEquals("B",PollModePolicy.resolve("B",true))
-        assertEquals("B+",PollModePolicy.resolve("C",false))
-        assertEquals("B+",PollModePolicy.resolve("D",true))
     }
 
-    @Test fun explicitModesRemainAfterUpgrade() {
-        for(mode in listOf("A","B+","AUTO"))
-            assertEquals(mode,PollModePolicy.resolve(mode,false))
-        assertEquals("AUTO",PollModePolicy.resolve("AUTO",true))
-    }
-
-    @Test fun manualModesHaveNoSecondaryTcp() {
-        assertEquals(listOf("B+","B","A","AUTO"),PollModePolicy.manualModes)
-        assertEquals(listOf("A","B"),PollModePolicy.automaticModes)
-        assertFalse(PollModePolicy.manualModes.any { it=="C" || it=="D" })
+    @Test fun onlySafeSingleTcpModesAreExposed() {
+        assertEquals(listOf("B+","B","A"),PollModePolicy.manualModes)
     }
 }
