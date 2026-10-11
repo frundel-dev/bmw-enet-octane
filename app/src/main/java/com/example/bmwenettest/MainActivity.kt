@@ -72,7 +72,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.28"
+            text="v1.7.29"
             textSize=13f
             setTextColor(sky)
         })
@@ -193,12 +193,10 @@ class MainActivity : Activity() {
 
     private fun showAdditionalMenu() {
         val items=arrayOf("Импорт BMW DME .PRG", "История замеров", "Журнал VXSCAN + Android",
-            "События сети Android", "Только TCP-реконнекты", "Проверки DME • только чтение",
-            "Режим опроса DME", "Журнал производительности опроса",
-            "Результаты AUTO-сравнения",
+            "События сети Android", "Только TCP-реконнекты",
+            "Резервный режим DME (B+ / B / A)", "Производительность опроса",
             "Считать историю и адаптации DME (LOGGER STOP)",
-            "Сохранённые снимки истории DME",
-            "Фоновый DME Monitor • журнал")
+            "Сохранённые снимки истории DME", "Фоновый DME Monitor • журнал")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -214,13 +212,11 @@ class MainActivity : Activity() {
                     2 -> showConnectionHistory()
                     3 -> showConnectionHistory("ANDROID")
                     4 -> showConnectionHistory("TCP")
-                    5 -> showDmeProbeHistory()
-                    6 -> showPollingModeDialog()
-                    7 -> showPollingPerformance()
-                    8 -> showAutoPollingReport()
-                    9 -> showDmeHistoryScan()
-                    10 -> showDmeHistoryFiles()
-                    11 -> showDmeMonitorLog()
+                    5 -> showPollingModeDialog()
+                    6 -> showPollingPerformance()
+                    7 -> showDmeHistoryScan()
+                    8 -> showDmeHistoryFiles()
+                    9 -> showDmeMonitorLog()
                 }
             }
             .setNegativeButton("Закрыть",null)
@@ -374,10 +370,9 @@ class MainActivity : Activity() {
         }
         val modes=PollModePolicy.manualModes
         val options=arrayOf(
-            "B+ • основной, один TCP, 8 DID + фоновый DME Monitor",
-            "B • резервный, один TCP, два пакета по 4 DID",
-            "A • резервный, один TCP, последовательный",
-            "AUTO • сравнить A/B (один TCP)"
+            "B+ • основной, 8 DID + фоновый DME Monitor",
+            "B • резервный, два пакета по 4 DID",
+            "A • резервный, последовательный опрос"
         )
         val selected=modes.indexOf(current).coerceAtLeast(0)
         AlertDialog.Builder(this)
@@ -389,46 +384,10 @@ class MainActivity : Activity() {
                 dialog.dismiss()
                 Toast.makeText(this,
                     when(mode) {
-                        "AUTO" -> "AUTO: сравнение A/B на одном TCP"
                         "B+" -> "B+: 8 DID, фоновый DME Monitor; резерв B при отказе"
-                        else -> "Опрос "+mode+" • переключение без перезапуска"
+                        else -> "Резервный режим "+mode+" • переключение без перезапуска"
                     },Toast.LENGTH_LONG).show()
             }.setNegativeButton("Отмена",null).show()
-    }
-
-    private fun showAutoPollingReport() {
-        val dir=getExternalFilesDir(null) ?: filesDir
-        val file=dir.listFiles()?.filter {
-            it.isFile && it.name.startsWith("bmw_poll_auto_") &&
-                it.name.endsWith(".csv",true)
-        }?.maxByOrNull { it.lastModified() }
-        if(file==null) {
-            AlertDialog.Builder(this).setTitle("AUTO • сравнение режимов")
-                .setMessage("Пока нет результатов. Выбери AUTO в меню режима опроса.")
-                .setPositiveButton("OK",null).show()
-            return
-        }
-        executor.execute {
-            val lines=try { file.useLines { it.toList().takeLast(16) } }
-                catch(_:Exception) { emptyList<String>() }
-            val report=if(lines.isEmpty()) "Пока нет завершённых тестовых окон."
-                else lines.joinToString("\\n")
-            runOnUiThread {
-                AlertDialog.Builder(this)
-                    .setTitle("AUTO • результаты испытания A/B")
-                    .setView(ScrollView(this).apply {
-                        setBackgroundColor(Color.rgb(12,19,32))
-                        addView(TextView(this@MainActivity).apply {
-                            text=file.name+"\\n\\n"+report
-                            textSize=11f
-                            setTextColor(Color.WHITE)
-                            setPadding(20,18,20,20)
-                            setTextIsSelectable(true)
-                        })
-                    })
-                    .setPositiveButton("OK",null).show()
-            }
-        }
     }
 
     private fun showPollingPerformance() {
@@ -460,58 +419,6 @@ class MainActivity : Activity() {
                 })
                 AlertDialog.Builder(this).setTitle("Замеры скорости • CSV")
                     .setView(scroller).setPositiveButton("OK",null).show()
-            }
-        }
-    }
-
-    private fun showDmeProbeHistory() {
-        val dir=getExternalFilesDir(null)?:filesDir
-        val newest=dir.listFiles()?.filter {
-            it.isFile && (it.name.startsWith("bmw_dme_probe_v1720_") ||
-                it.name.startsWith("bmw_dme_probe_v1721_") ||
-                it.name.startsWith("bmw_dme_probe_v1722_") ||
-                it.name.startsWith("bmw_dme_probe_")) &&
-                it.name.endsWith(".csv",true)
-        }?.maxByOrNull { it.lastModified() }
-        if(newest==null) {
-            AlertDialog.Builder(this).setTitle("Проверки DME • UDS 0x22")
-                .setMessage("Пока нет результатов. Запусти логгер и подожди 1–2 минуты.")
-                .setPositiveButton("OK",null).show()
-            return
-        }
-        executor.execute {
-            val entries=try {
-                newest.useLines { lines -> lines.drop(1).filter { it.isNotBlank() }.toList().takeLast(32) }
-            } catch(_:Exception) { emptyList<String>() }
-            val history=if(entries.isEmpty()) "Проверки ещё не выполнялись." else
-                entries.asReversed().joinToString("\n\n") { line ->
-                    val fields=line.split(",",limit=14)
-                    val time=fields.getOrNull(0)?.toLongOrNull()?.let {
-                        java.text.SimpleDateFormat("dd.MM HH:mm:ss",java.util.Locale.getDefault())
-                            .format(java.util.Date(it))
-                    } ?: "—"
-                    val did=fields.getOrNull(4) ?: "????"
-                    val title=fields.getOrNull(5) ?: "—"
-                    val status=fields.getOrNull(6) ?: "—"
-                    val decoded=fields.getOrNull(9)?.takeIf { it.isNotBlank() } ?: "—"
-                    val raw=fields.getOrNull(8)?.takeIf { it.isNotBlank() } ?: "—"
-                    val nrc=fields.getOrNull(7)?.takeIf { it.isNotBlank() } ?: "—"
-                    "$time · 0x$did ($title)\n$status • $decoded\nRAW: $raw • NRC: $nrc"
-                }
-            runOnUiThread {
-                val view=ScrollView(this).apply {
-                    addView(TextView(this@MainActivity).apply {
-                        text=history
-                        textSize=13f
-                        setTextColor(Color.rgb(230,238,248))
-                        setPadding(24,16,24,24)
-                        setTextIsSelectable(true)
-                    })
-                }
-                AlertDialog.Builder(this).setTitle("DME • диагностические ответы")
-                    .setView(view)
-                    .setMessage("Запросы чтения 0x22. Интерпретации предварительные; Fuel Score не изменяется.")
-                    .setPositiveButton("Закрыть",null).show()
             }
         }
     }
