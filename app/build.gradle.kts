@@ -16,8 +16,8 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 44
-        versionName = "1.7.26"
+        versionCode = 45
+        versionName = "1.7.27"
     }
     testOptions {
         unitTests.isIncludeAndroidResources = false
@@ -28,4 +28,4 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
 }
 
-// v1.7.26: staggered SLOW requests, per-phase timing, experimental mixed-width B+; frozen Fuel Score
+// v1.7.27: parked-only DME adaptation/DTC history read; frozen Fuel Score
