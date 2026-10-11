@@ -70,7 +70,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.25"
+            text="v1.7.26"
             textSize=13f
             setTextColor(sky)
         })
@@ -225,6 +225,7 @@ class MainActivity : Activity() {
         val modes=PollModePolicy.manualModes
         val options=arrayOf(
             "B • рекомендуемый, один TCP, пакетные DID",
+            "B+ • экспериментальный пакет восьми DID, резерв B",
             "A • резервный, один TCP, последовательный",
             "AUTO • сравнить только безопасные A/B",
             "C • экспериментальный, два TCP (нестабилен на VXSCAN)",
@@ -241,6 +242,7 @@ class MainActivity : Activity() {
                 Toast.makeText(this,
                     when(mode) {
                         "AUTO" -> "AUTO: сравнение только A/B, без второго TCP"
+                        "B+" -> "Эксперимент B+: неподтверждённый пакет 8 DID; откат к B"
                         "C","D" -> "Режим "+mode+" экспериментальный: второе TCP может обрывать связь"
                         else -> "Опрос "+mode+" • переключение без перезапуска"
                     },Toast.LENGTH_LONG).show()

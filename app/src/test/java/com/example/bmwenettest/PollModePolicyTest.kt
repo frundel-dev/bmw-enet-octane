@@ -16,7 +16,7 @@ class PollModePolicyTest {
     }
 
     @Test fun explicitManualChoicesSurviveUpdate() {
-        for(mode in listOf("A","B","C","D"))
+        for(mode in listOf("A","B","B+","C","D"))
             assertEquals(mode,PollModePolicy.resolve(mode,false))
     }
 
