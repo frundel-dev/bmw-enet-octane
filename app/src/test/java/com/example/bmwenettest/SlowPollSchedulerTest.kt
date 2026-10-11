@@ -44,6 +44,8 @@ class SlowPollSchedulerTest {
         assertEquals(listOf(0x0D,0x5728),s.due(1000))
         s.record(0x5728,1200,false)
         assertFalse(s.due(1100).contains(0x5728))
+        // Initialize the remaining optional PIDs before the fast ones refresh.
+        s.due(1200); s.due(1300); s.due(1400)
         assertTrue(s.due(2500).contains(0x5728))
     }
 }
