@@ -1178,7 +1178,7 @@ class EnetLoggerService : Service() {
                 }
             } catch(e:Exception) {
                 if(!running) break
-                        val failureAt=SystemClock.elapsedRealtime()
+                val failureAt=SystemClock.elapsedRealtime()
                 recentPollFailures.addLast(failureAt)
                 while(recentPollFailures.isNotEmpty() &&
                     failureAt-recentPollFailures.first()>90000L) {
