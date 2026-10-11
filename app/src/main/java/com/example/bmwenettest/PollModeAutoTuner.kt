@@ -5,9 +5,10 @@ import java.util.Locale
 /**
  * Single-logger, in-session comparison of read-only DME polling strategies.
  *
- * Only one strategy is active at a time. No TCP reconnection is required to
- * advance stages: the logger retains its primary HSFZ socket and starts/stops
- * an independent secondary SLOW socket only at a stage boundary.
+ * Only safe single-TCP A and B are auto-tested. C/D are not automatically
+ * attempted on the tested VXSCAN because independent secondary TCP sessions
+ * interrupted polling in vehicle logs. Explicit manual diagnostic modes remain
+ * available; choosing AUTO never initiates a second TCP connection.
  *
  * A 5 s settling period is excluded, followed by >=30 s of valid engine
  * operation per mode. Ranking uses complete FAST data sets per wall second,
@@ -62,7 +63,6 @@ class PollModeAutoTuner {
     private var complete=0
     private val cycleDurations=ArrayList<Long>()
     private var batchUnsupported=false
-    private var secondUnsupported=false
 
     fun reset() {
         trials.clear()
@@ -75,10 +75,9 @@ class PollModeAutoTuner {
         complete=0
         cycleDurations.clear()
         batchUnsupported=false
-        secondUnsupported=false
     }
 
-    fun stageNumber():Int=listOf("A","B","C","D").indexOf(currentMode)+1
+    fun stageNumber():Int=PollModePolicy.automaticModes.indexOf(currentMode)+1
 
     fun observe(
         nowMs:Long,
@@ -109,20 +108,9 @@ class PollModeAutoTuner {
             status="AUTO • "+currentMode+" • стабилизация"
             return null
         }
-        val wantsBatch=currentMode=="B" || currentMode=="D"
-        val wantsSecond=currentMode=="C" || currentMode=="D"
-        if(wantsBatch && !batchActive) {
+        if(currentMode=="B" && !batchActive) {
             batchUnsupported=true
             return finish(nowMs,"batch UDS unsupported or rejected")
-        }
-        if(wantsSecond && secondState=="FAILED") {
-            secondUnsupported=true
-            return finish(nowMs,"second TCP failed")
-        }
-        if(wantsSecond && stageAge>=14000L &&
-            (secondState!="ACTIVE" || secondAgeMs==null || secondAgeMs>10000L)) {
-            secondUnsupported=true
-            return finish(nowMs,"second TCP missing/stale SLOW data")
         }
         if(measureStartMs==0L) {
             measureStartMs=nowMs
@@ -134,11 +122,10 @@ class PollModeAutoTuner {
             return finish(nowMs,"insufficient cycles / slow responses")
         cycles++
         cycleDurations.add(cycleMs.coerceAtLeast(0))
-        if(knockCount==4 && ignitionCount==4 &&
-            (!wantsSecond || (secondAgeMs!=null && secondAgeMs<=10000L))) {
+        if(knockCount==4 && ignitionCount==4) {
             complete++
         }
-        status="AUTO • "+currentMode+" ("+stageNumber()+"/4) • "+
+        status="AUTO • "+currentMode+" ("+stageNumber()+"/2) • "+
             cycles+" циклов • "+complete+" полных"
         if(gap>=MEASURE_MS && cycles>=MIN_CYCLES) return finish(nowMs,"measured")
         return null
@@ -161,14 +148,13 @@ class PollModeAutoTuner {
             at(0.5),at(0.95),usable,reason)
         trials.add(trial)
 
-        val modes=listOf("A","B","C","D")
+        val modes=PollModePolicy.automaticModes
         val next=modes.drop(modes.indexOf(currentMode)+1).firstOrNull { mode ->
-            !(batchUnsupported && (mode=="B" || mode=="D")) &&
-            !(secondUnsupported && (mode=="C" || mode=="D"))
+            !(batchUnsupported && mode=="B")
         }
         if(next==null) {
-            // Require a material performance improvement to justify a more
-            // complex polling topology. If none is demonstrated, choose A.
+            // B must beat A by >12% complete FAST sets/s to win AUTO.
+            // If B fails or its gain is insufficient, keep the simpler A.
             val candidates=trials.filter { it.usable }
             var best:Trial?=candidates.firstOrNull() ?: trials.firstOrNull { it.mode=="A" }
             for(t in candidates) {
