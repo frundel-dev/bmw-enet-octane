@@ -23,8 +23,13 @@ class DmeHistoryProtocolTest {
 
     @Test fun rejectsTruncatedMalformedOrUnrelatedDtcLists() {
         val complete=bytes(0x59,0x02,0xFF,0x12,0x34,0x56,0x80)
-        for(n in 0 until complete.size)
-            assertNull("truncated $n",DmeHistoryProtocol.parseDtcList(complete.copyOf(n)))
+        // The three-byte prefix is a legitimate empty DTC list.
+        assertEquals(emptyList<DmeHistoryProtocol.Dtc>(),
+            DmeHistoryProtocol.parseDtcList(complete.copyOf(3)))
+        for(n in 0 until complete.size) {
+            if(n!=3)assertNull("truncated $n",
+                DmeHistoryProtocol.parseDtcList(complete.copyOf(n)))
+        }
         assertNull(DmeHistoryProtocol.parseDtcList(complete+bytes(0)))
         assertNull(DmeHistoryProtocol.parseDtcList(bytes(0x59,0x01,0xFF)))
         assertNull(DmeHistoryProtocol.parseDtcList(bytes(0x7F,0x19,0x31)))
