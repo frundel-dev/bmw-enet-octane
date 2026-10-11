@@ -42,6 +42,6 @@ class MixedDidBatchTest {
         assertNull(MixedDidBatch.parse(b(0x7F,0x22,0x31)))
         assertNull(MixedDidBatch.parse(payload.copyOf().also { it[0]=0x61 }))
         assertNull(MixedDidBatch.parse(payload.copyOf().also { it[2]=0x38 }))
-        assertNull(MixedDidBatch.parse(payload.copyOf().also { it[35]=0x50 }))
+        assertNull(MixedDidBatch.parse(payload.copyOf().also { it[34]=0x50 }))
     }
 }
