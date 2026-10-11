@@ -16,8 +16,8 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 42
-        versionName = "1.7.24"
+        versionCode = 43
+        versionName = "1.7.25"
     }
     testOptions {
         unitTests.isIncludeAndroidResources = false
@@ -28,4 +28,4 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
 }
 
-// v1.7.24: fail-closed HSFZ, matched OBD/UDS replies, per-PID freshness and QA instrumentation; frozen calibration
+// v1.7.25: default single-TCP batch B, AUTO A/B only, retain fallback A; calibration frozen
