@@ -1093,7 +1093,9 @@ class EnetLoggerService : Service() {
                         (pollTuner?.summary() ?: (
                             "Пакеты: "+batchOk+" OK / "+batchErrors+" ошибок • "+
                             "1 TCP"+
-                            (if(fallbackNote.isNotEmpty())" • "+fallbackNote else "")
+                            (if(fallbackNote.isNotEmpty())" • "+fallbackNote else "")+
+                            " • DME Monitor "+monitorState+" (OK "+monitorOk+
+                            " / ERR "+monitorErrors+")"
                         )),
                         DmeReadOnlyProbe.overview(dmeProbeResults,dmeProbeResults.size),
                         dmeProbeResults.size) }
@@ -1124,7 +1126,9 @@ class EnetLoggerService : Service() {
                                 val raw=reply.second
                                 val decoded=if(status=="OK" && task.service==0x22) {
                                     val spec=DmeReadOnlyProbe.specs.first{it.did==task.did}
-                                    DmeReadOnlyProbe.parse(spec,listOf(raw)).decodedCandidate
+                                    val parsed=DmeReadOnlyProbe.parse(spec,listOf(raw))
+                                    dmeProbeResults[task.did]=parsed
+                                    parsed.decodedCandidate
                                 } else if(status=="OK" && task.service==0x19) {
                                     val parsed=DmeHistoryProtocol.parseDtcList(raw)
                                     if(parsed==null)throw IOException("Malformed DTC monitor response")
@@ -1254,6 +1258,45 @@ class EnetLoggerService : Service() {
         s.getOutputStream().flush()
         val payloads=readFrames(s.getInputStream()).mapNotNull { payload(it) }
         return DmeReadOnlyProbe.parse(spec,payloads)
+    }
+
+    /**
+     * One bounded background read on the primary HSFZ socket. Called only
+     * from the same polling thread, after a complete FAST cycle. Never
+     * reuse the socket after a timeout, unsolicited reply or 0x78 pending.
+     */
+    private fun readDmeMonitor(task:DmeMonitorPolicy.Task):Pair<String,ByteArray> {
+        val s=socket ?: throw IOException("No DME socket")
+        val request=task.request()
+        val savedTimeout=s.soTimeout
+        try {
+            s.soTimeout=750
+            s.getOutputStream().write(hsfz(request))
+            s.getOutputStream().flush()
+            val response=readFrames(s.getInputStream())
+                .mapNotNull { payload(it) }.firstOrNull()
+                ?: throw IOException("Monitor response timeout or empty")
+            if(response.size>DmeHistoryProtocol.MAX_RESPONSE_BYTES)
+                throw IOException("Monitor response exceeds safe bound")
+            val nrc=DmeHistoryProtocol.classifyNrc(task.service,response)
+            if(nrc=="RESPONSE_PENDING")
+                throw IOException("Monitor response pending; unsafe to proceed with FAST")
+            if(nrc!=null)return nrc to response
+            if(task.service==0x22) {
+                // Known candidate adaptation DIDs: exactly two data bytes.
+                if(response.size!=5 ||
+                    (response[0].toInt() and 255)!=0x62 ||
+                    (response[1].toInt() and 255)!=(task.did ushr 8) ||
+                    (response[2].toInt() and 255)!=(task.did and 255))
+                    throw IOException("Monitor DID mismatch or unsupported length")
+            } else if(task.service==0x19) {
+                if(DmeHistoryProtocol.parseDtcList(response)==null)
+                    throw IOException("Monitor DTC list mismatch")
+            } else throw IOException("Unexpected monitor service")
+            return "OK" to response
+        } finally {
+            s.soTimeout=savedTimeout
+        }
     }
 
     private fun udsMixedBatch():Map<Int,ByteArray>? {
