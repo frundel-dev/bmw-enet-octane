@@ -138,7 +138,10 @@ class EnetLoggerService : Service() {
                 "second_tcp_age_ms,second_tcp_cycle_ms,batch_ok,batch_errors,"+
                 "fast_knock_valid,fast_ign_valid,secondary_responses,transport,notes,"+
                 "auto_status,auto_trial,auto_stage,auto_winner,"+
-                 "slow_fresh_pids,slow_oldest_age_ms\n")
+                 "slow_fresh_pids,slow_oldest_age_ms,"+
+                 "obd_ms,slow_ms,slow_requests,knock_status_ms,knock_phase_ms,"+
+                 "ignition_phase_ms,probe_ms,foctan_ms,post_fast_ms,"+
+                 "bplus_rejections,slow_local_fresh\n")
         }
         autoPollingFile=File(getExternalFilesDir(null)?:filesDir,
             "bmw_poll_auto_v1726_${System.currentTimeMillis()}.csv").apply {
@@ -812,6 +815,7 @@ class EnetLoggerService : Service() {
                     // Exactly one probe no more frequently than every 12 s.
                     // Negative response and raw payload are preserved; the Fuel
                     // Score, confidence and existing 0x4A36 sampling stay unchanged.
+                    val probeStarted=SystemClock.elapsedRealtime()
                     if(now-lastDmeProbeMs>=12000L && !vxscanWifiBlocked) {
                         val targets=DmeReadOnlyProbe.specs.filter { spec ->
                             dmeProbeResults[spec.did]?.status!="UNSUPPORTED"
@@ -836,11 +840,15 @@ class EnetLoggerService : Service() {
                             } catch(_:Exception) { /* Never interrupt ECU polling for CSV IO. */ }
                         }
                     }
+                    val probeMs=SystemClock.elapsedRealtime()-probeStarted
+                    val foctanStarted=SystemClock.elapsedRealtime()
                     if(now-lastFoctan>=10000L) {
                         udsData(0x407F)?.let{data-> if(data.size>=220) for(x in 0..19) foctanCache[x]=(data[200+x].toInt()and 255)/256.0 }
                         lastFoctan=now
                     }
-                                        val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
+                    val foctanMs=SystemClock.elapsedRealtime()-foctanStarted
+                    val postFastStarted=SystemClock.elapsedRealtime()
+                    val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
                     // v1.7.26 measurement assistant: keep polling continuously, persist only measurement segments.
                     if(((autoMode && r!=null && l!=null && m!=null && r>=1300.0 && r<=4500.0 &&
                         l>=15.0 && m>=88.0 && m<=250.0 && (speed==null || speed>=15.0)) ||
@@ -1043,6 +1051,7 @@ class EnetLoggerService : Service() {
                         else -> "A"
                     }
                     val benchmarkNow=SystemClock.elapsedRealtime()
+                    val postFastMs=benchmarkNow-postFastStarted
                     val cycleMs=benchmarkNow-cycleStart
                     val secondarySnapshot=secondarySampler?.latest
                     val secondaryAge=secondarySnapshot?.let { benchmarkNow-it.whenMs }
@@ -1072,7 +1081,13 @@ class EnetLoggerService : Service() {
                                     pollTuner?.currentMode?:pollModeActive,
                                     pollTuner?.stageNumber()?:"",
                                     pollTuner?.chosenMode?:"",
-                                    freshSecondaryPids?:"",oldestSecondaryAge?:""
+                                    freshSecondaryPids?:"",oldestSecondaryAge?:"",
+                                    obdMs,slowMs,if(optimizedSlow)slowRequestCount else "",
+                                    knockStatusMs,knockPhaseMs,ignitionPhaseMs,
+                                    probeMs,foctanMs,postFastMs,bPlusRejections,
+                                    if(optimizedSlow)SlowPollScheduler.entries.count {
+                                        slowScheduler.fresh(it.did,benchmarkNow)
+                                    } else ""
                                 ).joinToString(","))
                             }
                         } catch(_:Exception) { /* Benchmark must not interrupt ECU polling */ }
