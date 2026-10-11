@@ -137,15 +137,11 @@ class EnetLoggerService : Service() {
         benchmarkFile=File(getExternalFilesDir(null)?:filesDir,
             "bmw_poll_benchmark_v1729_${System.currentTimeMillis()}.csv").apply {
             writeText("wall_time_ms,elapsed_ms,requested_mode,effective_mode,"+
-                "fast_hz,cycle_ms,fast_dme_ms,batch_enabled,second_tcp_enabled,"+
-                "second_tcp_age_ms,second_tcp_cycle_ms,batch_ok,batch_errors,"+
-                "fast_knock_valid,fast_ign_valid,secondary_responses,transport,notes,"+
-                "auto_status,auto_trial,auto_stage,auto_winner,"+
-                 "slow_fresh_pids,slow_oldest_age_ms,"+
-                 "obd_ms,slow_ms,slow_requests,knock_status_ms,knock_phase_ms,"+
-                 "ignition_phase_ms,probe_ms,foctan_ms,post_fast_ms,"+
-                 "bplus_rejections,slow_local_fresh,"+
-                 "monitor_ok,monitor_errors,monitor_last_ms,monitor_state,monitor_last_id\n")
+                "fast_hz,cycle_ms,fast_dme_ms,obd_ms,slow_ms,slow_requests,"+
+                "knock_status_ms,knock_phase_ms,ignition_phase_ms,foctan_ms,post_fast_ms,"+
+                "batch_ok,batch_errors,bplus_rejections,fast_knock_valid,fast_ign_valid,"+
+                "slow_local_fresh,monitor_ok,monitor_errors,monitor_last_ms,"+
+                "monitor_state,monitor_last_id,transport,notes\n")
         }
         dmeMonitorFile=File(getExternalFilesDir(null)?:filesDir,
             "bmw_dme_monitor_v1729_${System.currentTimeMillis()}.csv").apply {
@@ -952,23 +948,17 @@ class EnetLoggerService : Service() {
                                     System.currentTimeMillis(),benchmarkNow-started,
                                     requestedPollMode,effectiveMode,
                                     String.format(java.util.Locale.US,"%.3f",hz),
-                                    cycleMs,fastDmeMs,if(batchEnabled)1 else 0,
-                                    0,
-                                    "","",
-                                    batchOk,batchErrors,
-                                    listOf(kz1,kz2,kz3,kz4).count { it!=null },
-                                    listOf(iz1,iz2,iz3,iz4).count { it!=null },
-                                    "",transport,fallbackNote,
-                                    "manual",pollModeActive,"","",
-                                    "","",
-                                    obdMs,slowMs,if(optimizedSlow)slowRequestCount else "",
-                                    knockStatusMs,knockPhaseMs,ignitionPhaseMs,
-                                    0L,foctanMs,postFastMs,bPlusRejections,
-                                    if(optimizedSlow)SlowPollScheduler.entries.count {
+                                    cycleMs,fastDmeMs,obdMs,slowMs,
+                                    if(optimizedSlow)slowRequestCount else "",
+                                    knockStatusMs,knockPhaseMs,ignitionPhaseMs,foctanMs,postFastMs,
+                                    batchOk,batchErrors,bPlusRejections,
+                                    listOf(kz1,kz2,kz3,kz4).count{it!=null},
+                                    listOf(iz1,iz2,iz3,iz4).count{it!=null},
+                                    if(optimizedSlow)SlowPollScheduler.entries.count{
                                         slowScheduler.fresh(it.did,benchmarkNow)
                                     } else "",
                                     monitorOk,monitorErrors,monitorLastDuration,
-                                    monitorState,monitorLastId
+                                    monitorState,monitorLastId,transport,fallbackNote
                                 ).joinToString(","))
                             }
                         } catch(_:Exception) { /* Benchmark must not interrupt ECU polling */ }
