@@ -1,4 +1,4 @@
-# BMW OCTANE v1.7.26
+# BMW OCTANE v1.7.27
 
 Read-only Android/Kotlin transport and DME test for BMW ENET/HSFZ.
 
@@ -20,7 +20,7 @@ It automatically builds the debug APK on pushes to `main`/`master`, pull request
 To download the APK on GitHub:
 1. Open **Actions** → **Build Android APK**.
 2. Open the latest successful run.
-3. In **Artifacts**, download **BMW-OCTANE-v1.7.26-debug-apk**.
+3. In **Artifacts**, download **BMW-OCTANE-v1.7.27-debug-apk**.
 4. Unzip it to get `app-debug.apk`.
 
 The CI build uses JDK 17, Gradle 8.9, Android SDK 35 and Android Build Tools 35.0.0. No signing secrets are required for this debug APK.
@@ -43,4 +43,5 @@ Run the same checks locally with JDK 17, Gradle 8.9 and Android SDK 35:
 gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
-These are software tests, **not** verification of ENET/VXSCAN compatibility on a real vehicle. v1.7.26 defaults to mode B (single TCP + batched UDS); AUTO only compares A/B and excludes second TCP. Experimental B+ attempts one mixed-width 8-DID batch, reverting to standard B when invalid/unsupported. In B/B+ the single-TCP optional SLOW PID requests are staggered (at most two per FAST loop), with per-PID freshness and detailed benchmark timings. Mode A remains the safe fallback. C/D remain manual experimental modes and are not recommended on VXSCAN. Fuel Score calibration is unchanged. Firmware-specific timing and multi-TCP support still require car-side log validation.
+These are software tests, **not** verification of ENET/VXSCAN compatibility on a real vehicle. v1.7.27 defaults to mode B (single TCP + batched UDS); AUTO only compares A/B and excludes second TCP. Experimental B+ attempts one mixed-width 8-DID batch, reverting to standard B when invalid/unsupported. In B/B+ the single-TCP optional SLOW PID requests are staggered (at most two per FAST loop), with per-PID freshness and detailed benchmark timings. Mode A remains the safe fallback. C/D remain manual experimental modes and are not recommended on VXSCAN. Fuel Score calibration is unchanged. Firmware-specific timing and multi-TCP support still require car-side log validation.
+\n## DME history and adaptations (v1.7.27)\n\nFrom **Дополнительно**, choose **Считать историю и адаптации DME** while parked with the live logger stopped. This uses a separate *one-shot* TCP session, never a second simultaneous session. Read-only UDS `0x22` probes adaptation candidates `0x554A`, `0x4A85`, `0x4A9D`; UDS `0x19 0x02` lists supported stored DTCs; up to 12 receive `0x19 0x04/0x06` snapshot/extended record requests with record number `0xFF`. Negative and unsupported responses are kept verbatim; no adaptation resets, clears, writes, security access, or programming. Files are stored as `bmw_dme_history_v1727_*.csv`, viewable from **Сохранённые снимки истории DME**. Adaptation meanings and BMW-specific DTC records are experimental; no history is used in Fuel Score. The ECU may retain no data or refuse optional subfunctions.\n
