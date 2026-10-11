@@ -92,8 +92,8 @@ internal class DmeHistoryReader(private val context:Context) {
                 caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WIFI"
                 else -> return@mapNotNull null
             }
-            val link=manager.getLinkProperties(network)
-            if(link?.linkAddresses?.none { it.address is Inet4Address }!=false)
+            val link=manager.getLinkProperties(network) ?: return@mapNotNull null
+            if(link.linkAddresses.none { it.address is Inet4Address })
                 return@mapNotNull null
             Triple(network,kind,link)
         }.sortedWith(compareBy<Triple<Network,String,LinkProperties>> {
