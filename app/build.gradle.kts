@@ -16,8 +16,8 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 43
-        versionName = "1.7.25"
+        versionCode = 44
+        versionName = "1.7.26"
     }
     testOptions {
         unitTests.isIncludeAndroidResources = false
@@ -28,4 +28,4 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
 }
 
-// v1.7.25: default single-TCP batch B, AUTO A/B only, retain fallback A; calibration frozen
+// v1.7.26: staggered SLOW requests, per-phase timing, experimental mixed-width B+; frozen Fuel Score
