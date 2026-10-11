@@ -197,7 +197,8 @@ class MainActivity : Activity() {
             "Режим опроса DME", "Журнал производительности опроса",
             "Результаты AUTO-сравнения",
             "Считать историю и адаптации DME (LOGGER STOP)",
-            "Сохранённые снимки истории DME")
+            "Сохранённые снимки истории DME",
+            "Фоновый DME Monitor • журнал")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -219,6 +220,7 @@ class MainActivity : Activity() {
                     8 -> showAutoPollingReport()
                     9 -> showDmeHistoryScan()
                     10 -> showDmeHistoryFiles()
+                    11 -> showDmeMonitorLog()
                 }
             }
             .setNegativeButton("Закрыть",null)
@@ -324,6 +326,42 @@ class MainActivity : Activity() {
                 AlertDialog.Builder(this).setTitle(file.name).setView(view)
                     .setPositiveButton("Закрыть",null).show()
             }.setNegativeButton("Закрыть",null).show()
+    }
+
+    private fun showDmeMonitorLog() {
+        val dir=getExternalFilesDir(null)?:filesDir
+        val log=dir.listFiles()?.filter {
+            it.isFile && it.name.startsWith("bmw_dme_monitor_v1728_") &&
+                it.name.endsWith(".csv")
+        }?.maxByOrNull { it.lastModified() }
+        if(log==null) {
+            AlertDialog.Builder(this).setTitle("Фоновый DME Monitor")
+                .setMessage("Нет записей. Запусти LOGGER в B+ и дождись нескольких циклов на умеренной нагрузке.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        executor.execute {
+            val lines=try {
+                log.useLines { it.take(6000).takeLast(24) }
+            }catch(_:Exception){emptyList<String>()}
+            main.post {
+                if(isFinishing || isDestroyed)return@post
+                val text=log.absolutePath+"\n\n"+lines.joinToString("\n") { it.take(450) }+
+                    "\n\nПолный CSV содержит сырые ответы и временные метки; " +
+                    "значения адаптаций предварительные, Fuel Score не меняется."
+                val view=ScrollView(this).apply {
+                    addView(TextView(this@MainActivity).apply {
+                        this.text=text
+                        textSize=11f
+                        setTextColor(Color.WHITE)
+                        setTextIsSelectable(true)
+                        setPadding(22,18,22,18)
+                    })
+                }
+                AlertDialog.Builder(this).setTitle("Фоновый DME Monitor")
+                    .setView(view).setPositiveButton("Закрыть",null).show()
+            }
+        }
     }
 
     private fun showPollingModeDialog() {
