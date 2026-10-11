@@ -72,7 +72,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.27"
+            text="v1.7.28"
             textSize=13f
             setTextColor(sky)
         })
@@ -197,7 +197,8 @@ class MainActivity : Activity() {
             "Режим опроса DME", "Журнал производительности опроса",
             "Результаты AUTO-сравнения",
             "Считать историю и адаптации DME (LOGGER STOP)",
-            "Сохранённые снимки истории DME")
+            "Сохранённые снимки истории DME",
+            "Фоновый DME Monitor • журнал")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -219,6 +220,7 @@ class MainActivity : Activity() {
                     8 -> showAutoPollingReport()
                     9 -> showDmeHistoryScan()
                     10 -> showDmeHistoryFiles()
+                    11 -> showDmeMonitorLog()
                 }
             }
             .setNegativeButton("Закрыть",null)
@@ -326,6 +328,42 @@ class MainActivity : Activity() {
             }.setNegativeButton("Закрыть",null).show()
     }
 
+    private fun showDmeMonitorLog() {
+        val dir=getExternalFilesDir(null)?:filesDir
+        val log=dir.listFiles()?.filter {
+            it.isFile && it.name.startsWith("bmw_dme_monitor_v1728_") &&
+                it.name.endsWith(".csv")
+        }?.maxByOrNull { it.lastModified() }
+        if(log==null) {
+            AlertDialog.Builder(this).setTitle("Фоновый DME Monitor")
+                .setMessage("Нет записей. Запусти LOGGER в B+ и дождись нескольких циклов на умеренной нагрузке.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        executor.execute {
+            val lines=try {
+                log.useLines { it.take(6000).toList().takeLast(24) }
+            }catch(_:Exception){emptyList<String>()}
+            main.post {
+                if(isFinishing || isDestroyed)return@post
+                val text=log.absolutePath+"\n\n"+lines.joinToString("\n") { it.take(450) }+
+                    "\n\nПолный CSV содержит сырые ответы и временные метки; " +
+                    "значения адаптаций предварительные, Fuel Score не меняется."
+                val view=ScrollView(this).apply {
+                    addView(TextView(this@MainActivity).apply {
+                        this.text=text
+                        textSize=11f
+                        setTextColor(Color.WHITE)
+                        setTextIsSelectable(true)
+                        setPadding(22,18,22,18)
+                    })
+                }
+                AlertDialog.Builder(this).setTitle("Фоновый DME Monitor")
+                    .setView(view).setPositiveButton("Закрыть",null).show()
+            }
+        }
+    }
+
     private fun showPollingModeDialog() {
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val migrated=prefs.getBoolean(PollModePolicy.MIGRATED_KEY,false)
@@ -336,16 +374,14 @@ class MainActivity : Activity() {
         }
         val modes=PollModePolicy.manualModes
         val options=arrayOf(
-            "B • рекомендуемый, один TCP, пакетные DID",
-            "B+ • экспериментальный пакет восьми DID, резерв B",
+            "B+ • основной, один TCP, 8 DID + фоновый DME Monitor",
+            "B • резервный, один TCP, два пакета по 4 DID",
             "A • резервный, один TCP, последовательный",
-            "AUTO • сравнить только безопасные A/B",
-            "C • экспериментальный, два TCP (нестабилен на VXSCAN)",
-            "D • экспериментальный, два TCP + пакетные DID"
+            "AUTO • сравнить A/B (один TCP)"
         )
         val selected=modes.indexOf(current).coerceAtLeast(0)
         AlertDialog.Builder(this)
-            .setTitle("DME • опрос (по умолчанию B)")
+            .setTitle("DME • опрос (по умолчанию B+)")
             .setSingleChoiceItems(options,selected) { dialog,which ->
                 val mode=modes[which]
                 prefs.edit().putString("poll_mode",mode)
@@ -353,9 +389,8 @@ class MainActivity : Activity() {
                 dialog.dismiss()
                 Toast.makeText(this,
                     when(mode) {
-                        "AUTO" -> "AUTO: сравнение только A/B, без второго TCP"
-                        "B+" -> "Эксперимент B+: неподтверждённый пакет 8 DID; откат к B"
-                        "C","D" -> "Режим "+mode+" экспериментальный: второе TCP может обрывать связь"
+                        "AUTO" -> "AUTO: сравнение A/B на одном TCP"
+                        "B+" -> "B+: 8 DID, фоновый DME Monitor; резерв B при отказе"
                         else -> "Опрос "+mode+" • переключение без перезапуска"
                     },Toast.LENGTH_LONG).show()
             }.setNegativeButton("Отмена",null).show()
