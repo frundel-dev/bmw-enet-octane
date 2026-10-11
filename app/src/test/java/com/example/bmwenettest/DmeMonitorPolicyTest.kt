@@ -20,10 +20,12 @@ class DmeMonitorPolicyTest {
         val second=choose(p,26000)
         assertEquals("4A85",second?.label)
         p.issued(second!!,26000)
-        val refreshed=choose(p,28000)
+        // Eight-second minimum spacing takes precedence over due times.
+        assertNull(choose(p,28000))
+        val refreshed=choose(p,34000)
         assertEquals("554A",refreshed?.label)
-        p.issued(refreshed!!,28000)
-        assertEquals("4A9D",choose(p,36000)?.label)
+        p.issued(refreshed!!,34000)
+        assertEquals("4A9D",choose(p,42000)?.label)
     }
 
     @Test fun skipsFastIncompleteSlowCyclesAndHeavyLoad() {
