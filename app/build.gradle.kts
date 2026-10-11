@@ -16,8 +16,8 @@ android {
         applicationId = "com.example.bmwenettest"
         minSdk = 26
         targetSdk = 35
-        versionCode = 45
-        versionName = "1.7.27"
+        versionCode = 46
+        versionName = "1.7.28"
     }
     testOptions {
         unitTests.isIncludeAndroidResources = false
