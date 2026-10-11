@@ -18,8 +18,10 @@ class SlowPollSchedulerTest {
         val s=SlowPollScheduler()
         repeat(5) { i-> s.due(1000L+i*10L) }
         assertEquals(listOf(0x0D,0x5728),s.due(2500L))
-        assertEquals(listOf(0x5C,0x07),s.due(26050L).takeIf { it.contains(0x5C) && it.contains(0x07) }
-            ?: listOf(0x5C,0x07)) // deadlines are independently maintained
+        val requested=mutableSetOf<Int>()
+        for(time in 3000L..31000L step 500L)requested.addAll(s.due(time))
+        assertTrue("LTFT must be polled again",requested.contains(0x07))
+        assertTrue("Oil must be polled again",requested.contains(0x5C))
     }
 
     @Test fun missingOrFailedReadBecomesStale() {
