@@ -342,7 +342,7 @@ class MainActivity : Activity() {
         }
         executor.execute {
             val lines=try {
-                log.useLines { it.take(6000).takeLast(24) }
+                log.useLines { it.take(6000).toList().takeLast(24) }
             }catch(_:Exception){emptyList<String>()}
             main.post {
                 if(isFinishing || isDestroyed)return@post
