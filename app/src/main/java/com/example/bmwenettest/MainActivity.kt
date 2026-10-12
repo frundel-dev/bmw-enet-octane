@@ -47,6 +47,13 @@ class MainActivity : Activity() {
     private lateinit var guidedAction:Button
     private var guidedSnapshot:GuidedFuelTest.Overview?=null
     private var guidedUiRefresh:Runnable?=null
+    private lateinit var guidedPanel:LinearLayout
+    private var fuelOverviewDialog:AlertDialog?=null
+    private lateinit var targetPointsOne:TextView
+    private lateinit var targetPointsTwo:TextView
+    private lateinit var targetProgressOne:ProgressBar
+    private lateinit var targetProgressTwo:ProgressBar
+    private lateinit var targetHint:TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,7 +89,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.31"
+            text="v1.7.32"
             textSize=13f
             setTextColor(sky)
         })
@@ -105,7 +112,7 @@ class MainActivity : Activity() {
             minHeight=dp(52)
             setTextColor(Color.WHITE)
             backgroundTintList=ColorStateList.valueOf(Color.rgb(41,60,84))
-            setOnClickListener { showNewFuelTestDialog() }
+            setOnClickListener { showFuelTestOverview() }
         }
         controls.addView(modeButton,LinearLayout.LayoutParams(0,dp(54),1f).apply {
             rightMargin=dp(7)
@@ -158,7 +165,54 @@ class MainActivity : Activity() {
             setOnClickListener { showAdditionalMenu() }
         },LinearLayout.LayoutParams(dp(47),dp(54)))
         root.addView(controls)
-        val guidedPanel=LinearLayout(this).apply {
+        // A compact permanent benchmark replaces the old full-size fuel-test
+        // card. A fuel evaluation is available only after tapping "НОВАЯ ЗАПРАВКА".
+        val targetPanel=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(11),dp(6),dp(11),dp(8))
+            background=android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.rgb(25,39,57));cornerRadius=dp(10).toFloat()
+            }
+        }
+        targetPanel.addView(TextView(this).apply {
+            text="НЕДОСТАЮЩИЕ STEADY • MAP 105–129 кПа"
+            textSize=12f;setTextColor(sky)
+            typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
+        })
+        fun targetRow(label:String):Pair<TextView,ProgressBar> {
+            val header=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+            header.addView(TextView(this).apply {
+                text=label;textSize=12f;setTextColor(Color.WHITE)
+            },LinearLayout.LayoutParams(0,-2,1f))
+            val counts=TextView(this).apply {
+                text="0 точек • 0 участков"
+                textSize=11f;setTextColor(muted);gravity=Gravity.END
+            }
+            header.addView(counts)
+            targetPanel.addView(header,LinearLayout.LayoutParams(-1,-2).apply {
+                topMargin=dp(5)
+            })
+            val bar=ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal).apply {
+                max=100;progress=0
+                progressTintList=ColorStateList.valueOf(sky)
+            }
+            targetPanel.addView(bar,LinearLayout.LayoutParams(-1,dp(6)))
+            return counts to bar
+        }
+        val one=targetRow("2500–2999 об/мин")
+        targetPointsOne=one.first;targetProgressOne=one.second
+        val two=targetRow("3000–3499 об/мин")
+        targetPointsTwo=two.first;targetProgressTwo=two.second
+        targetHint=TextView(this).apply {
+            text="Запусти обычный LOGGER в AUTO. Тест заправки не требуется."
+            textSize=11f;setTextColor(muted)
+            setPadding(0,dp(7),0,0)
+        }
+        targetPanel.addView(targetHint)
+        root.addView(targetPanel,LinearLayout.LayoutParams(-1,-2).apply {
+            topMargin=dp(5);bottomMargin=dp(4)
+        })
+        guidedPanel=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             setPadding(dp(12),dp(8),dp(12),dp(9))
             background=android.graphics.drawable.GradientDrawable().apply {
@@ -199,9 +253,6 @@ class MainActivity : Activity() {
         },LinearLayout.LayoutParams(0,dp(43),1f))
         guidedButtons.addView(guidedAction,LinearLayout.LayoutParams(0,dp(43),1f))
         guidedPanel.addView(guidedButtons)
-        root.addView(guidedPanel,LinearLayout.LayoutParams(-1,-2).apply {
-            topMargin=dp(7);bottomMargin=dp(4)
-        })
         dashboard=OctaneDashboard(this)
         status=dashboard.connectionView
         val scroll=ScrollView(this).apply {
@@ -220,6 +271,12 @@ class MainActivity : Activity() {
                     liveLearningRpm=intent.getDoubleExtra(EnetLoggerService.EXTRA_RPM,0.0)
                 if(intent.hasExtra(EnetLoggerService.EXTRA_LOAD))
                     liveLearningLoad=intent.getDoubleExtra(EnetLoggerService.EXTRA_LOAD,0.0)
+                if(intent.hasExtra(EnetLoggerService.EXTRA_STEADY_TARGET_A)) {
+                    updateTargetStatus(
+                        intent.getIntArrayExtra(EnetLoggerService.EXTRA_STEADY_TARGET_A),
+                        intent.getIntArrayExtra(EnetLoggerService.EXTRA_STEADY_TARGET_B),
+                        intent.getStringExtra(EnetLoggerService.EXTRA_STEADY_TARGET_HINT))
+                }
                 if(intent.getStringExtra(EnetLoggerService.EXTRA_STATE)==null) {
                     dashboard.setMessage(message)
                 } else {
@@ -233,9 +290,29 @@ class MainActivity : Activity() {
         } else {
             registerStatusReceiverPre33(filter)
         }
+        // Restore previous samples without starting a DME connection.
+        executor.execute {
+            val session=prefs.getInt("fuel_session_id",1)
+            val old=mutableListOf<SteadyTargets.Record>()
+            try {
+                val file=File(getExternalFilesDir(null)?:filesDir,SteadyTargets.filename(session))
+                if(file.isFile)file.useLines { lines ->
+                    lines.forEach { SteadyTargets.parse(it)?.let(old::add) }
+                }
+            }catch(_:Exception){}
+            val snap=SteadyTargets.Tracker(session,old).snapshot()
+            runOnUiThread {
+                if(!isFinishing && !isDestroyed)
+                    updateTargetStatus(intArrayOf(snap.first.points,snap.first.segments,
+                        snap.first.loggerStarts,snap.first.iatBins,snap.first.coveragePct),
+                        intArrayOf(snap.second.points,snap.second.segments,
+                        snap.second.loggerStarts,snap.second.iatBins,snap.second.coveragePct),
+                        "История нового сбора восстановлена • LOGGER AUTO")
+            }
+        }
         guidedUiRefresh=object:Runnable {
             override fun run() {
-                refreshGuidedPanel()
+                if(fuelOverviewDialog?.isShowing==true) refreshGuidedPanel()
                 main.postDelayed(this,4800L)
             }
         }
@@ -439,6 +516,43 @@ class MainActivity : Activity() {
      * A dataset is observational, fuel-scoped, and NEVER activated as the
      * frozen Fuel Score or a measured RON value.
      */
+
+
+    private fun updateTargetStatus(a:IntArray?,b:IntArray?,hint:String?) {
+        if(!::targetPointsOne.isInitialized || a==null || b==null ||
+            a.size<5 || b.size<5)return
+        fun textFor(v:IntArray)=
+            "${v[0]} т. • ${v[1]} уч. • ${v[2]} зап. • ${v[4]}%"
+        targetPointsOne.text=textFor(a)
+        targetPointsTwo.text=textFor(b)
+        targetProgressOne.progress=a[4].coerceIn(0,100)
+        targetProgressTwo.progress=b[4].coerceIn(0,100)
+        targetHint.text=hint?:"Ожидаю устойчивые RPM и MAP"
+    }
+
+    private fun showFuelTestOverview() {
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        if(prefs.getLong(GuidedFuelTest.PREF_ID,0L)<=0L) {
+            showNewFuelTestDialog()
+            return
+        }
+        // The reusable card is attached to a dialog only. Never leave it
+        // mounted on the main screen, even after rotation/reopening.
+        (guidedPanel.parent as? android.view.ViewGroup)?.removeView(guidedPanel)
+        fuelOverviewDialog=AlertDialog.Builder(this)
+            .setTitle("Оценка текущей заправки")
+            .setView(guidedPanel)
+            .setNeutralButton("Новая заправка") { _,_->
+                fuelOverviewDialog=null
+                showNewFuelTestDialog()
+            }
+            .setPositiveButton("Закрыть",null)
+            .create().also { dialog->
+                dialog.setOnDismissListener { fuelOverviewDialog=null }
+                dialog.show()
+            }
+        refreshGuidedPanel()
+    }
 
     private fun showNewFuelTestDialog() {
         if(EnetLoggerService.isLoggerActive || logging) {
@@ -767,7 +881,7 @@ class MainActivity : Activity() {
             addView(scroll,LinearLayout.LayoutParams(-1,
                 (resources.displayMetrics.heightPixels-dp(220)).coerceIn(dp(260),dp(530))))
         }
-        val dialog=AlertDialog.Builder(this).setTitle("Обучение эталона • v1.7.31")
+        val dialog=AlertDialog.Builder(this).setTitle("Обучение эталона • v1.7.32")
             .setView(root).setPositiveButton("Закрыть",null).create()
 
         fun grid(phase:BaselineLearning.Phase,stats:BaselineLearning.Coverage) {
