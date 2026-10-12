@@ -37,6 +37,8 @@ class MainActivity : Activity() {
     private var logFile: File? = null
     private var supportedPids: Set<Int> = emptySet()
     private var statusReceiver: BroadcastReceiver? = null
+    private var liveLearningRpm:Double? = null
+    private var liveLearningLoad:Double? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,7 +74,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.29"
+            text="v1.7.30"
             textSize=13f
             setTextColor(sky)
         })
@@ -166,6 +168,10 @@ class MainActivity : Activity() {
             override fun onReceive(context:Context?,intent:Intent?) {
                 if(intent?.action!=EnetLoggerService.ACTION_STATUS)return
                 val message=intent.getStringExtra(EnetLoggerService.EXTRA_STATUS)?:return
+                if(intent.hasExtra(EnetLoggerService.EXTRA_RPM))
+                    liveLearningRpm=intent.getDoubleExtra(EnetLoggerService.EXTRA_RPM,0.0)
+                if(intent.hasExtra(EnetLoggerService.EXTRA_LOAD))
+                    liveLearningLoad=intent.getDoubleExtra(EnetLoggerService.EXTRA_LOAD,0.0)
                 if(intent.getStringExtra(EnetLoggerService.EXTRA_STATE)==null) {
                     dashboard.setMessage(message)
                 } else {
@@ -196,7 +202,8 @@ class MainActivity : Activity() {
             "События сети Android", "Только TCP-реконнекты",
             "Резервный режим DME (B+ / B / A)", "Производительность опроса",
             "Считать историю и адаптации DME (LOGGER STOP)",
-            "Сохранённые снимки истории DME", "Фоновый DME Monitor • журнал")
+            "Сохранённые снимки истории DME", "Фоновый DME Monitor • журнал",
+            "Обучение эталона • RPM × нагрузка")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -217,6 +224,7 @@ class MainActivity : Activity() {
                     7 -> showDmeHistoryScan()
                     8 -> showDmeHistoryFiles()
                     9 -> showDmeMonitorLog()
+                    10 -> showBaselineLearning()
                 }
             }
             .setNegativeButton("Закрыть",null)
@@ -358,6 +366,213 @@ class MainActivity : Activity() {
                     .setView(view).setPositiveButton("Закрыть",null).show()
             }
         }
+    }
+
+
+    /**
+     * Baseline-collection dashboard. Reads the CSV on a background thread;
+     * no socket access and no DME requests from the Activity.
+     *
+     * A dataset is observational, fuel-scoped, and NEVER activated as the
+     * frozen Fuel Score or a measured RON value.
+     */
+    private fun showBaselineLearning() {
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        fun dp(v:Int)=(resources.displayMetrics.density*v+0.5f).toInt()
+        fun title(s:String,size:Float=15f)=TextView(this).apply {
+            text=s; textSize=size; setTextColor(Color.WHITE)
+            setPadding(0,dp(6),0,dp(6))
+        }
+        val content=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(12),dp(8),dp(12),dp(10))
+        }
+        val scroll=ScrollView(this).apply { addView(content) }
+        val actions=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+        val newButton=Button(this).apply { text="Новый набор";isAllCaps=false;textSize=12f }
+        val toggleButton=Button(this).apply { text="Пауза";isAllCaps=false;textSize=12f }
+        val refreshButton=Button(this).apply { text="Обновить";isAllCaps=false;textSize=12f }
+        actions.addView(newButton,LinearLayout.LayoutParams(0,dp(52),1.25f))
+        actions.addView(toggleButton,LinearLayout.LayoutParams(0,dp(52),1f))
+        actions.addView(refreshButton,LinearLayout.LayoutParams(0,dp(52),1f))
+        val root=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            addView(actions)
+            addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
+        }
+        val dialog=AlertDialog.Builder(this).setTitle("Обучение эталона • v1.7.30")
+            .setView(root).setPositiveButton("Закрыть",null).create()
+
+        fun grid(phase:BaselineLearning.Phase,stats:BaselineLearning.Coverage) {
+            val rpm=if(phase==BaselineLearning.Phase.STEADY)
+                BaselineLearning.steadyRpm else BaselineLearning.accelRpm
+            val loads=if(phase==BaselineLearning.Phase.STEADY)
+                BaselineLearning.steadyLoad else BaselineLearning.accelLoad
+            content.addView(title(if(phase==BaselineLearning.Phase.STEADY)
+                "STEADY · ровный режим" else "ACCEL · допустимые разгоны",17f))
+            val heading=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+            heading.addView(TextView(this).apply {
+                text="RPM / LOAD";textSize=10f;setTextColor(Color.LTGRAY)
+                gravity=android.view.Gravity.CENTER
+            },LinearLayout.LayoutParams(dp(82),dp(29)))
+            for(j in 0 until loads.size-1) {
+                heading.addView(TextView(this).apply {
+                    text="${loads[j]}–${loads[j+1]-1}%"
+                    textSize=11f;setTextColor(Color.LTGRAY)
+                    gravity=android.view.Gravity.CENTER
+                },LinearLayout.LayoutParams(0,dp(29),1f))
+            }
+            content.addView(heading)
+            for(i in 0 until rpm.size-1) {
+                val row=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+                row.addView(TextView(this).apply {
+                    text="${rpm[i]}–${rpm[i+1]-1}"
+                    textSize=10f;setTextColor(Color.WHITE)
+                    gravity=android.view.Gravity.CENTER
+                },LinearLayout.LayoutParams(dp(82),dp(49)))
+                for(j in 0 until loads.size-1) {
+                    val cell=BaselineLearning.Cell(phase,i,j)
+                    val stat=stats.stats(cell)
+                    val color=when {
+                        stat.readyForReview -> Color.rgb(28,112,99)
+                        stat.count>=12 -> Color.rgb(49,101,154)
+                        stat.count>0 -> Color.rgb(121,87,50)
+                        else -> Color.rgb(36,48,63)
+                    }
+                    val bg=android.graphics.drawable.GradientDrawable().apply {
+                        setColor(color);cornerRadius=dp(6).toFloat()
+                    }
+                    val tile=TextView(this).apply {
+                        text=if(stat.readyForReview)"✓ ${stat.count}"
+                            else if(stat.count>0)"${stat.count}\n${stat.progress}%"
+                            else "—"
+                        textSize=12f;setTextColor(Color.WHITE)
+                        gravity=android.view.Gravity.CENTER
+                        background=bg
+                        setOnClickListener {
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle(BaselineLearning.label(cell))
+                                .setMessage("Записей: ${stat.count}\nУчастков: ${stat.segments}\n"+
+                                    "Запусков LOGGER: ${stat.trips}\n"+
+                                    "Диапазонов IAT (6 °C): ${stat.iatBuckets}\n"+
+                                    "Первичный объём: ${stat.progress}%\n\n"+
+                                    "24 точки, 4 участка, 2 запуска — лишь допуск к "+
+                                    "независимой проверке, не подтверждение RON.")
+                                .setPositiveButton("OK",null).show()
+                        }
+                    }
+                    row.addView(tile,LinearLayout.LayoutParams(0,dp(44),1f).apply {
+                        setMargins(dp(2),dp(2),dp(2),dp(2))
+                    })
+                }
+                content.addView(row)
+            }
+            content.addView(title("Ячеек с объёмом для проверки: ${stats.reviewed(phase)} / ${stats.cells(phase).size}",12f))
+            val advice=stats.advice(phase,liveLearningRpm,liveLearningLoad)
+            content.addView(title("→ "+advice.text,12.5f))
+        }
+
+        fun refresh() {
+            val id=prefs.getLong(BaselineLearning.PREF_DATASET,0L)
+            val enabled=prefs.getBoolean(BaselineLearning.PREF_ENABLED,false)
+            val label=prefs.getString(BaselineLearning.PREF_LABEL,"Текущее топливо")?:"Текущее топливо"
+            val fuel=prefs.getInt(BaselineLearning.PREF_FUEL_ID,-1)
+            val carFuel=prefs.getInt("fuel_session_id",1)
+            toggleButton.text=if(enabled)"Пауза" else "Продолжить"
+            executor.execute {
+                val coverage=BaselineLearning.Coverage()
+                if(id>0) try {
+                    val file=File(getExternalFilesDir(null)?:filesDir,BaselineLearning.filename(id))
+                    if(file.isFile)file.useLines { lines ->
+                        lines.forEach { line ->
+                            BaselineLearning.parse(line)?.let { sample ->
+                                if(sample.fuelSessionId==fuel)coverage.accept(sample)
+                            }
+                        }
+                    }
+                }catch(_:Exception) { /* Show available counts on read failure. */ }
+                runOnUiThread {
+                    if(isFinishing || isDestroyed || !dialog.isShowing ||
+                        prefs.getLong(BaselineLearning.PREF_DATASET,0L)!=id)return@runOnUiThread
+                    content.removeAllViews()
+                    content.addView(title("Набор: "+if(id==0L)"не создан" else label,16f))
+                    content.addView(title(
+                        "Топливо: НЕ подтверждено как эталонное • MG Flasher ST1\n"+
+                        "Запись: "+when {
+                            id==0L -> "сначала создай набор"
+                            fuel!=carFuel -> "ПРИОСТАНОВЛЕНО: изменилась топливная сессия"
+                            enabled -> "ВКЛЮЧЕНА"
+                            else -> "ПАУЗА"
+                        }+" • точек ${coverage.accepted}",12f))
+                    if(prefs.getString("measurement_mode","AUTO")!="AUTO") {
+                        content.addView(title(
+                            "Для записи перейди в режим замеров AUTO и перезапусти LOGGER.",12f))
+                    }
+                    if(prefs.getFloat("mixing_remaining_km",0f)>0f) {
+                        content.addView(title("Топливо смешивается: до завершения MIXING новые точки не принимаются.",12f))
+                    }
+                    content.addView(title(
+                        "Сначала заполняем повторяемые ячейки. Цвет: серый — нет данных; "+
+                        "янтарный — мало; синий — идёт набор; зелёный — можно проверять.",12f))
+                    grid(BaselineLearning.Phase.STEADY,coverage)
+                    grid(BaselineLearning.Phase.ACCEL,coverage)
+                    content.addView(title(
+                        "Это предварительная база реакции двигателя на текущую смесь, "+
+                        "а не калибровка октанового числа. Смена топлива требует нового набора. "+
+                        "Fuel Score 0.9 не меняется. Подсказки применяй только при безопасных и разрешённых условиях движения.",12f))
+                }
+            }
+        }
+
+        newButton.setOnClickListener {
+            if(EnetLoggerService.isLoggerActive) {
+                Toast.makeText(this,"Останови LOGGER перед созданием нового набора",Toast.LENGTH_LONG).show()
+            } else {
+                val label=EditText(this).apply {
+                    setSingleLine(true)
+                    setText("MG Flasher ST1 • текущее топливо (RON не проверен)")
+                    setSelection(text.length)
+                }
+                AlertDialog.Builder(this)
+                    .setTitle("Новая серия обучения")
+                    .setMessage("Старые CSV сохраняются. Новая серия не меняет Fuel Score. "+
+                        "Подтверди топливо/прошивку и выполняй измерения в AUTO.")
+                    .setView(label)
+                    .setNegativeButton("Отмена",null)
+                    .setPositiveButton("Создать") { _,_ ->
+                        val name=label.text.toString().trim().ifBlank{"Текущее топливо (RON не проверен)"}
+                        prefs.edit()
+                            .putLong(BaselineLearning.PREF_DATASET,System.currentTimeMillis())
+                            .putInt(BaselineLearning.PREF_FUEL_ID,prefs.getInt("fuel_session_id",1))
+                            .putString(BaselineLearning.PREF_LABEL,name.take(100))
+                            .putBoolean(BaselineLearning.PREF_ENABLED,true).apply()
+                        refresh()
+                    }.show()
+            }
+        }
+        toggleButton.setOnClickListener {
+            val id=prefs.getLong(BaselineLearning.PREF_DATASET,0L)
+            if(id==0L)newButton.performClick()
+            else if(prefs.getInt(BaselineLearning.PREF_FUEL_ID,-1)!=prefs.getInt("fuel_session_id",1)) {
+                Toast.makeText(this,"Топливная сессия изменилась: создай отдельный набор при остановленном LOGGER",Toast.LENGTH_LONG).show()
+            } else {
+                prefs.edit().putBoolean(BaselineLearning.PREF_ENABLED,
+                    !prefs.getBoolean(BaselineLearning.PREF_ENABLED,false)).apply()
+                refresh()
+            }
+        }
+        refreshButton.setOnClickListener { refresh() }
+        dialog.show()
+        val periodic=object:Runnable {
+            override fun run() {
+                if(!dialog.isShowing)return
+                refresh()
+                main.postDelayed(this,4500L)
+            }
+        }
+        dialog.setOnDismissListener { main.removeCallbacks(periodic) }
+        refresh()
+        main.postDelayed(periodic,4500L)
     }
 
     private fun showPollingModeDialog() {
