@@ -971,7 +971,7 @@ class EnetLoggerService : Service() {
                                     // was durably saved to the guided CSV.
                                     val due=lastWrite==0L || now-lastWrite>=interval
                                     if((didWrite || due) &&
-                                        !guidedCoverage.snapshot().captureReady) {
+                                        !guidedCoverage.captureReady()) {
                                         val entry=BaselineLearning.Sample(
                                             System.currentTimeMillis(),learningTripId,fuelSessionId,
                                             phase,if(phase==BaselineLearning.Phase.STEADY)
@@ -986,7 +986,7 @@ class EnetLoggerService : Service() {
                                                 val safe=station.replace(",", ";").replace("\n"," ").take(100)
                                                 file.writeText("# fuel_test=true;grade=$grade;station=$safe;"+
                                                     "fuel_session=$fuelSessionId;self_calibration=false;"+
-                                                    "ron_lab_verified=false;model=${OctaneCalibration.VERSION}\\n"+
+                                                    "ron_lab_verified=false;model=${OctaneCalibration.VERSION}\n"+
                                                     BaselineLearning.HEADER+"\n")
                                             }
                                             file.appendText(BaselineLearning.serialize(entry)+"\n")
@@ -994,7 +994,7 @@ class EnetLoggerService : Service() {
                                             if(phase==BaselineLearning.Phase.STEADY)
                                                 learningLastSteadyWritten=now
                                             else learningLastAccelWritten=now
-                                            if(guidedCoverage.snapshot().captureReady) {
+                                            if(guidedCoverage.captureReady()) {
                                                 prefs.edit().putBoolean(GuidedFuelTest.PREF_ACTIVE,false)
                                                     .putBoolean(GuidedFuelTest.PREF_DONE,true).apply()
                                                 emit("Сбор теста топлива завершён: можно просмотреть предварительный результат. Сравнение не определяет лабораторный RON.")
