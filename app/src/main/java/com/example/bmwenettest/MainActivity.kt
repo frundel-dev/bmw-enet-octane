@@ -34,6 +34,7 @@ class MainActivity : Activity() {
     @Volatile private var logging = false
     @Volatile private var historyBusy = false
     @Volatile private var historyCancel = false
+    private var ramReportFile:File? = null
     private var logFile: File? = null
     private var supportedPids: Set<Int> = emptySet()
     private var statusReceiver: BroadcastReceiver? = null
@@ -89,7 +90,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.32"
+            text="RAM LAB 1"
             textSize=13f
             setTextColor(sky)
         })
@@ -336,7 +337,7 @@ class MainActivity : Activity() {
             "Считать историю и адаптации DME (LOGGER STOP)",
             "Сохранённые снимки истории DME", "Фоновый DME Monitor • журнал",
             "Обучение эталона • RPM × нагрузка", "Режим замеров AUTO / TEST",
-            "История тестов топлива")
+            "История тестов топлива", "RAM LAB • безопасная проверка DME")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -365,10 +366,77 @@ class MainActivity : Activity() {
                         Toast.makeText(this,"Режим: $next. Вступит в силу после перезапуска LOGGER.",Toast.LENGTH_LONG).show()
                     }
                     12 -> showGuidedFuelHistory()
+                    13 -> showRamReadiness()
                 }
             }
             .setNegativeButton("Закрыть",null)
             .show()
+    }
+
+
+    private fun showRamReadiness() {
+        if(historyBusy || logging || EnetLoggerService.isLoggerActive) {
+            AlertDialog.Builder(this).setTitle("RAM LAB • LOGGER STOP")
+                .setMessage("Останови LOGGER и другие диагностические операции. Одновременное чтение одного DME недопустимо.")
+                .setPositiveButton("Понятно",null).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("RAM LAB • исследование совместимости")
+            .setMessage("Только на стоянке. Эксперимент прочитает несколько известных UDS DID (0x22), включая идентификаторы ПО DME, и сохранит задержки с сырыми ответами в CSV. "+
+                "НЕ будут выполняться RAM 0x23, динамические DID 0x2C, переключение диагностической сессии, разблокировка или прошивка. Это предварительная проверка, а не рабочий RAM Logging.")
+            .setNegativeButton("Отмена",null)
+            .setPositiveButton("Начать") { _,_ ->
+                if(!historyBusy && !logging && !EnetLoggerService.isLoggerActive)
+                    startRamReadiness()
+            }.show()
+    }
+
+    private fun startRamReadiness() {
+        historyBusy=true
+        historyCancel=false
+        val dialog=AlertDialog.Builder(this)
+            .setTitle("RAM LAB • read-only")
+            .setMessage("Поиск сети BMW…")
+            .setNegativeButton("Отменить") { _,_ -> historyCancel=true }
+            .create()
+        dialog.setCancelable(false)
+        dialog.show()
+        executor.execute {
+            try {
+                val result=DmeHistoryReader(applicationContext).collectRamReadiness(
+                    { historyCancel || Thread.currentThread().isInterrupted },
+                    { text -> main.post {
+                        if(!isFinishing && !isDestroyed && dialog.isShowing)
+                            dialog.setMessage(text)
+                    } }
+                )
+                main.post {
+                    if(!isFinishing && !isDestroyed) {
+                        if(dialog.isShowing)dialog.dismiss()
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle(if(result.successful) "RAM LAB • журнал сохранён"
+                                      else "RAM LAB • частичный результат")
+                            .setMessage(result.summary+"\n\nCSV: "+result.file.absolutePath+
+                                "\n\nТолько чтение UDS 0x22. Прямой доступ к RAM не проверялся.")
+                            .setPositiveButton("Сохранить CSV") { _,_ -> exportRamReport(result.file) }
+                            .setNegativeButton("Закрыть",null).show()
+                    }
+                }
+            }catch(error:Exception) {
+                main.post {
+                    if(!isFinishing && !isDestroyed) {
+                        if(dialog.isShowing)dialog.dismiss()
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("RAM LAB • ошибка")
+                            .setMessage(error.javaClass.simpleName+": "+(error.message ?: "ошибка"))
+                            .setPositiveButton("Закрыть",null).show()
+                    }
+                }
+            }finally {
+                historyBusy=false
+            }
+        }
     }
 
     private fun showDmeHistoryScan() {
@@ -1292,8 +1360,35 @@ class MainActivity : Activity() {
     }
 
 
+    private fun exportRamReport(file:File) {
+        ramReportFile=file
+        val intent=Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type="text/csv"
+            putExtra(Intent.EXTRA_TITLE,file.name)
+        }
+        startActivityForResult(intent,902)
+    }
+
     override fun onActivityResult(requestCode:Int, resultCode:Int, data:Intent?) {
         super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode==902) {
+            if(resultCode==RESULT_OK) {
+                val uri=data?.data
+                val source=ramReportFile
+                try {
+                    if(uri==null || source==null || !source.isFile)
+                        throw IllegalStateException("Отчёт RAM LAB недоступен")
+                    contentResolver.openOutputStream(uri,"w")!!.use { output ->
+                        source.inputStream().use { input -> input.copyTo(output) }
+                    }
+                    Toast.makeText(this,"RAM LAB CSV сохранён",Toast.LENGTH_LONG).show()
+                }catch(e:Exception) {
+                    Toast.makeText(this,"Ошибка экспорта CSV: ${e.message}",Toast.LENGTH_LONG).show()
+                }
+            }
+            return
+        }
         if(requestCode!=901 || resultCode!=RESULT_OK) return
         val uri=data?.data ?: return
         try {
