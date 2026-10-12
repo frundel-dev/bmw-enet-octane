@@ -86,6 +86,7 @@ internal object SteadyTargets {
         private var currentTarget=-1
         private var candidateSinceMs=0L
         private var lastEligibleMs=0L
+        private var lastSegmentTarget=-1
         private var lastStoredMs=0L
         private var segmentSerial=0
         init { existing.forEach(::accept) }
@@ -98,11 +99,17 @@ internal object SteadyTargets {
                     (nowMs-candidateSinceMs).coerceIn(0L,MIN_DWELL_MS))
             else CaptureProgress(-1,0L)
 
-        /** Discard partial dwell after invalid samples, reconnects or mode changes. */
-        fun resetCandidate() {
+        /**
+         * Invalidate dwell immediately, but retain the last independent segment
+         * for brief (<6s) excursions. Reconnect/topology changes always split it.
+         */
+        fun resetCandidate(forceNewSegment:Boolean=false) {
             currentTarget=-1
             candidateSinceMs=0L
-            lastEligibleMs=0L
+            if(forceNewSegment) {
+                lastEligibleMs=0L
+                lastSegmentTarget=-1
+            }
         }
 
         fun accept(record:Record):Boolean {
@@ -139,13 +146,15 @@ internal object SteadyTargets {
                 resetCandidate()
                 return null
             }
-            if(bin!=currentTarget || lastEligibleMs<=0 ||
-                nowMs-lastEligibleMs>SEGMENT_GAP_MS) {
+            val independent=bin!=lastSegmentTarget || lastEligibleMs<=0L ||
+                nowMs-lastEligibleMs>SEGMENT_GAP_MS
+            if(bin!=currentTarget || independent) {
                 currentTarget=bin
                 candidateSinceMs=nowMs
-                segmentSerial++
+                if(independent)segmentSerial++
             }
             lastEligibleMs=nowMs
+            lastSegmentTarget=bin
             if(nowMs-candidateSinceMs<MIN_DWELL_MS ||
                 (lastStoredMs>0 && nowMs-lastStoredMs<MIN_SAMPLE_INTERVAL_MS))
                 return null
