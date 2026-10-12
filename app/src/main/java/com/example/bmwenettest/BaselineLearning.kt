@@ -24,7 +24,11 @@ internal object BaselineLearning {
         val map:Double, val iat:Double, val coolant:Double, val stft:Double?,
         val ltft:Double?, val knock:Double, val ignitionSpread:Double
     )
-    data class CellStats(val count:Int,val segments:Int,val trips:Int,val iatBuckets:Int) {
+    data class CellStats(
+        val count:Int,val segments:Int,val trips:Int,val iatBuckets:Int,
+        val provisionalMedianVms:Double?=null,
+        val betweenTripMadPct:Double?=null
+    ) {
         // Sufficient for a HOLD-OUT experiment, never "calibrated/verified octane".
         val readyForReview:Boolean get()=count>=24 && segments>=4 && trips>=2
         val progress:Int get()=minOf(
@@ -96,13 +100,34 @@ internal object BaselineLearning {
         return s
     }
 
+    private fun median(values:Collection<Double>):Double? {
+        if(values.isEmpty())return null
+        val sorted=values.sorted()
+        val m=sorted.size/2
+        return if(sorted.size%2==1) sorted[m]
+            else (sorted[m-1]+sorted[m])/2.0
+    }
     class Coverage {
         private class Counter {
             var n=0
             val tripIds=mutableSetOf<Long>()
             val segmentIds=mutableSetOf<Pair<Long,Int>>()
             val temperatures=mutableSetOf<Int>()
-            fun snapshot()=CellStats(n,segmentIds.size,tripIds.size,temperatures.size)
+            val segmentKnock=mutableMapOf<Pair<Long,Int>,MutableList<Double>>()
+            fun snapshot():CellStats {
+                // Each trip contributes exactly one median, irrespective of
+                // sample count, and every segment is first reduced to a median.
+                val tripMedians=segmentKnock.entries.groupBy{it.key.first}
+                    .mapNotNull { (_,entries)->
+                        median(entries.mapNotNull{median(it.value)})
+                    }
+                val center=if(tripMedians.size>=2)median(tripMedians) else null
+                val mad=if(center!=null && center>0.0)
+                    median(tripMedians.map{kotlin.math.abs(it-center)})?.let{100.0*it/center}
+                    else null
+                return CellStats(n,segmentIds.size,tripIds.size,temperatures.size,
+                    center,mad)
+            }
         }
         private val counters=mutableMapOf<Cell,Counter>()
         var accepted:Int=0
@@ -115,6 +140,7 @@ internal object BaselineLearning {
                 s.iat !in 10.0..65.0 || s.coolant<65.0)return
             val v=counters.getOrPut(c){Counter()}
             v.n++; v.tripIds.add(s.tripId);v.segmentIds.add(s.tripId to s.segmentId)
+            v.segmentKnock.getOrPut(s.tripId to s.segmentId){mutableListOf()}.add(s.knock)
             v.temperatures.add(kotlin.math.floor(s.iat/6.0).toInt())
             accepted++
         }
@@ -127,6 +153,27 @@ internal object BaselineLearning {
             }
         }
         fun reviewed(phase:Phase)=cells(phase).count{stats(it).readyForReview}
+
+        fun exportCandidate():String {
+            val header="phase,rpm_min,rpm_max,load_min,load_max,samples,segments,logger_starts,iat_buckets,provisional_knock_median_vms,between_trip_mad_pct,ron_verified"
+            val rows=(cells(Phase.STEADY)+cells(Phase.ACCEL)).mapNotNull{c->
+                val x=stats(c)
+                if(!x.readyForReview || x.provisionalMedianVms==null)null
+                else {
+                    val rs=if(c.phase==Phase.STEADY)steadyRpm else accelRpm
+                    val ls=if(c.phase==Phase.STEADY)steadyLoad else accelLoad
+                    listOf(c.phase.name,rs[c.rpmIndex],rs[c.rpmIndex+1]-1,
+                        ls[c.loadIndex],ls[c.loadIndex+1]-1,
+                        x.count,x.segments,x.trips,x.iatBuckets,
+                        x.provisionalMedianVms,x.betweenTripMadPct?:"",false)
+                        .joinToString(",")
+                }
+            }
+            return (listOf(
+                "# observational_candidate_only=true;RON_unverified=true;Fuel_Score_unchanged=true",
+                header
+            )+rows).joinToString("\n")+"\n"
+        }
 
         fun advice(phase:Phase,currentRpm:Double?=null,currentLoad:Double?=null):Advice {
             val cells=cells(phase)
