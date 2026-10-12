@@ -97,7 +97,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.33"
+            text="v1.7.34"
             textSize=13f
             setTextColor(sky)
         })
@@ -423,7 +423,7 @@ class MainActivity : Activity() {
             "Считать историю и адаптации DME (LOGGER STOP)",
             "Сохранённые снимки истории DME", "Фоновый DME Monitor • журнал",
             "Обучение эталона • RPM × нагрузка", "Режим замеров AUTO / TEST",
-            "История тестов топлива")
+            "История тестов топлива", "Offline replay • наблюдения")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -452,10 +452,63 @@ class MainActivity : Activity() {
                         Toast.makeText(this,"Режим: $next. Вступит в силу после перезапуска LOGGER.",Toast.LENGTH_LONG).show()
                     }
                     12 -> showGuidedFuelHistory()
+                    13 -> showObservationReplay()
                 }
             }
             .setNegativeButton("Закрыть",null)
             .show()
+    }
+
+    /**
+     * Deterministic replay of our own versioned per-FAST-cycle observations.
+     * Never connects to DME and never changes Fuel Score or calibration.
+     */
+    private fun showObservationReplay() {
+        if(logging || EnetLoggerService.isLoggerActive) {
+            AlertDialog.Builder(this).setTitle("Offline replay")
+                .setMessage("Останови LOGGER, чтобы журнал был полностью сохранён.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        val dir=getExternalFilesDir(null)?:filesDir
+        val files=dir.listFiles()?.filter { it.isFile &&
+            it.name.startsWith("bmw_observations_v1_") && it.name.endsWith(".csv") }
+            ?.sortedByDescending { it.lastModified() } ?: emptyList()
+        if(files.isEmpty()) {
+            AlertDialog.Builder(this).setTitle("Offline replay")
+                .setMessage("Журналов наблюдений пока нет. Запусти LOGGER, затем останови его.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Выбери журнал наблюдений")
+            .setItems(files.take(30).map { it.name }.toTypedArray()) { _,index ->
+                val file=files[index]
+                executor.execute {
+                    val outcome=try {
+                        file.useLines { lines ->
+                            Pair(DriveObservationReplay.run(lines),null as String?)
+                        }
+                    } catch(e:Exception) {
+                        Pair(null,"Ошибка чтения: ${e.javaClass.simpleName}: ${e.message}")
+                    }
+                    main.post {
+                        if(isFinishing || isDestroyed)return@post
+                        val summary=outcome.first
+                        val message=if(summary==null) outcome.second ?: "Невозможно прочитать файл"
+                        else "FAST циклов: ${summary.samples} • строк с ошибками: ${summary.malformed}\n"+
+                            "STEADY: ${summary.steady} • ACCEL: ${summary.accel}\n"+
+                            "TRANSIENT: ${summary.transient} • недостаточно данных: ${summary.insufficient}\n"+
+                            "Целевые STEADY 2500–2999: ${summary.steadyTargetA}\n"+
+                            "Целевые STEADY 3000–3499: ${summary.steadyTargetB}\n"+
+                            "Реконнекты: ${summary.reconnects} • сессий топлива: ${summary.sessions}\n"+
+                            "Запусков LOGGER: ${summary.loggerStarts}\n\n"+
+                            "Экспериментальная классификация; эти циклы НЕ являются независимыми измерениями, подтверждённым покрытием или оценкой RON."
+                        AlertDialog.Builder(this).setTitle("Offline replay • ${file.name}")
+                            .setMessage(message).setPositiveButton("Закрыть",null).show()
+                    }
+                }
+            }.setNegativeButton("Закрыть",null).show()
     }
 
     private fun showDmeHistoryScan() {

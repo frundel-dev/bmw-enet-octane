@@ -39,6 +39,16 @@ class SlowPollSchedulerTest {
         assertFalse(s.fresh(0x07,1200))
     }
 
+    @Test fun sensorAgeIsNullForFailedMissingAndExpiredValues() {
+        val s=SlowPollScheduler()
+        assertNull(s.ageMs(0x0F,1000L))
+        s.record(0x0F,2000L,true)
+        assertEquals(1500L,s.ageMs(0x0F,3500L))
+        assertNull(s.ageMs(0x0F,11001L))
+        s.record(0x0F,11500L,false)
+        assertNull(s.ageMs(0x0F,11501L))
+    }
+
     @Test fun rejectedReadIsNotRetriedEveryCycle() {
         val s=SlowPollScheduler()
         assertEquals(listOf(0x0D,0x5728),s.due(1000))
