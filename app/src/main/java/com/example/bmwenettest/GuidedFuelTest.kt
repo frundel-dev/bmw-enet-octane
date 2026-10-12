@@ -72,6 +72,10 @@ internal object GuidedFuelTest {
                         s,s.knock/ref.knockMeanVms)
             }
         }
+        fun captureReady():Boolean =
+            steady.values.count{it.stat().reached}>=2 &&
+                accel.values.count{it.stat().reached}>=3
+
         fun snapshot():Overview {
             // At most three well-observed distinct STEADY cells and three
             // distinct ACCEL RPM bins, not completion of every theoretical
