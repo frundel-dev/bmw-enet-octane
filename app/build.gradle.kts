@@ -13,11 +13,11 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.bmwenettest"
+        applicationId = "com.example.bmwenettest.ramlab"
         minSdk = 26
         targetSdk = 35
-        versionCode = 50
-        versionName = "1.7.32"
+        versionCode = 51
+        versionName = "1.7.32-RAM-LAB1"
     }
     testOptions {
         unitTests.isIncludeAndroidResources = false
