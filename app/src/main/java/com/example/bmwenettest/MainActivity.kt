@@ -398,7 +398,8 @@ class MainActivity : Activity() {
         val root=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             addView(actions)
-            addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
+            addView(scroll,LinearLayout.LayoutParams(-1,
+                (resources.displayMetrics.heightPixels-dp(220)).coerceIn(dp(260),dp(530))))
         }
         val dialog=AlertDialog.Builder(this).setTitle("Обучение эталона • v1.7.30")
             .setView(root).setPositiveButton("Закрыть",null).create()
@@ -455,7 +456,15 @@ class MainActivity : Activity() {
                                 .setMessage("Записей: ${stat.count}\nУчастков: ${stat.segments}\n"+
                                     "Запусков LOGGER: ${stat.trips}\n"+
                                     "Диапазонов IAT (6 °C): ${stat.iatBuckets}\n"+
-                                    "Первичный объём: ${stat.progress}%\n\n"+
+                                    "Первичный объём: ${stat.progress}%\n"+
+                                    "Предварительная медиана: "+
+                                    (stat.provisionalMedianVms?.let{
+                                        String.format(java.util.Locale.US,"%.6f V·ms",it)
+                                    }?:"недостаточно независимых запусков")+"\n"+
+                                    "Разброс между запусками (MAD): "+
+                                    (stat.betweenTripMadPct?.let{
+                                        String.format(java.util.Locale.US,"%.1f%%",it)
+                                    }?:"—")+"\n\n"+
                                     "24 точки, 4 участка, 2 запуска — лишь допуск к "+
                                     "независимой проверке, не подтверждение RON.")
                                 .setPositiveButton("OK",null).show()
@@ -516,6 +525,27 @@ class MainActivity : Activity() {
                         "янтарный — мало; синий — идёт набор; зелёный — можно проверять.",12f))
                     grid(BaselineLearning.Phase.STEADY,coverage)
                     grid(BaselineLearning.Phase.ACCEL,coverage)
+                    content.addView(Button(this).apply {
+                        text="Экспортировать черновую модель (CSV)"
+                        isAllCaps=false
+                        isEnabled=coverage.reviewed(BaselineLearning.Phase.STEADY)+
+                            coverage.reviewed(BaselineLearning.Phase.ACCEL)>0
+                        setOnClickListener {
+                            val candidate=coverage.exportCandidate()
+                            executor.execute {
+                                val out=File(getExternalFilesDir(null)?:filesDir,
+                                    "bmw_baseline_candidate_v1730_${id}.csv")
+                                val ok=try { out.writeText(candidate);true }catch(_:Exception){false}
+                                runOnUiThread {
+                                    if(!isFinishing && !isDestroyed)
+                                        Toast.makeText(this@MainActivity,if(ok)
+                                            "Черновая модель сохранена: ${out.name}"
+                                            else "Не удалось сохранить CSV",
+                                            Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    })
                     content.addView(title(
                         "Это предварительная база реакции двигателя на текущую смесь, "+
                         "а не калибровка октанового числа. Смена топлива требует нового набора. "+
