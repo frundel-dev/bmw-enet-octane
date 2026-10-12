@@ -75,6 +75,9 @@ class EnetLoggerService : Service() {
         const val EXTRA_DME_PROBE_TESTED = "dme_probe_tested"
         const val EXTRA_POLL_MODE = "poll_mode"
         const val EXTRA_POLL_DETAIL = "poll_detail"
+        const val EXTRA_STEADY_TARGET_A = "steady_target_a"
+        const val EXTRA_STEADY_TARGET_B = "steady_target_b"
+        const val EXTRA_STEADY_TARGET_HINT = "steady_target_hint"
         const val CHANNEL = "enet_logger"
         // Shared process-level guard: DME history scan must never open a
         // competing second TCP connection while the live logger is active.
@@ -91,6 +94,7 @@ class EnetLoggerService : Service() {
     private var steadySurveyFile: File? = null
     private var benchmarkFile: File? = null
     private var dmeMonitorFile: File? = null
+    @Volatile private var steadyTargetSnapshot:SteadyTargets.Snapshot?=null
     private val connectionLogLock = Any()
     private var socket: Socket? = null
     private var logFile: File? = null
@@ -110,7 +114,7 @@ class EnetLoggerService : Service() {
         return START_STICKY
     }
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
-        .setContentTitle("BMW ENET Logger v1.7.31").setContentText(text)
+        .setContentTitle("BMW ENET Logger v1.7.32").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
 
     private fun startLogger() {
@@ -122,7 +126,7 @@ class EnetLoggerService : Service() {
         val wifi=applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
         wifiLock=wifi?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF,"BmwEnet:VXSCAN")?.apply { setReferenceCounted(false); acquire() }
         logFile=createLogFile(getSharedPreferences("bmw_native",MODE_PRIVATE).getInt("fuel_session_id",1))
-        telemetryFile=File(getExternalFilesDir(null)?:filesDir,"bmw_telemetry_v1731_${System.currentTimeMillis()}.csv").apply {
+        telemetryFile=File(getExternalFilesDir(null)?:filesDir,"bmw_telemetry_v1732_${System.currentTimeMillis()}.csv").apply {
             writeText("wall_time_ms,elapsed_ms,event,transport,rpm,load_pct,map_kpa_abs,speed_kmh,coolant_c,fuel_level_pct,fuel_session_id,run_id,reconnects,phase,stft1_pct,ltft1_pct,ign_advance_deg\n")
         }
         val connectivity=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -135,7 +139,7 @@ class EnetLoggerService : Service() {
         steadySurveyFile=createSteadySurveyFile(
             getSharedPreferences("bmw_native",MODE_PRIVATE).getInt("fuel_session_id",1))
         benchmarkFile=File(getExternalFilesDir(null)?:filesDir,
-            "bmw_poll_benchmark_v1731_${System.currentTimeMillis()}.csv").apply {
+            "bmw_poll_benchmark_v1732_${System.currentTimeMillis()}.csv").apply {
             writeText("wall_time_ms,elapsed_ms,requested_mode,effective_mode,"+
                 "fast_hz,cycle_ms,fast_dme_ms,obd_ms,slow_ms,slow_requests,"+
                 "knock_status_ms,knock_phase_ms,ignition_phase_ms,foctan_ms,post_fast_ms,"+
@@ -144,7 +148,7 @@ class EnetLoggerService : Service() {
                 "monitor_state,monitor_last_id,transport,notes\n")
         }
         dmeMonitorFile=File(getExternalFilesDir(null)?:filesDir,
-            "bmw_dme_monitor_v1731_${System.currentTimeMillis()}.csv").apply {
+            "bmw_dme_monitor_v1732_${System.currentTimeMillis()}.csv").apply {
             writeText("wall_time_ms,elapsed_ms,transport,mode,service,identifier,"+
                 "request_hex,response_hex,status,interpretation,read_ms,"+
                 "fast_sample_age_ms,rpm,load_pct,map_kpa_abs,speed_kmh,"+
@@ -154,7 +158,7 @@ class EnetLoggerService : Service() {
     }
     private fun createSteadySurveyFile(fuelId:Int):File {
         val dir=getExternalFilesDir(null)?:filesDir
-        return File(dir,"bmw_steady_v1731_fuel${fuelId}_${System.currentTimeMillis()}.csv").apply {
+        return File(dir,"bmw_steady_v1732_fuel${fuelId}_${System.currentTimeMillis()}.csv").apply {
             writeText("# calibration=${OctaneCalibration.VERSION},fuel_session=$fuelId,observational_only=true\n"+
                 "wall_time_ms,elapsed_ms,rpm,load_pct,map_kpa_abs,rpm_per_s,map_kpa_per_s,"+
                 "knock_mean_vms,iat_c,coolant_c,speed_kmh,reference_vms,reference_samples,"+
@@ -167,12 +171,12 @@ class EnetLoggerService : Service() {
 
     private fun createLogFile(fuelId:Int): File {
         val dir=getExternalFilesDir(null)?:filesDir
-        val file=File(dir,"bmw_enet_v1731_fuel${fuelId}_${System.currentTimeMillis()}.csv")
+        val file=File(dir,"bmw_enet_v1732_fuel${fuelId}_${System.currentTimeMillis()}.csv")
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val profile=prefs.getString("prg_profile","DME8FF_R_EMBEDDED") ?: "DME8FF_R_EMBEDDED"
         val prgName=prefs.getString("prg_name","") ?: ""
         val prgSha=prefs.getString("prg_sha256","") ?: ""
-        file.writeText("# app=v1.7.31,fuel_session_id=$fuelId,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz,ecu_fuel_factor,ecu_ron_equiv,knock_mean_vms,ign_spread_deg,octane_confidence_pct,run_id,reconnects,measurement_window,high_confidence_window,baseline95_knock_vms,baseline95_samples,knock_ratio95,run_fuel_score,run_quality_pct,run_valid_points,session_fuel_score,session_confidence_pct,session_valid_runs,oil_temp_c,measurement_mode,coverage_cells,speed_kmh,fuel_level_pct,fuel_session_id,driving_phase,steady_points,accel_points,steady_score,accel_score,refuel_pending,mixing_km,steady_confidence_pct,accel_confidence_pct,steady_segments,accel_segments,high_rpm_ratio95_mean,high_rpm_points,high_rpm_over120_count,high_rpm_baseline_support_avg,auto_phase_segments,steady_survey_points,steady_survey_cells,accel_v08_score,accel_v08_points,calibration_model,steady_reference_vms,accel_reference_vms,"+
+        file.writeText("# app=v1.7.32,fuel_session_id=$fuelId,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz,ecu_fuel_factor,ecu_ron_equiv,knock_mean_vms,ign_spread_deg,octane_confidence_pct,run_id,reconnects,measurement_window,high_confidence_window,baseline95_knock_vms,baseline95_samples,knock_ratio95,run_fuel_score,run_quality_pct,run_valid_points,session_fuel_score,session_confidence_pct,session_valid_runs,oil_temp_c,measurement_mode,coverage_cells,speed_kmh,fuel_level_pct,fuel_session_id,driving_phase,steady_points,accel_points,steady_score,accel_score,refuel_pending,mixing_km,steady_confidence_pct,accel_confidence_pct,steady_segments,accel_segments,high_rpm_ratio95_mean,high_rpm_points,high_rpm_over120_count,high_rpm_baseline_support_avg,auto_phase_segments,steady_survey_points,steady_survey_cells,accel_v08_score,accel_v08_points,calibration_model,steady_reference_vms,accel_reference_vms,"+
             "ltft1_pct,combined_trim_pct,ign_advance_deg,"+
             "steady_fine_cell,steady_fine_cells,steady_repeatable_cells,"+
             "steady_cell_samples,steady_cell_segments,steady_cell_median_vms,steady_cell_mad_pct,"+
@@ -230,6 +234,15 @@ class EnetLoggerService : Service() {
         pollDetail?.let{intent.putExtra(EXTRA_POLL_DETAIL,it)}
         dmeProbeSummary?.let{intent.putExtra(EXTRA_DME_PROBE_SUMMARY,it)}
         dmeProbeTested?.let{intent.putExtra(EXTRA_DME_PROBE_TESTED,it)}
+        steadyTargetSnapshot?.let { snapshot ->
+            intent.putExtra(EXTRA_STEADY_TARGET_A,intArrayOf(
+                snapshot.first.points,snapshot.first.segments,snapshot.first.loggerStarts,
+                snapshot.first.iatBins,snapshot.first.coveragePct))
+            intent.putExtra(EXTRA_STEADY_TARGET_B,intArrayOf(
+                snapshot.second.points,snapshot.second.segments,snapshot.second.loggerStarts,
+                snapshot.second.iatBins,snapshot.second.coveragePct))
+            intent.putExtra(EXTRA_STEADY_TARGET_HINT,snapshot.hint)
+        }
         intent.putExtra(EXTRA_CALIBRATION,OctaneCalibration.VERSION)
         sendBroadcast(intent)
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(7,notification(s.take(100)))
@@ -322,7 +335,7 @@ class EnetLoggerService : Service() {
         val sampleTimes=java.util.ArrayDeque<Long>(); var validOctaneSamples=0
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val autoMode=prefs.getString("measurement_mode","AUTO")=="AUTO"
-        // v1.7.31 one-time migration: prior B defaults and C/D settings
+        // v1.7.32 one-time migration: prior B defaults and C/D settings
         // become B+. Explicit later B/A/AUTO choices remain available.
         val alreadyMigrated=prefs.getBoolean(PollModePolicy.MIGRATED_KEY,false)
         var requestedPollMode=PollModePolicy.resolve(
@@ -343,6 +356,23 @@ class EnetLoggerService : Service() {
         var experimentalRollback=false
         val fuelDetector=FuelRefillDetector(prefs.getFloat("last_fuel_pct",Float.NaN).toDouble())
         var fuelSessionId=prefs.getInt("fuel_session_id",1)
+        val targetDir=getExternalFilesDir(null)?:filesDir
+        fun loadSteadyTargets(session:Int):SteadyTargets.Tracker {
+            val past=mutableListOf<SteadyTargets.Record>()
+            val file=File(targetDir,SteadyTargets.filename(session))
+            if(file.isFile)try {
+                file.useLines { lines ->
+                    lines.forEach { line ->
+                        SteadyTargets.parse(line)?.let { row ->
+                            if(row.fuelSessionId==session)past.add(row)
+                        }
+                    }
+                }
+            } catch(_:Exception) { /* A damaged file must never break DME polling. */ }
+            return SteadyTargets.Tracker(session,past)
+        }
+        var steadyTargetTracker=loadSteadyTargets(fuelSessionId)
+        steadyTargetSnapshot=steadyTargetTracker.snapshot("Включи AUTO и собирай целевые STEADY")
         var mixingKm=prefs.getFloat("mixing_remaining_km",0f).toDouble()
         var lastDistanceSampleTime=0L
         var lastRefuelNote=""
@@ -624,6 +654,8 @@ class EnetLoggerService : Service() {
                         fuelDetector.stableLevel?.let { prefs.edit().putFloat("last_fuel_pct",it.toFloat()).apply() }
                         tankUpdate.refill?.let { refill ->
                             fuelSessionId++
+                            steadyTargetTracker=loadSteadyTargets(fuelSessionId)
+                            steadyTargetSnapshot=steadyTargetTracker.snapshot("Заправка сменилась: ждём окончания смешивания топлива")
                             if(prefs.getBoolean(GuidedFuelTest.PREF_ACTIVE,false)) {
                                 prefs.edit().putBoolean(GuidedFuelTest.PREF_ACTIVE,false).apply()
                                 emit("Тест топлива приостановлен: возможная новая заправка. Не смешивай два бензина в одной оценке.")
@@ -761,7 +793,7 @@ class EnetLoggerService : Service() {
                     val foctanMs=SystemClock.elapsedRealtime()-foctanStarted
                     val postFastStarted=SystemClock.elapsedRealtime()
                     val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
-                    // v1.7.31 measurement assistant: keep polling continuously, persist only measurement segments.
+                    // v1.7.32 measurement assistant: keep polling continuously, persist only measurement segments.
                     if(((autoMode && r!=null && l!=null && m!=null && r>=1300.0 && r<=4500.0 &&
                         l>=15.0 && m>=88.0 && m<=250.0 && (speed==null || speed>=15.0)) ||
                         (!autoMode && r!=null && r>=1800.0)) && !captureActive) {
@@ -827,6 +859,33 @@ class EnetLoggerService : Service() {
                     val steadyRef=if(steadyAuto) OctaneCalibration.steadyReference(r,m,l) else null
                     val accelRef=if(accelerationAuto) OctaneCalibration.accelerationReference(r,m) else null
                     val trimComparable=OctaneCalibration.trimsComparable(stft1,ltft1)
+                    // Dedicated live benchmark for the two missing STEADY
+                    // RPM × MAP research regions. Always active in regular
+                    // AUTO logger, even without a fuel test or baseline mode.
+                    // Uses already-read values only; no DME reads or writes.
+                    val targetEligible=steadyAuto && trimComparable &&
+                        !fuelDetector.pending && mixingKm<=0.0 &&
+                        speed!=null && speed>=15.0 &&
+                        knockStatus!=1 && (superKnock==null || superKnock==0) &&
+                        knockMean!=null && knockMean>0.0 && ignSpread!=null &&
+                        listOf(kz1,kz2,kz3,kz4,iz1,iz2,iz3,iz4).all{it!=null}
+                    val targetEntry=steadyTargetTracker.offer(
+                        now,System.currentTimeMillis(),learningTripId,
+                        r,m,l,i,coolant,knockMean,targetEligible)
+                    if(targetEntry!=null)try {
+                        val file=File(targetDir,SteadyTargets.filename(fuelSessionId))
+                        if(!file.exists())
+                            file.writeText("# observational_only=true;RON_unverified=true;"+
+                                "calibration=${OctaneCalibration.VERSION};fuel_session=$fuelSessionId\\n"+
+                                SteadyTargets.HEADER+"\\n")
+                        file.appendText(SteadyTargets.serialize(targetEntry)+"\\n")
+                        steadyTargetTracker.saved(targetEntry,now)
+                    } catch(_:Exception) {
+                        // Storage errors never fake a completed benchmark or
+                        // interrupt the primary read-only ENET logger.
+                    }
+                    steadyTargetSnapshot=steadyTargetTracker.snapshot(
+                        steadyTargetTracker.advice(r,m,targetEligible,warm))
                     if(steadyWindow && warm && knockMean!=null && knockMean>0.0 &&
                         !fuelDetector.pending && mixingKm<=0.0 &&
                         r!=null && m!=null && l!=null && i!=null && coolant!=null) {
@@ -1116,7 +1175,7 @@ class EnetLoggerService : Service() {
                             }
                         } catch(_:Exception) { /* Benchmark must not interrupt ECU polling */ }
                     }
-                    if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.31 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
+                    if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.32 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
                         steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,
                         steadyScore,accelScore,highRpmMean,highRpmPoints,highRpmOver120,
                         steadySurveyPoints,steadySurveyCells.size,accelV08Score,accelV08Points,
