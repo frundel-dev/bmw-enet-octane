@@ -91,7 +91,11 @@ internal object DriveObservationReplay {
             !fresh(s.speedAgeMs,5000L) ||
             !fresh(s.iatAgeMs,9000L) ||
             !fresh(s.coolantAgeMs,16000L))return Phase.INSUFFICIENT
-        if(p==null)return Phase.INSUFFICIENT
+        if(p==null || p.event!="FAST" ||
+            !fresh(p.fastAgeMs,2500L) ||
+            !fresh(p.speedAgeMs,5000L) ||
+            !fresh(p.iatAgeMs,9000L) ||
+            !fresh(p.coolantAgeMs,16000L))return Phase.INSUFFICIENT
         val lastR=p.rpm ?: return Phase.INSUFFICIENT
         val lastM=p.mapKpa ?: return Phase.INSUFFICIENT
         val dt=(s.elapsedMs-p.elapsedMs)/1000.0
