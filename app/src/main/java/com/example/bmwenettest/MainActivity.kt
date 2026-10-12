@@ -34,6 +34,7 @@ class MainActivity : Activity() {
     @Volatile private var logging = false
     @Volatile private var historyBusy = false
     @Volatile private var historyCancel = false
+    private var ramReportFile:File? = null
     private var logFile: File? = null
     private var supportedPids: Set<Int> = emptySet()
     private var statusReceiver: BroadcastReceiver? = null
@@ -418,7 +419,8 @@ class MainActivity : Activity() {
                                       else "RAM LAB • частичный результат")
                             .setMessage(result.summary+"\n\nCSV: "+result.file.absolutePath+
                                 "\n\nТолько чтение UDS 0x22. Прямой доступ к RAM не проверялся.")
-                            .setPositiveButton("Закрыть",null).show()
+                            .setPositiveButton("Сохранить CSV") { _,_ -> exportRamReport(result.file) }
+                            .setNegativeButton("Закрыть",null).show()
                     }
                 }
             }catch(error:Exception) {
@@ -1358,8 +1360,35 @@ class MainActivity : Activity() {
     }
 
 
+    private fun exportRamReport(file:File) {
+        ramReportFile=file
+        val intent=Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type="text/csv"
+            putExtra(Intent.EXTRA_TITLE,file.name)
+        }
+        startActivityForResult(intent,902)
+    }
+
     override fun onActivityResult(requestCode:Int, resultCode:Int, data:Intent?) {
         super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode==902) {
+            if(resultCode==RESULT_OK) {
+                val uri=data?.data
+                val source=ramReportFile
+                try {
+                    if(uri==null || source==null || !source.isFile)
+                        throw IllegalStateException("Отчёт RAM LAB недоступен")
+                    contentResolver.openOutputStream(uri,"w")!!.use { output ->
+                        source.inputStream().use { input -> input.copyTo(output) }
+                    }
+                    Toast.makeText(this,"RAM LAB CSV сохранён",Toast.LENGTH_LONG).show()
+                }catch(e:Exception) {
+                    Toast.makeText(this,"Ошибка экспорта CSV: ${e.message}",Toast.LENGTH_LONG).show()
+                }
+            }
+            return
+        }
         if(requestCode!=901 || resultCode!=RESULT_OK) return
         val uri=data?.data ?: return
         try {
