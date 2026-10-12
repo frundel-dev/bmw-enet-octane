@@ -876,9 +876,9 @@ class EnetLoggerService : Service() {
                         val file=File(targetDir,SteadyTargets.filename(fuelSessionId))
                         if(!file.exists())
                             file.writeText("# observational_only=true;RON_unverified=true;"+
-                                "calibration=${OctaneCalibration.VERSION};fuel_session=$fuelSessionId\\n"+
-                                SteadyTargets.HEADER+"\\n")
-                        file.appendText(SteadyTargets.serialize(targetEntry)+"\\n")
+                                "calibration=${OctaneCalibration.VERSION};fuel_session=$fuelSessionId\n"+
+                                SteadyTargets.HEADER+"\n")
+                        file.appendText(SteadyTargets.serialize(targetEntry)+"\n")
                         steadyTargetTracker.saved(targetEntry,now)
                     } catch(_:Exception) {
                         // Storage errors never fake a completed benchmark or
