@@ -983,13 +983,13 @@ class EnetLoggerService : Service() {
                                             if(!file.exists()) {
                                                 val grade=prefs.getString(GuidedFuelTest.PREF_GRADE,"Другое")?:"Другое"
                                                 val station=prefs.getString(GuidedFuelTest.PREF_STATION,"")?:""
-                                                val safe=station.replace(",", ";").replace("\\n"," ").take(100)
+                                                val safe=station.replace(",", ";").replace("\n"," ").take(100)
                                                 file.writeText("# fuel_test=true;grade=$grade;station=$safe;"+
                                                     "fuel_session=$fuelSessionId;self_calibration=false;"+
                                                     "ron_lab_verified=false;model=${OctaneCalibration.VERSION}\\n"+
-                                                    BaselineLearning.HEADER+"\\n")
+                                                    BaselineLearning.HEADER+"\n")
                                             }
-                                            file.appendText(BaselineLearning.serialize(entry)+"\\n")
+                                            file.appendText(BaselineLearning.serialize(entry)+"\n")
                                             guidedCoverage.accept(entry)
                                             if(phase==BaselineLearning.Phase.STEADY)
                                                 learningLastSteadyWritten=now
