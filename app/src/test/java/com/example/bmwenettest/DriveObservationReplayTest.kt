@@ -74,6 +74,13 @@ class DriveObservationReplayTest {
         assertEquals(4,r.insufficient)
     }
 
+    @Test fun stalePredecessorCannotDefineReliableRpmOrMapGradient() {
+        val prior=s(1000L).copy(speedAgeMs=7000L)
+        val current=s(1500L)
+        assertEquals(DriveObservationReplay.Phase.INSUFFICIENT,
+            DriveObservationReplay.classify(current,prior))
+    }
+
     @Test fun delayedFastCycleAndUnknownSpeedAreNotSteady() {
         assertEquals(DriveObservationReplay.Phase.INSUFFICIENT,
             DriveObservationReplay.classify(s(1500L).copy(fastAgeMs=3000L),s(1000L)))
