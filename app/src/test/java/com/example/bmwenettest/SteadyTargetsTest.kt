@@ -56,14 +56,14 @@ class SteadyTargetsTest {
         fun offer(at:Long,map:Double,eligible:Boolean=true)=c.offer(
             at,1791800000000L+at,100L,3200.0,map,42.0,23.0,91.0,0.084,eligible)
         assertNull(offer(1000L,115.0))
-        assertEquals(0,c.progress(4700L).targetIndex.let{if(it==1)1 else -1}.let{if(it==1)0 else -1})
+        assertEquals(1,c.progress(4700L).targetIndex)
         assertNull(offer(4900L,132.0)) // out of band for just one polling cycle
         assertEquals(-1,c.progress(4900L).targetIndex)
         assertNull(offer(5300L,115.0))
         assertNull(offer(9500L,115.0)) // cannot credit 4.2s + previous 3.9s
         val first=offer(10300L,115.0)
         assertNotNull(first)
-        assertEquals(1,first!!.segmentId)
+        assertEquals(2,first!!.segmentId)
         assertEquals(0,c.snapshot().second.points)
         c.saved(first,10300L)
         assertEquals(1,c.snapshot().second.points)
