@@ -445,7 +445,7 @@ class EnetLoggerService : Service() {
             lastBenchmarkMs=0L
             sampleTimes.clear()
             // Do not merge one ACCEL/STEADY segment across poll topologies.
-            steadyTargetTracker.resetCandidate()
+            steadyTargetTracker.resetCandidate(forceNewSegment=true)
             captureActive=false
             captureTailUntil=0L
             previousSampleTime=0L
@@ -1311,7 +1311,7 @@ class EnetLoggerService : Service() {
                 reconnects++; consecutiveFailures++; sampleTimes.clear()
                 if(outageFrom==null) outageFrom=SystemClock.elapsedRealtime()
                 // Do not combine samples on opposite sides of a network interruption.
-                steadyTargetTracker.resetCandidate()
+                steadyTargetTracker.resetCandidate(forceNewSegment=true)
                 captureActive=false; captureTailUntil=0L; previousSampleTime=0L
                 previousRpm=null; previousMap=null; lastQualified=0L;lastSteadyObservation=0L
                 runWeightedRatio=0.0; runWeight=0.0; runValidPoints=0; runHighPoints=0
