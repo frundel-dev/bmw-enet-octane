@@ -204,6 +204,106 @@ internal class DmeHistoryReader(private val context:Context) {
         return Outcome(output,summary,completed && ok>0)
     }
 
+
+    /**
+     * RAM LAB 2: bounded, parked-only comparison of existing DME DIDs.
+     * Single requests and a combined 0x22 request share ONE TCP connection.
+     * Any rejected or mismatched batch ends the experiment immediately.
+     */
+    fun collectRamBatchBenchmark(cancel:()->Boolean,progress:(String)->Unit):Outcome {
+        verifyAllowed(cancel)
+        val dir=context.getExternalFilesDir(null) ?: context.filesDir
+        val output=File(dir,"bmw_ram_batch_v2_${System.currentTimeMillis()}.csv")
+        val singlePairs=ArrayList<Long>(RamBatchBenchmarkProtocol.ITERATIONS)
+        val batches=ArrayList<Long>(RamBatchBenchmarkProtocol.ITERATIONS)
+        var completed=false
+        var error:String?=null
+        var pendingIteration=0
+        var pendingKind:String?=null
+        var pendingRequest:ByteArray?=null
+        var pendingStart=0L
+        var usedTransport=""
+        var usedPeer=""
+        output.bufferedWriter().use { writer ->
+            writer.appendLine("wall_time_ms,iteration,sequence,kind,dids,elapsed_ms,status,request_hex,response_hex,transport,peer")
+            try {
+                progress("RAM LAB 2: поиск сети ENET/VXSCAN…")
+                val (target,connected)=connect(cancel)
+                usedTransport=target.transport
+                usedPeer=target.host
+                connected.use { conn ->
+                    val deadline=SystemClock.elapsedRealtime()+RamBatchBenchmarkProtocol.MAX_RUN_MS
+                    for(index in 0 until RamBatchBenchmarkProtocol.ITERATIONS) {
+                        verifyAllowed(cancel)
+                        if(SystemClock.elapsedRealtime()>=deadline)
+                            throw IOException("Общий лимит RAM LAB 2: 30 секунд")
+                        progress("RAM LAB 2: серия ${index+1}/${RamBatchBenchmarkProtocol.ITERATIONS}")
+                        var knockMs:Long?=null
+                        var ignitionMs:Long?=null
+                        var batchMs:Long?=null
+                        for((sequence,kind) in RamBatchBenchmarkProtocol.order(index).withIndex()) {
+                            verifyAllowed(cancel)
+                            if(SystemClock.elapsedRealtime()>=deadline)
+                                throw IOException("Общий лимит RAM LAB 2: 30 секунд")
+                            val req=RamBatchBenchmarkProtocol.request(kind)
+                            pendingKind=kind.name
+                            pendingIteration=index+1
+                            pendingRequest=req
+                            pendingStart=SystemClock.elapsedRealtime()
+                            val reply=transact(conn,req,
+                                { RamBatchBenchmarkProtocol.matches(kind,it) },cancel)
+                            val elapsed=SystemClock.elapsedRealtime()-pendingStart
+                            writer.appendLine(DmeHistoryProtocol.csv(
+                                System.currentTimeMillis(),index+1,sequence+1,kind.name,
+                                if(kind==RamBatchBenchmarkProtocol.Kind.BATCH)"4A37+4A49"
+                                else if(kind==RamBatchBenchmarkProtocol.Kind.KNOCK)"4A37" else "4A49",
+                                elapsed,reply.status,DmeHistoryProtocol.hex(req),
+                                DmeHistoryProtocol.hex(reply.payload),
+                                usedTransport,usedPeer))
+                            writer.flush()
+                            pendingRequest=null
+                            pendingKind=null
+                            pendingStart=0L
+                            if(reply.status!="OK")
+                                throw IOException("${kind.name}: отрицательный ответ ${reply.status}; тест остановлен")
+                            when(kind) {
+                                RamBatchBenchmarkProtocol.Kind.KNOCK -> knockMs=elapsed
+                                RamBatchBenchmarkProtocol.Kind.IGNITION -> ignitionMs=elapsed
+                                RamBatchBenchmarkProtocol.Kind.BATCH -> batchMs=elapsed
+                            }
+                        }
+                        singlePairs.add((knockMs ?: throw IOException("Нет ответа KNOCK"))+
+                            (ignitionMs ?: throw IOException("Нет ответа IGNITION")))
+                        batches.add(batchMs ?: throw IOException("Нет ответа BATCH"))
+                    }
+                }
+                completed=true
+            } catch(e:Exception) {
+                error="${e.javaClass.simpleName}: ${e.message ?: "unknown"}"
+                writer.appendLine(DmeHistoryProtocol.csv(
+                    System.currentTimeMillis(),pendingIteration,"",pendingKind ?: "SESSION","",
+                    if(pendingStart>0L)(SystemClock.elapsedRealtime()-pendingStart) else "",
+                    "ERROR: ${error}",pendingRequest?.let(DmeHistoryProtocol::hex) ?: "",
+                    "",usedTransport,usedPeer))
+                writer.flush()
+            }
+        }
+        val single=RamBatchBenchmarkProtocol.stats(singlePairs)
+        val batch=RamBatchBenchmarkProtocol.stats(batches)
+        fun statsText(value:RamBatchBenchmarkProtocol.Stats?):String =
+            if(value==null)"нет данных" else
+                String.format(java.util.Locale.US,"медиана %.1f мс; p95 %d мс",
+                    value.medianMs,value.p95Ms)
+        val summary="RAM LAB 2: завершено пар ${singlePairs.size}/${RamBatchBenchmarkProtocol.ITERATIONS}; "+
+            "два одиночных DID: ${statsText(single)}; "+
+            "один пакет: ${statsText(batch)}. "+
+            if(completed)"Тест завершён; только UDS 0x22."
+            else "Частичный результат: ${error ?: "unknown"}. "+
+                "После отказа пакет не повторяется."
+        progress(summary)
+        return Outcome(output,summary,completed)
+    }
+
     fun collect(cancel:()->Boolean,progress:(String)->Unit):Outcome {
         verifyAllowed(cancel)
         val directory=context.getExternalFilesDir(null) ?: context.filesDir

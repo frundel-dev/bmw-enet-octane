@@ -337,7 +337,8 @@ class MainActivity : Activity() {
             "Считать историю и адаптации DME (LOGGER STOP)",
             "Сохранённые снимки истории DME", "Фоновый DME Monitor • журнал",
             "Обучение эталона • RPM × нагрузка", "Режим замеров AUTO / TEST",
-            "История тестов топлива", "RAM LAB • безопасная проверка DME")
+            "История тестов топлива", "RAM LAB 1 • проверка DME",
+            "RAM LAB 2 • тест пакетного опроса")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -367,6 +368,7 @@ class MainActivity : Activity() {
                     }
                     12 -> showGuidedFuelHistory()
                     13 -> showRamReadiness()
+                    14 -> showRamBatchBenchmark()
                 }
             }
             .setNegativeButton("Закрыть",null)
@@ -434,6 +436,79 @@ class MainActivity : Activity() {
                     }
                 }
             }finally {
+                historyBusy=false
+            }
+        }
+    }
+
+
+    private fun showRamBatchBenchmark() {
+        if(historyBusy || logging || EnetLoggerService.isLoggerActive) {
+            AlertDialog.Builder(this).setTitle("RAM LAB 2 • LOGGER STOP")
+                .setMessage("Останови LOGGER и все другие диагностические приложения, включая MG Flasher и RAM LAB 1.")
+                .setPositiveButton("Понятно",null).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("RAM LAB 2 • проверка пакетного UDS")
+            .setMessage("Только на стоянке с остановленным двигателем или на устойчивом холостом ходу. "+
+                "Останови все другие приложения, подключённые к ENET/VXSCAN. "+
+                "24 серии: два одиночных чтения DID 4A37 и 4A49 сравниваются "+
+                "с одним объединённым запросом UDS 0x22. Порядок меняется, "+
+                "при отказе или ошибке тест прекращается. "+
+                "Данные и задержки сохраняются в CSV. "+
+                "RAM 0x23, DDDI 0x2C, изменение сессии, SecurityAccess "+
+                "и запись в DME не используются. "+
+                "Это исследовательский тест, не RAM Logging.")
+            .setNegativeButton("Отмена",null)
+            .setPositiveButton("Начать") { _,_ ->
+                if(!historyBusy && !logging && !EnetLoggerService.isLoggerActive)
+                    startRamBatchBenchmark()
+            }.show()
+    }
+
+    private fun startRamBatchBenchmark() {
+        historyBusy=true
+        historyCancel=false
+        val dialog=AlertDialog.Builder(this)
+            .setTitle("RAM LAB 2 • сравнение скорости")
+            .setMessage("Поиск сети BMW…")
+            .setNegativeButton("Отменить") { _,_ -> historyCancel=true }
+            .create()
+        dialog.setCancelable(false)
+        dialog.show()
+        executor.execute {
+            try {
+                val result=DmeHistoryReader(applicationContext).collectRamBatchBenchmark(
+                    { historyCancel || Thread.currentThread().isInterrupted },
+                    { message -> main.post {
+                        if(!isFinishing && !isDestroyed && dialog.isShowing)
+                            dialog.setMessage(message)
+                    } }
+                )
+                main.post {
+                    if(!isFinishing && !isDestroyed) {
+                        if(dialog.isShowing)dialog.dismiss()
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle(if(result.successful)"RAM LAB 2 • завершено"
+                                      else "RAM LAB 2 • частичный журнал")
+                            .setMessage(result.summary+"\n\nCSV: "+result.file.absolutePath+
+                                "\n\nТолько известные UDS 0x22. RAM не проверялся.")
+                            .setPositiveButton("Сохранить CSV") { _,_ -> exportRamReport(result.file) }
+                            .setNegativeButton("Закрыть",null).show()
+                    }
+                }
+            } catch(e:Exception) {
+                main.post {
+                    if(!isFinishing && !isDestroyed) {
+                        if(dialog.isShowing)dialog.dismiss()
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("RAM LAB 2 • ошибка")
+                            .setMessage(e.javaClass.simpleName+": "+(e.message ?: "unknown"))
+                            .setPositiveButton("Закрыть",null).show()
+                    }
+                }
+            } finally {
                 historyBusy=false
             }
         }
