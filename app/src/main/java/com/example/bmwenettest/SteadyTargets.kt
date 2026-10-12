@@ -90,6 +90,21 @@ internal object SteadyTargets {
         private var segmentSerial=0
         init { existing.forEach(::accept) }
 
+        data class CaptureProgress(val targetIndex:Int, val dwellMs:Long)
+        fun progress(nowMs:Long):CaptureProgress =
+            if(currentTarget>=0 && candidateSinceMs>0L && lastEligibleMs>0L &&
+                nowMs>=lastEligibleMs && nowMs-lastEligibleMs<=SEGMENT_GAP_MS)
+                CaptureProgress(currentTarget,
+                    (nowMs-candidateSinceMs).coerceIn(0L,MIN_DWELL_MS))
+            else CaptureProgress(-1,0L)
+
+        /** Discard partial dwell after invalid samples, reconnects or mode changes. */
+        fun resetCandidate() {
+            currentTarget=-1
+            candidateSinceMs=0L
+            lastEligibleMs=0L
+        }
+
         fun accept(record:Record):Boolean {
             if(record.fuelSessionId!=fuelSessionId ||
                 parse(serialize(record))==null)return false
@@ -118,10 +133,10 @@ internal object SteadyTargets {
                 coolant!=null && coolant.isFinite() && coolant>=65.0 &&
                 knock!=null && knock.isFinite() && knock>0.0
             if(!valid) {
-                // Brief gaps retain the candidate segment. Gaps >6 seconds
-                // start a genuinely separate segment on the next valid point.
-                if(lastEligibleMs>0 && nowMs-lastEligibleMs>SEGMENT_GAP_MS)
-                    currentTarget=-1
+                // A sample outside RPM/MAP or failing STEADY/sensor validity
+                // breaks the continuous 5-second hold immediately. Never
+                // bridge a transient excursion into a false accepted segment.
+                resetCandidate()
                 return null
             }
             if(bin!=currentTarget || lastEligibleMs<=0 ||
