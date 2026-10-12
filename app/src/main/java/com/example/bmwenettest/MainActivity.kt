@@ -191,7 +191,14 @@ class MainActivity : Activity() {
             textSize=12f;isAllCaps=false
             setOnClickListener { showGuidedResult() }
         }
-        guidedPanel.addView(guidedAction,LinearLayout.LayoutParams(-1,dp(43)))
+        val guidedButtons=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+        guidedButtons.addView(Button(this).apply {
+            text="КАРТА RPM × LOAD"
+            textSize=11f;isAllCaps=false
+            setOnClickListener { showGuidedCoverageMap() }
+        },LinearLayout.LayoutParams(0,dp(43),1f))
+        guidedButtons.addView(guidedAction,LinearLayout.LayoutParams(0,dp(43),1f))
+        guidedPanel.addView(guidedButtons)
         root.addView(guidedPanel,LinearLayout.LayoutParams(-1,-2).apply {
             topMargin=dp(7);bottomMargin=dp(4)
         })
@@ -538,6 +545,97 @@ class MainActivity : Activity() {
                 guidedAction.isEnabled=true
                 guidedAction.text=if(done)"РЕЗУЛЬТАТ ТЕСТА"
                     else "ПРОГРЕСС И РЕЗУЛЬТАТ"
+            }
+        }
+    }
+
+
+    private fun showGuidedCoverageMap() {
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        val id=prefs.getLong(GuidedFuelTest.PREF_ID,0L)
+        if(id<=0L) {
+            Toast.makeText(this,"Сначала выбери новую заправку",Toast.LENGTH_SHORT).show()
+            return
+        }
+        val fuel=prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)
+        executor.execute {
+            val c=readGuided(id,fuel)
+            runOnUiThread {
+                if(isFinishing || isDestroyed ||
+                    prefs.getLong(GuidedFuelTest.PREF_ID,0L)!=id)return@runOnUiThread
+                val dp={v:Int->(resources.displayMetrics.density*v+0.5f).toInt()}
+                val container=LinearLayout(this).apply {
+                    orientation=LinearLayout.VERTICAL
+                    setPadding(dp(9),dp(7),dp(9),dp(8))
+                }
+                fun section(phase:BaselineLearning.Phase) {
+                    val rpms=if(phase==BaselineLearning.Phase.STEADY)
+                        BaselineLearning.steadyRpm else BaselineLearning.accelRpm
+                    val loads=if(phase==BaselineLearning.Phase.STEADY)
+                        BaselineLearning.steadyLoad else BaselineLearning.accelLoad
+                    container.addView(TextView(this).apply {
+                        text=phase.name+" • RPM × нагрузка"
+                        textSize=15f;setTextColor(Color.WHITE)
+                        setPadding(0,dp(12),0,dp(4))
+                    })
+                    val header=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+                    header.addView(TextView(this).apply{
+                        text="RPM";textSize=11f;setTextColor(Color.LTGRAY)
+                    },LinearLayout.LayoutParams(dp(88),dp(27)))
+                    for(j in 0 until loads.size-1) {
+                        header.addView(TextView(this).apply{
+                            text="${loads[j]}–${loads[j+1]-1}%"
+                            textSize=11f;setTextColor(Color.LTGRAY)
+                            gravity=Gravity.CENTER
+                        },LinearLayout.LayoutParams(0,dp(27),1f))
+                    }
+                    container.addView(header)
+                    for(i in 0 until rpms.size-1) {
+                        val row=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+                        row.addView(TextView(this).apply {
+                            text="${rpms[i]}–${rpms[i+1]-1}"
+                            textSize=10f;setTextColor(Color.WHITE)
+                            gravity=Gravity.CENTER_VERTICAL
+                        },LinearLayout.LayoutParams(dp(88),dp(42)))
+                        for(j in 0 until loads.size-1) {
+                            val progress=c.cellProgress(BaselineLearning.Cell(phase,i,j))
+                            val bg=android.graphics.drawable.GradientDrawable().apply {
+                                setColor(when {
+                                    progress.reached->Color.rgb(29,117,99)
+                                    progress.count>0->Color.rgb(50,95,139)
+                                    else->Color.rgb(49,59,74)
+                                })
+                                cornerRadius=dp(5).toFloat()
+                            }
+                            row.addView(TextView(this).apply {
+                                text=if(progress.count==0)"—"
+                                    else "${progress.count} / ${progress.segments}с"
+                                textSize=11f
+                                setTextColor(Color.WHITE)
+                                gravity=Gravity.CENTER
+                                background=bg
+                            },LinearLayout.LayoutParams(0,dp(38),1f).apply {
+                                setMargins(dp(2),dp(2),dp(2),dp(2))
+                            })
+                        }
+                        container.addView(row)
+                    }
+                }
+                section(BaselineLearning.Phase.STEADY)
+                section(BaselineLearning.Phase.ACCEL)
+                container.addView(TextView(this).apply {
+                    text="Ячейка: точки / участки. Зелёный — 4+ точки "+
+                        "из 2+ участков; это только заполнение, не качество топлива. "+
+                        "ACCEL группируется по RPM для остановки теста. "+
+                        "Показаны данные именно текущей заправки."
+                    textSize=12f;setTextColor(Color.LTGRAY)
+                    setPadding(0,dp(12),0,0)
+                })
+                val scroll=ScrollView(this).apply { addView(container) }
+                AlertDialog.Builder(this)
+                    .setTitle("Карта сбора текущей заправки")
+                    .setView(scroll)
+                    .setPositiveButton("Закрыть",null).show()
             }
         }
     }
