@@ -324,6 +324,25 @@ class EnetLoggerService : Service() {
         val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0
         // A new trip ID on each LOGGER start. Not equivalent to a separate day.
         val learningTripId=System.currentTimeMillis()
+        // Owned by this polling thread, opened once per LOGGER start.
+        // No second socket or extra DME requests.
+        val observationJournal=try {
+            DriveObservationJournal(File(getExternalFilesDir(null)?:filesDir,
+                DriveObservationCsv.filename(learningTripId)).bufferedWriter())
+        } catch(_:Exception) { null }
+        var journalFailureNoted=observationJournal==null
+        if(observationJournal==null)
+            connectionEvent("OBSERVATION_JOURNAL_UNAVAILABLE",0,"FILE","","",
+                "Failed to open per-cycle CSV; primary logger remains active")
+        fun recordObservation(value:DriveObservation) {
+            val journal=observationJournal ?: return
+            if(!journal.append(value) && !journalFailureNoted) {
+                journalFailureNoted=true
+                connectionEvent("OBSERVATION_JOURNAL_FAILED",value.connectionEpoch,
+                    "FILE",value.transport,null,
+                    "Per-cycle journal write/flush failed; primary polling continues")
+            }
+        }
         var learningSteadySegment=0
         var learningAccelSegment=0
         var learningLastSteadyPhaseMs=0L
@@ -1177,6 +1196,34 @@ class EnetLoggerService : Service() {
                         else -> "A"
                     }
                     val benchmarkNow=SystemClock.elapsedRealtime()
+                    // Record all completed FAST cycles, regardless of CAPTURE,
+                    // and preserve provenance and freshness for offline replay.
+                    fun slowAge(value:Double?,did:Int):Long? {
+                        if(value==null || !value.isFinite())return null
+                        return if(optimizedSlow)slowScheduler.ageMs(did,benchmarkNow)
+                            else if(slowSensorAtMs>0L &&
+                                SampleFreshness.isFresh(benchmarkNow,slowSensorAtMs))
+                                benchmarkNow-slowSensorAtMs else null
+                    }
+                    recordObservation(DriveObservation(
+                        wallTimeMs=System.currentTimeMillis(),
+                        elapsedMs=benchmarkNow-started,
+                        tripId=learningTripId,
+                        fuelSessionId=fuelSessionId,
+                        connectionEpoch=reconnects,
+                        event="FAST",
+                        transport=transport,
+                        pollMode=effectiveMode,
+                        rpm=r,mapKpa=m,loadPct=l,speedKmh=speed,iatC=i,
+                        coolantC=coolant,stftPct=stft1,ltftPct=ltft1,
+                        knockVms=knockMean,ignSpreadDeg=ignSpread,
+                        fastAgeMs=(benchmarkNow-cycleStart).coerceAtLeast(0L),
+                        speedAgeMs=slowAge(speed,0x0D),
+                        iatAgeMs=slowAge(i,0x0F),
+                        coolantAgeMs=slowAge(coolant,0x05),
+                        stftAgeMs=slowAge(stft1,0x06),
+                        ltftAgeMs=slowAge(ltft1,0x07)
+                    ))
                     val postFastMs=benchmarkNow-postFastStarted
                     val cycleMs=benchmarkNow-cycleStart
                     val fallbackNote=lastBatchFallback.replace(",",";")
@@ -1309,6 +1356,16 @@ class EnetLoggerService : Service() {
                         "2 TCP interruptions within 90s; use safe mode A until STOP/START")
                 }
                 reconnects++; consecutiveFailures++; sampleTimes.clear()
+                recordObservation(DriveObservation(
+                    wallTimeMs=System.currentTimeMillis(),
+                    elapsedMs=failureAt-started,
+                    tripId=learningTripId,
+                    fuelSessionId=fuelSessionId,
+                    connectionEpoch=reconnects,
+                    event="DISCONNECTED",
+                    transport=connectionTransport.ifBlank{"UNKNOWN"},
+                    pollMode=pollModeActive
+                ))
                 if(outageFrom==null) outageFrom=SystemClock.elapsedRealtime()
                 // Do not combine samples on opposite sides of a network interruption.
                 steadyTargetTracker.resetCandidate(forceNewSegment=true)
@@ -1346,6 +1403,11 @@ class EnetLoggerService : Service() {
                 if(running) SystemClock.sleep(retryMs)
             }
         }
+        // Always flush the final buffered samples when polling ends normally.
+        observationJournal?.close()
+        if(observationJournal?.failed==true && !journalFailureNoted)
+            connectionEvent("OBSERVATION_JOURNAL_FAILED",reconnects,
+                "FILE",connectionTransport,null,"Journal close/flush failed")
     }
     // Octane Engine v0.2: empirical AI-95 baseline from validated v1.7.2 + independent v1.7.3 AI-95 runs.
     // RPM x MAP bins: median knock_mean_vms and number of baseline samples.
