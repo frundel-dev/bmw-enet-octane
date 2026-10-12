@@ -94,3 +94,25 @@ preserve previous tests. See `docs/GUIDED_FUEL_TEST_v1.7.31.md`.
 
 Unit tests, lint and debug APK assembly are required. Real-road DME validation
 is still needed to confirm practical coverage and slow-value freshness.
+
+## v1.7.32 — compact real-time STEADY research coverage on home screen
+
+The bulky *new refill / fuel evaluation* panel no longer takes permanent home-screen
+space. **НОВАЯ ЗАПРАВКА** opens the isolated refill-test screen (or, on first
+use, the fuel selection dialog); after choosing fuel the assessment appears
+there, together with its RPM×LOAD map and test result. No result is removed.
+
+A minimal **НЕДОСТАЮЩИЕ STEADY • MAP 105–129 кПа** panel stays visible
+beneath the start controls, in the normal AUTO logger with **no new fuel-test
+mode** required. It shows independent live counters, distinct segments,
+different LOGGER starts, provisional cell-completion percentages and
+contextual hints for RPM 2500–2999 and 3000–3499. Counts are persisted in
+a separate append-only `bmw_steady_targets_v1732_fuel<id>.csv`, restore when
+the app or LOGGER restarts, and reset on a different recorded fuel session.
+The display is based on accepted read-only FAST/SLOW values: RPM/MAP gates,
+STEADY stability, warmed engine, fresh valid 4-cylinder knock/ignition,
+normal trims, no knock event, no mixing/refill; after 5 s stable dwell, at
+most 1 accepted row per 2.5 s. 24 points, 4 segments and 2 LOGGER starts
+form only **preliminary observational coverage**, NOT model validity or a
+measured gasoline RON. Existing raw logs and Fuel Score are unchanged.
+Older v1.7.31 logs are not silently mixed into this new counter.
