@@ -54,6 +54,14 @@ class MainActivity : Activity() {
     private lateinit var targetProgressOne:ProgressBar
     private lateinit var targetProgressTwo:ProgressBar
     private lateinit var targetHint:TextView
+    private lateinit var livePanelBorder:android.graphics.drawable.GradientDrawable
+    private lateinit var liveMapValue:TextView
+    private lateinit var liveRpmValue:TextView
+    private lateinit var liveCue:TextView
+    private lateinit var liveHold:ProgressBar
+    private val fastStaleClear=Runnable {
+        showFastTelemetry(null,null,null,-1,0L)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -89,7 +97,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.32"
+            text="v1.7.33"
             textSize=13f
             setTextColor(sky)
         })
@@ -144,6 +152,8 @@ class MainActivity : Activity() {
                     startService(Intent(this@MainActivity,EnetLoggerService::class.java)
                         .setAction(EnetLoggerService.ACTION_STOP))
                     dashboard.setLogging(false)
+                    main.removeCallbacks(fastStaleClear)
+                    showFastTelemetry(null,null,null,-1,0L)
                 }
             }
         }
@@ -165,6 +175,69 @@ class MainActivity : Activity() {
             setOnClickListener { showAdditionalMenu() }
         },LinearLayout.LayoutParams(dp(47),dp(54)))
         root.addView(controls)
+
+        // Fixed in the visible area: no scrolling or 1.5-second score refresh
+        // is needed to follow the next complete RPM/MAP diagnostic sample.
+        val quickPanel=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(12),dp(8),dp(12),dp(10))
+        }
+        livePanelBorder=android.graphics.drawable.GradientDrawable().apply {
+            setColor(Color.rgb(25,39,57))
+            cornerRadius=dp(10).toFloat()
+            setStroke(dp(2),Color.rgb(71,88,111))
+        }
+        quickPanel.background=livePanelBorder
+        quickPanel.addView(TextView(this).apply {
+            text="LIVE STEADY • данные DME"
+            textSize=12f;setTextColor(muted)
+            typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
+        })
+        val liveRow=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.CENTER_VERTICAL
+        }
+        val mapColumn=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL }
+        mapColumn.addView(TextView(this).apply {
+            text="MAP ABS • кПа"
+            textSize=12f;setTextColor(muted)
+        })
+        liveMapValue=TextView(this).apply {
+            text="—";textSize=43f;setTextColor(Color.WHITE)
+            typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
+            includeFontPadding=false
+        }
+        mapColumn.addView(liveMapValue)
+        liveRow.addView(mapColumn,LinearLayout.LayoutParams(0,-2,1.2f))
+        val rpmColumn=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL }
+        rpmColumn.addView(TextView(this).apply {
+            text="ОБОРОТЫ • об/мин"
+            textSize=12f;setTextColor(muted)
+        })
+        liveRpmValue=TextView(this).apply {
+            text="—";textSize=30f;setTextColor(Color.WHITE)
+            typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
+            includeFontPadding=false
+        }
+        rpmColumn.addView(liveRpmValue)
+        liveRow.addView(rpmColumn,LinearLayout.LayoutParams(0,-2,1f))
+        quickPanel.addView(liveRow)
+        liveCue=TextView(this).apply {
+            text="Ожидание свежих RPM / MAP от DME"
+            textSize=12f;setTextColor(muted)
+        }
+        quickPanel.addView(liveCue)
+        liveHold=ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal).apply {
+            max=100;progress=0
+            progressTintList=ColorStateList.valueOf(Color.rgb(75,219,183))
+        }
+        quickPanel.addView(liveHold,LinearLayout.LayoutParams(-1,dp(5)).apply {
+            topMargin=dp(5)
+        })
+        root.addView(quickPanel,LinearLayout.LayoutParams(-1,-2).apply {
+            topMargin=dp(6);bottomMargin=dp(3)
+        })
+
         // A compact permanent benchmark replaces the old full-size fuel-test
         // card. A fuel evaluation is available only after tapping "НОВАЯ ЗАПРАВКА".
         val targetPanel=LinearLayout(this).apply {
@@ -265,6 +338,18 @@ class MainActivity : Activity() {
         setContentView(root)
         statusReceiver=object:BroadcastReceiver() {
             override fun onReceive(context:Context?,intent:Intent?) {
+                if(intent?.action==EnetLoggerService.ACTION_FAST_TELEMETRY) {
+                    val r=intent.getDoubleExtra(EnetLoggerService.EXTRA_RPM,Double.NaN)
+                    val m=intent.getDoubleExtra(EnetLoggerService.EXTRA_MAP,Double.NaN)
+                    val l=intent.getDoubleExtra(EnetLoggerService.EXTRA_LOAD,Double.NaN)
+                    showFastTelemetry(r.takeIf{it.isFinite()},m.takeIf{it.isFinite()},
+                        l.takeIf{it.isFinite()},
+                        intent.getIntExtra(EnetLoggerService.EXTRA_STEADY_TARGET_INDEX,-1),
+                        intent.getLongExtra(EnetLoggerService.EXTRA_STEADY_HOLD_MS,0L))
+                    main.removeCallbacks(fastStaleClear)
+                    main.postDelayed(fastStaleClear,2500L)
+                    return
+                }
                 if(intent?.action!=EnetLoggerService.ACTION_STATUS)return
                 val message=intent.getStringExtra(EnetLoggerService.EXTRA_STATUS)?:return
                 if(intent.hasExtra(EnetLoggerService.EXTRA_RPM))
@@ -284,7 +369,9 @@ class MainActivity : Activity() {
                 }
             }
         }
-        val filter=IntentFilter(EnetLoggerService.ACTION_STATUS)
+        val filter=IntentFilter(EnetLoggerService.ACTION_STATUS).apply {
+            addAction(EnetLoggerService.ACTION_FAST_TELEMETRY)
+        }
         if(Build.VERSION.SDK_INT>=33) {
             registerReceiver(statusReceiver,filter,RECEIVER_NOT_EXPORTED)
         } else {
@@ -517,6 +604,31 @@ class MainActivity : Activity() {
      * frozen Fuel Score or a measured RON value.
      */
 
+
+    private fun showFastTelemetry(rpm:Double?,map:Double?,load:Double?,
+                                  targetIndex:Int,holdMs:Long) {
+        if(!::liveMapValue.isInitialized)return
+        val cue=SteadyLiveCue.evaluate(rpm,map,targetIndex,holdMs)
+        liveMapValue.text=map?.let {
+            String.format(java.util.Locale.getDefault(),"%.0f",it)
+        }?:"—"
+        liveRpmValue.text=rpm?.let {
+            String.format(java.util.Locale.getDefault(),"%.0f",it)
+        }?:"—"
+        val accent=when(cue.band) {
+            SteadyLiveCue.Band.TARGET_MAP -> Color.rgb(75,219,183)
+            SteadyLiveCue.Band.HIGH_MAP -> Color.rgb(255,134,117)
+            SteadyLiveCue.Band.LOW_MAP -> Color.rgb(89,171,255)
+            else -> Color.rgb(158,175,196)
+        }
+        livePanelBorder.setStroke(
+            (2*resources.displayMetrics.density+0.5f).toInt().coerceAtLeast(1),accent)
+        liveMapValue.setTextColor(accent)
+        liveCue.text=cue.description
+        liveCue.setTextColor(accent)
+        liveHold.progress=cue.holdPct
+        dashboard.updateFastReadings(rpm,map,load)
+    }
 
     private fun updateTargetStatus(a:IntArray?,b:IntArray?,hint:String?) {
         if(!::targetPointsOne.isInitialized || a==null || b==null ||
@@ -1283,6 +1395,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        main.removeCallbacks(fastStaleClear)
         guidedUiRefresh?.let { main.removeCallbacks(it) }
         guidedUiRefresh=null
         historyCancel=true
