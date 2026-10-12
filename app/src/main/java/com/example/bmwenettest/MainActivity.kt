@@ -496,13 +496,13 @@ class MainActivity : Activity() {
                         if(isFinishing || isDestroyed)return@post
                         val summary=outcome.first
                         val message=if(summary==null) outcome.second ?: "Невозможно прочитать файл"
-                        else "FAST циклов: ${summary.samples} • строк с ошибками: ${summary.malformed}\\n"+
-                            "STEADY: ${summary.steady} • ACCEL: ${summary.accel}\\n"+
-                            "TRANSIENT: ${summary.transient} • недостаточно данных: ${summary.insufficient}\\n"+
-                            "Целевые STEADY 2500–2999: ${summary.steadyTargetA}\\n"+
-                            "Целевые STEADY 3000–3499: ${summary.steadyTargetB}\\n"+
-                            "Реконнекты: ${summary.reconnects} • сессий топлива: ${summary.sessions}\\n"+
-                            "Запусков LOGGER: ${summary.loggerStarts}\\n\\n"+
+                        else "FAST циклов: ${summary.samples} • строк с ошибками: ${summary.malformed}\n"+
+                            "STEADY: ${summary.steady} • ACCEL: ${summary.accel}\n"+
+                            "TRANSIENT: ${summary.transient} • недостаточно данных: ${summary.insufficient}\n"+
+                            "Целевые STEADY 2500–2999: ${summary.steadyTargetA}\n"+
+                            "Целевые STEADY 3000–3499: ${summary.steadyTargetB}\n"+
+                            "Реконнекты: ${summary.reconnects} • сессий топлива: ${summary.sessions}\n"+
+                            "Запусков LOGGER: ${summary.loggerStarts}\n\n"+
                             "Экспериментальная классификация; эти циклы НЕ являются независимыми измерениями, подтверждённым покрытием или оценкой RON."
                         AlertDialog.Builder(this).setTitle("Offline replay • ${file.name}")
                             .setMessage(message).setPositiveButton("Закрыть",null).show()
