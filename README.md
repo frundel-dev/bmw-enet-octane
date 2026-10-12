@@ -1,118 +1,68 @@
-# BMW OCTANE v1.7.27
+# BMW OCTANE — Android ENET/VXSCAN (v1.7.32)
 
-Read-only Android/Kotlin transport and DME test for BMW ENET/HSFZ.
+> **Статус:** экспериментальное приложение для сбора и сравнительного анализа диагностических данных BMW. Не является октанометром и не измеряет лабораторное RON/MON. Подтверждение качества топлива требует независимой валидации.
+>
+> **Срез исходного кода:** `main` @ [`04b446acc6d4`](https://github.com/frundel-dev/bmw-enet-octane/commit/04b446acc6d4c3fb2b0720d2302e2597965d4740), 12.10.2026. Версия: `versionName=1.7.32`, `versionCode=50`; модель сравнения `OctaneCalibration.VERSION=0.9-stratified-survey`. Сверяйте эти значения с `app/build.gradle.kts` и `OctaneCalibration.kt` после обновлений.
 
-- Finds Android Ethernet network.
-- BMW HSFZ discovery on UDP 6811.
-- Connects TCP 6801.
-- Sends UDS ReadDataByIdentifier `22 F1 90` to DME target `0x12` and tries to decode VIN.
-- Sends experimental read-only OBD `01 0C` RPM request to DME and displays raw response even if unsupported.
-- Does not send coding, flashing, reset, routine-control, security-access, write-data or IO-control services.
+## Назначение и основной сценарий
 
-Build with Android Studio (compileSdk 35, minSdk 26).
+1. Нажать **НОВАЯ ЗАПРАВКА**, выбрать *заявленную* марку бензина (АИ-92/95/98/100/другое) и при желании указать АЗС.
+2. При остановленном LOGGER создать отдельный тест. Приложение переключит **режим измерения** на `AUTO` и запустит диагностический LOGGER.
+3. В безопасных условиях движения собирать STEADY/ACCEL-наблюдения с подсказками по RPM и нагрузке; прогресс и карту открыть через **НОВАЯ ЗАПРАВКА → Оценка текущей заправки** (диалог, **не** отдельная Android Activity).
+4. Просмотреть предварительный результат или сообщение о недостатке данных. Сессии и CSV хранятся раздельно.
 
-## GitHub Actions APK build
+**Обязательная оговорка:** текущая реализация может показывать лишь предварительную **относительную разницу сигналов детонации** по сопоставимым сегментам на основе архивных референсов, а не объективно определять октановое число, состав, наличие примесей или соответствие заявленной марке топлива.
 
-The repository includes `.github/workflows/build-apk.yml`.
+## Что реализовано в v1.7.32
 
-It automatically builds the debug APK on pushes to `main`/`master`, pull requests, and manual `workflow_dispatch` runs.
+- **Рабочая диагностика:** Android foreground `EnetLoggerService`, обнаружение сети BMW (Ethernet / Wi-Fi VXSCAN), HSFZ discovery UDP 6811, TCP 6801, read-only UDS/OBD запросы, логи связи, телеметрия, тайм-ауты и переподключения. Сетевые ограничения конкретного Android/VXSCAN требуют проверки на устройстве.
+- **Сериализованный диагностический опрос:** один рабочий TCP-сокет; `B+` (строгий смешанный пакет 8 DID) по умолчанию, `B` и `A` как резервные режимы. Неоднозначные/неподдерживаемые ответы вызывают предусмотренный откат. Старые `C/D` и отдельный второй TCP-поток удалены. `AUTO` **измерений** — отдельное понятие, не прежний AUTO-компаратор режимов опроса.
+- **FAST/SLOW и монитор:** дополнительные SLOW-значения опрашиваются по очереди в том же TCP-сеансе с проверкой свежести. Низкоприоритетный `DmeMonitorPolicy` допускает дополнительные read-only запросы между завершёнными FAST-циклами; при неоднозначной транспортной ошибке монитор приостанавливается.
+- **История DME:** `DmeHistoryReader` выполняет отдельное разовое read-only чтение адаптаций-кандидатов и DTC **только при остановленном LOGGER**; интерпретация данных специфична для ECU и пока экспериментальна.
+- **Обучение наблюдательного профиля:** `BaselineLearning` ведёт отдельные RPM × LOAD карты STEADY/ACCEL и CSV для выбранного набора данных. «Готово к анализу» не означает проверенный бензин; автоматически менять `OctaneCalibration` запрещено текущей архитектурой.
+- **Тест новой заправки:** `GuidedFuelTest` учитывает независимые сегменты; предварительная заполненность достигается при ≥2 STEADY-ячейках и ≥3 ACCEL RPM-группах (каждая: ≥4 точек и ≥2 сегмента). Даже при полном покрытии качество топлива может оставаться неизвестным.
+- **Компактная панель на главном экране:** отдельные полосы **STEADY 2500–2999 / 3000–3499 об/мин, MAP 105–129 кПа**. Работает в обычном `AUTO` LOGGER без запуска теста новой заправки и без дополнительных диагностических запросов. Для **каждой** целевой области предварительный ориентир — ≥24 точек, ≥4 сегментов и ≥2 запусков LOGGER, после 5 секунд устойчивого режима и с интервалом между принятыми точками ≥2,5 секунды. Это метрика покрытия, не калибровка RON.
+- **Legacy Fuel Score:** существующие внутренние сравнительные оценки и `OctaneCalibration.kt` остаются отдельными от экспериментального обучения и теста конкретной заправки. Отображаемые оценки не являются результатом лабораторного испытания топлива.
 
-To download the APK on GitHub:
-1. Open **Actions** → **Build Android APK**.
-2. Open the latest successful run.
-3. In **Artifacts**, download **BMW-OCTANE-v1.7.27-debug-apk**.
-4. Unzip it to get `app-debug.apk`.
+## Как пользоваться и безопасно собирать данные
 
-The CI build uses JDK 17, Gradle 8.9, Android SDK 35 and Android Build Tools 35.0.0. No signing secrets are required for this debug APK.
+1. Подключить поддерживаемое оборудование ENET/VXSCAN и убедиться в доступности автомобиля через выбранную сеть.
+2. Для анализа новой заправки использовать кнопку **НОВАЯ ЗАПРАВКА** при остановленном LOGGER; дождаться завершения перемешивания топлива после заправки.
+3. Для заполнения двух недостающих STEADY-регионов можно отдельно запустить обычный LOGGER в режиме измерения `AUTO`. В интерфейсе видны число точек, сегменты и прогресс.
+4. Не пытаться искусственно достигать скоростей/нагрузок, недопустимых на дороге; отсутствие безопасно достижимого режима должно оставаться «недостаточно данных».
+5. Считать отображаемые проценты, confidence и относительные изменения **внутренними исследовательскими индикаторами**, пока нет независимой межтопливной и автомобильной валидации.
 
-## Automated quality gates (CI)
+## Архитектура: где искать код
 
-Every push or pull request now runs the following **before** the debug APK artifact is published:
+| Область | Реализация |
+| --- | --- |
+| UI, диалоги тестов, история | `app/src/main/java/com/example/bmwenettest/MainActivity.kt`, `OctaneDashboard.kt` |
+| Сетевой сеанс, измерения, запись CSV | `EnetLoggerService.kt`, `AndroidNetworkEventMonitor.kt` |
+| Границы HSFZ и строгие ответы UDS DID | `HsfzCodec.kt`, `DmeBatchParser.kt`, `MixedDidBatch.kt`, `DiagnosticResponse.kt` |
+| Режимы B+/B/A и политика чтения | `PollModePolicy.kt`, `SlowPollScheduler.kt`, `SampleFreshness.kt`, `DmeMonitorPolicy.kt` |
+| История/адаптации DME | `DmeHistoryReader.kt`, `DmeHistoryProtocol.kt` |
+| Базовая модель и профиль наблюдений | `OctaneCalibration.kt`, `BaselineLearning.kt`, `SteadyCellStats.kt` |
+| Тест топлива и целевые STEADY | `GuidedFuelTest.kt`, `SteadyTargets.kt`, `FuelRefillDetector.kt` |
 
-1. `gradle :app:testDebugUnitTest` — JVM tests, no car/Android emulator required.
-2. `gradle :app:lintDebug` — Android Lint (fatal and error findings fail CI).
-3. `gradle :app:assembleDebug` — build the APK only after the gates pass.
+Локальные CSV для различных видов измерений не объединяются автоматически: `bmw_baseline_learning_v1730_*.csv`, `bmw_fuel_test_v1731_*.csv`, `bmw_steady_targets_v1732_fuel*.csv`, а также файлы мониторинга и истории DME. Приложение использует каталог `getExternalFilesDir(null)` (с резервным `filesDir` для соответствующих операций); не следует предполагать, что это общедоступная папка Downloads. Форматы и подробные условия приведены в коде и версиях документации.
 
-Tests cover HSFZ stream framing, UDS multi-DID response validation, AUTO A/B mode selection and fallback, read-only DME probe parsing, fuel-refill detection, frozen octane reference boundaries, and STEADY robust statistics.
+## Сборка, тесты и GitHub Actions
 
-CI attaches a `bmw-octane-quality-reports` artifact (JUnit XML, HTML tests and Lint reports), even when tests or Lint fail. The APK artifact is not published on a failing run.
+- Android/Kotlin, `compileSdk=35`, `targetSdk=35`, `minSdk=26`; JDK 17, Gradle 8.9, Android SDK 35.
+- Репозиторий использует установленный Gradle в CI (в дереве этого среза **нет Gradle Wrapper**).
+- Workflow: [`.github/workflows/build-apk.yml`](.github/workflows/build-apk.yml), запуск при push в `main`/`master`, на PR или вручную.
+- Последовательные quality gates: `gradle --no-daemon :app:testDebugUnitTest`, `gradle --no-daemon :app:lintDebug`, `gradle --no-daemon :app:assembleDebug`.
+- Успешный [запуск CI для исходного коммита v1.7.32](https://github.com/frundel-dev/bmw-enet-octane/actions/runs/38228012816) подтвердил выполнение всех трёх этапов. Это **не** испытание на автомобиле.
+- Для получения APK: **Actions → Build Android APK → успешный запуск → Artifacts → `BMW-OCTANE-v1.7.32-debug-apk` → `app-debug.apk`**. Отчёты тестов/Lint публикуются как `bmw-octane-quality-reports`.
+- JVM-тесты в `app/src/test/java/com/example/bmwenettest/` покрывают HSFZ фрейминг и усечения, UDS DID, режимы опроса, планировщики, DME history/monitor, Fuel Refill, замороженную калибровку, baseline, guided test и STEADY targets.
 
-Run the same checks locally with JDK 17, Gradle 8.9 and Android SDK 35:
+## Документация и статус проверок
 
-```sh
-gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
-```
+- [PROJECT_STATE.md](PROJECT_STATE.md) — проверенный срез версии, архитектура, реализованные и неподтверждённые свойства.
+- [DECISIONS.md](DECISIONS.md) — действующие решения и доказательства по исходному коду.
+- [AGENTS.md](AGENTS.md) — правила разработки и безопасных изменений.
+- [docs/BASELINE_LEARNING_v1.7.30.md](docs/BASELINE_LEARNING_v1.7.30.md) — историческая спецификация исследовательских карт.
+- [docs/GUIDED_FUEL_TEST_v1.7.31.md](docs/GUIDED_FUEL_TEST_v1.7.31.md) — **историческое** размещение интерфейса в v1.7.31; в v1.7.32 панель теста перенесена в диалог, см. выше.
+- `docs/VEHICLE_VALIDATION_v1.7.24.md` … `v1.7.29.md` — версия-специфичные исторические протоколы испытаний, не инструкция к UI v1.7.32.
 
-These are software tests, **not** verification of ENET/VXSCAN compatibility on a real vehicle. v1.7.27 defaults to mode B (single TCP + batched UDS); AUTO only compares A/B and excludes second TCP. Experimental B+ attempts one mixed-width 8-DID batch, reverting to standard B when invalid/unsupported. In B/B+ the single-TCP optional SLOW PID requests are staggered (at most two per FAST loop), with per-PID freshness and detailed benchmark timings. Mode A remains the safe fallback. C/D remain manual experimental modes and are not recommended on VXSCAN. Fuel Score calibration is unchanged. Firmware-specific timing and multi-TCP support still require car-side log validation.
-\n## DME history and adaptations (v1.7.27)\n\nFrom **Дополнительно**, choose **Считать историю и адаптации DME** while parked with the live logger stopped. This uses a separate *one-shot* TCP session, never a second simultaneous session. Read-only UDS `0x22` probes adaptation candidates `0x554A`, `0x4A85`, `0x4A9D`; UDS `0x19 0x02` lists supported stored DTCs; up to 12 receive `0x19 0x04/0x06` snapshot/extended record requests with record number `0xFF`. Negative and unsupported responses are kept verbatim; no adaptation resets, clears, writes, security access, or programming. Files are stored as `bmw_dme_history_v1727_*.csv`, viewable from **Сохранённые снимки истории DME**. Adaptation meanings and BMW-specific DTC records are experimental; no history is used in Fuel Score. The ECU may retain no data or refuse optional subfunctions.\n
-## v1.7.29 — Single TCP B+ + background DME Monitor
-
-B+ is now the factory/default polling mode (strict eight-DID mixed batch). Modes C/D and the secondary TCP worker are deleted. The only manual modes are **B+, B, A and AUTO** (AUTO still benchmarks A/B only). On upgrade, an old stored B default is migrated once to B+; a user can manually reselect B afterward. If B+ rejects a combined reply, the logger falls back safely to B, and then A on rejected standard batches; repeated transport failures still force safe A.
-
-While B+/B polling runs, low-priority DME Monitor reads **0x554A every ~15 seconds**, **0x4A85/0x4A9D every ~45 seconds**, only if FAST completed successfully, the cycle is under 650 ms and load/MAP are moderate. The planner staggers DIDs, enforces at least 8 seconds between extra requests and issues a maximum of one read after a complete FAST cycle. The **0x19 0x02 0x08** confirmed-DTC status list is eligible no more than every 8 minutes and only while stationary/idle, never a detailed DTC snapshot. These are eligibility intervals; filtering and ECU delays can make the actual sampling slower.
-
-Monitor requests use the **same socket and same reader** as FAST, serially, with a 750ms receive timeout. A missing, truncated, pending or mismatched reply causes socket closure/reconnect and disables monitoring for the remaining LOGGER session (avoids consuming late ECU replies as FAST). Unsupported NRCs are logged without retry storms. Data are saved to `bmw_dme_monitor_v1728_*.csv`, viewable under **Дополнительно → Фоновый DME Monitor • журнал**. Existing parked-only DME history scan remains available when LOGGER is stopped. The frozen Fuel Score model and calibration are unchanged; adaptation interpretation is experimental.
-
-## v1.7.29 — lean production logger
-
-Removes the obsolete repeated DME DID survey (was one extra request every 12s) and A/B timed AUTO poll-mode comparison; the files `bmw_dme_probe_...` and `bmw_poll_auto_...` are no longer generated. **AUTO driving/acceleration capture mode is unchanged.**
-
-B+ (strict one-TCP 8-DID mixed packet) remains default, with B/A as manual fallback options and automatic fallbacks B+→B→A. Periodic extra diagnostic values are exclusively handled by the low-priority same-socket DME Monitor. The manual parked-only DME history reader, dynamic timeout/reconnection, safe parser and data completeness checks stay intact. Monitor, measurement, connection event and a compact benchmark CSV are retained. The new `bmw_poll_benchmark_v1729_*.csv` removes deprecated AUTO and secondary TCP placeholder columns; parse by column names, not old fixed offsets.
-
-The Fuel Score calibration, formulas and high-load qualification are unchanged. Check `docs/VEHICLE_VALIDATION_v1.7.29.md` for acceptance testing.
-
-## v1.7.30 — observational baseline learning (unknown fuel)
-
-The new **Дополнительно → Обучение эталона • RPM × нагрузка** view is a voluntary, separate STEADY/ACCEL data collection workflow. It shows two RPM × engine-load matrices, raw accepted sample counts, within-trip segments, separate logger starts, and context-dependent advice on which safe driving regime adds the most new information. Heatmap colours mean **coverage only**, not fuel quality or RON. Open a new named fuel dataset when the LOGGER is stopped, then start the logger in **AUTO measurement mode**. The map refreshes every 4.5 seconds; tapping a cell shows counts and support.
-
-Raw accepted observations are written to independent `bmw_baseline_learning_v1730_<dataset-id>.csv` files. No additional ECU reads occur. Each row contains trip ID, fuel session ID, phase, segment ID, RPM, LOAD, MAP, IAT, coolant, trims, knock mean and ignition spread. STEADY samples are de-correlated at ≥2.5s and ACCEL at ≥1.5s. Unwarmed, incomplete knock/ign, high trims, knock-active, potentially mixed fuel and unknown speed are excluded. After a suspected refill the active dataset is automatically paused; a new set must be started with LOGGER stopped. Old datasets remain available on disk.
-
-When at least one cell is review-ready, **Экспортировать черновую модель (CSV)** writes a separate `bmw_baseline_candidate_v1730_<id>.csv` with an equal-trip-weighted median-of-segment-medians, between-trip MAD and explicit `ron_verified=false`; it is not loaded by Fuel Score.\n\n24 observations from ≥4 distinct segments across ≥2 logger starts are marked **ready for independent evaluation**, NOT verified as reference gasoline. The user must independently validate fuel and reserve separate runs for hold-out verification; **no self-training of live Fuel Score, no change to OctaneCalibration, and no claims of RON.** See `docs/BASELINE_LEARNING_v1.7.30.md`.
-
-## v1.7.31: guided fuel test on the home screen
-
-**Main flow:** tap **НОВАЯ ЗАПРАВКА**, choose the *claimed* fuel grade
-(92/95/98/100/other) and optionally the station, then the app launches its
-read-only DME logger in AUTO measurement mode. The main card shows accepted
-STEADY and ACCEL coverage, current collection percentage and a safe suggestion
-about the next RPM × LOAD / MAP region. The test completes automatically
-once two STEADY cells and three ACCEL RPM groups have at least four accepted
-observations from at least two separate segments each, or the user may end it
-early and see "insufficient measurements". A session can be paused or resumed
-via the result dialog and resumes across LOGGER restarts. Confirmed detected
-refuelling pauses it to prevent fuel mixing.
-
-**Result:** historical immutable AI-95 acceleration references allow only a
-**provisional relative knock-signal delta**, with equal weighting of acceleration
-segments and RPM bins where supported. The result is **not** absolute octane,
-cannot establish true petrol quality and never learns its own reference from
-the current unknown gasoline. Absent coverage yields **insufficient data**.
-No user-session data modifies `OctaneCalibration.kt` or live Fuel Score.
-The home screen keeps existing low-level diagnostics in the overflow menu.
-Per-fill CSVs (`bmw_fuel_test_v1731_<id>.csv`) and a read-only local history
-preserve previous tests. See `docs/GUIDED_FUEL_TEST_v1.7.31.md`.
-
-Unit tests, lint and debug APK assembly are required. Real-road DME validation
-is still needed to confirm practical coverage and slow-value freshness.
-
-## v1.7.32 — compact real-time STEADY research coverage on home screen
-
-The bulky *new refill / fuel evaluation* panel no longer takes permanent home-screen
-space. **НОВАЯ ЗАПРАВКА** opens the isolated refill-test screen (or, on first
-use, the fuel selection dialog); after choosing fuel the assessment appears
-there, together with its RPM×LOAD map and test result. No result is removed.
-
-A minimal **НЕДОСТАЮЩИЕ STEADY • MAP 105–129 кПа** panel stays visible
-beneath the start controls, in the normal AUTO logger with **no new fuel-test
-mode** required. It shows independent live counters, distinct segments,
-different LOGGER starts, provisional cell-completion percentages and
-contextual hints for RPM 2500–2999 and 3000–3499. Counts are persisted in
-a separate append-only `bmw_steady_targets_v1732_fuel<id>.csv`, restore when
-the app or LOGGER restarts, and reset on a different recorded fuel session.
-The display is based on accepted read-only FAST/SLOW values: RPM/MAP gates,
-STEADY stability, warmed engine, fresh valid 4-cylinder knock/ignition,
-normal trims, no knock event, no mixing/refill; after 5 s stable dwell, at
-most 1 accepted row per 2.5 s. 24 points, 4 segments and 2 LOGGER starts
-form only **preliminary observational coverage**, NOT model validity or a
-measured gasoline RON. Existing raw logs and Fuel Score are unchanged.
-Older v1.7.31 logs are not silently mixed into this new counter.
+**Не проверено исходниками/CI:** совместимость со всеми ревизиями VXSCAN и Android, устойчивость канала на конкретном автомобиле, реальная независимость дорожных выборок, точность определения качества топлива и лабораторного RON. Нельзя заменять эти проверки положительным результатом JVM-тестов.
