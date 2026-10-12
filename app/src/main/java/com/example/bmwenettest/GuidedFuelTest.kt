@@ -80,8 +80,16 @@ internal object GuidedFuelTest {
             val aReady=accel.values.count{it.stat().reached}
             val sPoints=steady.values.sumOf{it.count}
             val aPoints=accel.values.sumOf{it.count}
-            val scoreS=(sReady*100/2).coerceAtMost(100)
-            val scoreA=(aReady*100/3).coerceAtMost(100)
+            // Smooth progress respects independent segments: hundreds of
+            // adjacent samples from one pass cannot fill one cell.
+            fun fraction(b:Bucket):Double {
+                val x=b.stat()
+                return minOf(x.count/4.0,x.segments/2.0,1.0)
+            }
+            val scoreS=(steady.values.map(::fraction).sortedDescending()
+                .take(2).sum()/2.0*100).toInt().coerceIn(0,100)
+            val scoreA=(accel.values.map(::fraction).sortedDescending()
+                .take(3).sum()/3.0*100).toInt().coerceIn(0,100)
             val progress=(scoreS*45+scoreA*55)/100
             val enough=sReady>=2 && aReady>=3
             // Compare equal-weight medians across RPM bins, then independent
