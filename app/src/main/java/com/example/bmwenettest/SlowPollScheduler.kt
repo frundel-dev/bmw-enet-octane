@@ -49,6 +49,10 @@ internal class SlowPollScheduler {
         if(valid)received[did]=atMs else received.remove(did)
     }
 
+    /** Age of the last valid read, or null if missing/stale. */
+    fun ageMs(did:Int,nowMs:Long):Long? =
+        received[did]?.takeIf { fresh(did,nowMs) }?.let { nowMs-it }
+
     fun fresh(did:Int,nowMs:Long):Boolean {
         val ttl=entries.firstOrNull { it.did==did }?.ttlMs ?: return false
         return SampleFreshness.isFresh(nowMs,received[did],ttl)
