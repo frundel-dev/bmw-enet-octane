@@ -7,45 +7,45 @@ class RamBatchBenchmarkProtocolTest {
     private val p=RamBatchBenchmarkProtocol
 
     @Test fun requestsHaveOnlyKnownReadOnlyDids() {
-        assertArrayEquals(byteArrayOf(0x22,0x4A,0x37),p.request(p.Kind.KNOCK))
-        assertArrayEquals(byteArrayOf(0x22,0x4A,0x49),p.request(p.Kind.IGNITION))
-        assertArrayEquals(byteArrayOf(0x22,0x4A,0x37,0x4A,0x49),p.request(p.Kind.BATCH))
-        for(kind in p.Kind.values())assertEquals(0x22,p.request(kind)[0].toInt() and 255)
+        assertArrayEquals(byteArrayOf(0x22,0x4A,0x37),p.request(RamBatchBenchmarkProtocol.Kind.KNOCK))
+        assertArrayEquals(byteArrayOf(0x22,0x4A,0x49),p.request(RamBatchBenchmarkProtocol.Kind.IGNITION))
+        assertArrayEquals(byteArrayOf(0x22,0x4A,0x37,0x4A,0x49),p.request(RamBatchBenchmarkProtocol.Kind.BATCH))
+        for(kind in RamBatchBenchmarkProtocol.Kind.values())assertEquals(0x22,p.request(kind)[0].toInt() and 255)
     }
 
     @Test fun matchesSinglesOnlyWithExactSidDidAndWidth() {
         val knock=byteArrayOf(0x62,0x4A,0x37,0x00,0x00,0xE8.toByte(),0xA4.toByte())
         val ignition=byteArrayOf(0x62,0x4A,0x49,0xFF.toByte(),0x1D)
-        assertTrue(p.matches(p.Kind.KNOCK,knock))
-        assertTrue(p.matches(p.Kind.IGNITION,ignition))
-        assertFalse(p.matches(p.Kind.IGNITION,knock))
-        assertFalse(p.matches(p.Kind.KNOCK,ignition))
-        assertFalse(p.matches(p.Kind.KNOCK,knock+byteArrayOf(0x00)))
-        assertFalse(p.matches(p.Kind.IGNITION,ignition.copyOfRange(0,4)))
+        assertTrue(p.matches(RamBatchBenchmarkProtocol.Kind.KNOCK,knock))
+        assertTrue(p.matches(RamBatchBenchmarkProtocol.Kind.IGNITION,ignition))
+        assertFalse(p.matches(RamBatchBenchmarkProtocol.Kind.IGNITION,knock))
+        assertFalse(p.matches(RamBatchBenchmarkProtocol.Kind.KNOCK,ignition))
+        assertFalse(p.matches(RamBatchBenchmarkProtocol.Kind.KNOCK,knock+byteArrayOf(0x00)))
+        assertFalse(p.matches(RamBatchBenchmarkProtocol.Kind.IGNITION,ignition.copyOfRange(0,4)))
     }
 
     @Test fun batchReplyRequiresBothDidsInOrderAndKnownWidths() {
         val correct=byteArrayOf(
             0x62,0x4A,0x37,0,0,0xE8.toByte(),0xA4.toByte(),
             0x4A,0x49,0xFF.toByte(),0x1D)
-        assertTrue(p.matches(p.Kind.BATCH,correct))
-        assertFalse(p.matches(p.Kind.BATCH,correct.copyOfRange(0,10)))
-        assertFalse(p.matches(p.Kind.BATCH,correct+byteArrayOf(0)))
+        assertTrue(p.matches(RamBatchBenchmarkProtocol.Kind.BATCH,correct))
+        assertFalse(p.matches(RamBatchBenchmarkProtocol.Kind.BATCH,correct.copyOfRange(0,10)))
+        assertFalse(p.matches(RamBatchBenchmarkProtocol.Kind.BATCH,correct+byteArrayOf(0)))
         val wrongSecond=correct.clone()
         wrongSecond[8]=0x37
-        assertFalse(p.matches(p.Kind.BATCH,wrongSecond))
+        assertFalse(p.matches(RamBatchBenchmarkProtocol.Kind.BATCH,wrongSecond))
         val wrongFirst=correct.clone()
         wrongFirst[2]=0x49
-        assertFalse(p.matches(p.Kind.BATCH,wrongFirst))
+        assertFalse(p.matches(RamBatchBenchmarkProtocol.Kind.BATCH,wrongFirst))
         val wrongService=correct.clone()
         wrongService[0]=0x63
-        assertFalse(p.matches(p.Kind.BATCH,wrongService))
-        assertFalse(p.matches(p.Kind.BATCH,byteArrayOf(0x7F,0x22,0x31)))
+        assertFalse(p.matches(RamBatchBenchmarkProtocol.Kind.BATCH,wrongService))
+        assertFalse(p.matches(RamBatchBenchmarkProtocol.Kind.BATCH,byteArrayOf(0x7F,0x22,0x31)))
     }
 
     @Test fun requestOrderAlternatesAndAllIterationsAreBounded() {
-        assertEquals(listOf(p.Kind.KNOCK,p.Kind.IGNITION,p.Kind.BATCH),p.order(0))
-        assertEquals(listOf(p.Kind.BATCH,p.Kind.KNOCK,p.Kind.IGNITION),p.order(1))
+        assertEquals(listOf(RamBatchBenchmarkProtocol.Kind.KNOCK,RamBatchBenchmarkProtocol.Kind.IGNITION,RamBatchBenchmarkProtocol.Kind.BATCH),p.order(0))
+        assertEquals(listOf(RamBatchBenchmarkProtocol.Kind.BATCH,RamBatchBenchmarkProtocol.Kind.KNOCK,RamBatchBenchmarkProtocol.Kind.IGNITION),p.order(1))
         assertEquals(24,p.ITERATIONS)
         assertEquals(30_000L,p.MAX_RUN_MS)
     }
