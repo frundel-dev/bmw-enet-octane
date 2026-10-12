@@ -48,7 +48,7 @@ class BaselineLearningTest {
         assertEquals(100,current.count)
         assertEquals(1,current.segments)
         assertEquals(1,current.trips)
-        assertEquals(50,current.progress)
+        assertEquals(25,current.progress)
         assertFalse(current.readyForReview)
     }
 
@@ -66,6 +66,11 @@ class BaselineLearningTest {
         assertEquals(2,result.iatBuckets)
         assertEquals(100,result.progress)
         assertTrue(result.readyForReview)
+        assertNotNull(result.provisionalMedianVms)
+        assertEquals(0.091,result.provisionalMedianVms!!,0.0000001)
+        assertEquals(0.0,result.betweenTripMadPct!!,0.000001)
+        assertTrue(coverage.exportCandidate().contains("STEADY,2500,2999,35,49"))
+        assertTrue(coverage.exportCandidate().contains("ron_verified"))
         assertEquals(1,coverage.reviewed(BaselineLearning.Phase.STEADY))
         assertEquals(0,coverage.reviewed(BaselineLearning.Phase.ACCEL))
     }
