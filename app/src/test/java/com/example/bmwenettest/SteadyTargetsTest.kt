@@ -63,7 +63,7 @@ class SteadyTargetsTest {
         assertNull(offer(9500L,115.0)) // cannot credit 4.2s + previous 3.9s
         val first=offer(10300L,115.0)
         assertNotNull(first)
-        assertEquals(2,first!!.segmentId)
+        assertEquals(1,first!!.segmentId) // short excursion does not invent a new independent segment
         assertEquals(0,c.snapshot().second.points)
         c.saved(first,10300L)
         assertEquals(1,c.snapshot().second.points)
@@ -78,11 +78,35 @@ class SteadyTargetsTest {
         assertEquals(-1,c.progress(4600L).targetIndex)
         assertNull(offer(4800L,true))
         assertEquals(0,c.progress(4800L).dwellMs)
-        c.resetCandidate() // topology change or TCP reconnection
+        c.resetCandidate(forceNewSegment=true) // topology change or TCP reconnection
         assertNull(offer(5000L,true))
         assertNull(offer(9800L,true))
         assertNotNull(offer(10000L,true))
         assertEquals(0,c.snapshot().first.points) // never counted until CSV persisted
+    }
+
+    @Test fun briefInstabilityResetsDwellButNotIndependentSegmentCount() {
+        val c=SteadyTargets.Tracker(1)
+        fun offer(at:Long,map:Double)=c.offer(
+            at,1791800000000L+at,100L,2700.0,map,42.0,23.0,91.0,0.084,true)
+        offer(1000L,115.0)
+        val first=offer(6000L,115.0)!!
+        assertEquals(1,first.segmentId)
+        c.saved(first,6000L)
+        assertNull(offer(6500L,145.0))
+        assertNull(offer(7000L,115.0))
+        val second=offer(12000L,115.0)!!
+        assertEquals(1,second.segmentId)
+        c.saved(second,12000L)
+        assertEquals(2,c.snapshot().first.points)
+        assertEquals(1,c.snapshot().first.segments)
+
+        assertNull(offer(13000L,145.0))
+        assertNull(offer(20000L,115.0)) // >6s since last valid point
+        val third=offer(25000L,115.0)!!
+        assertEquals(2,third.segmentId)
+        c.saved(third,25000L)
+        assertEquals(2,c.snapshot().first.segments)
     }
 
     @Test fun progressResetsWhenRpmChangesTargetOrDataBecomesInvalid() {
