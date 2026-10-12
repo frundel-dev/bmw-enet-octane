@@ -61,7 +61,7 @@
 - Workflow: [`.github/workflows/build-apk.yml`](.github/workflows/build-apk.yml), запуск при push в `main`/`master`, на PR или вручную.
 - Последовательные quality gates: `gradle --no-daemon :app:testDebugUnitTest`, `gradle --no-daemon :app:lintDebug`, `gradle --no-daemon :app:assembleDebug`.
 - Успешный [запуск CI для исходного коммита v1.7.32](https://github.com/frundel-dev/bmw-enet-octane/actions/runs/38228012816) подтвердил выполнение всех трёх этапов. Это **не** испытание на автомобиле.
-- Для получения APK: **Actions → Build Android APK → успешный запуск → Artifacts → `BMW-OCTANE-v1.7.32-debug-apk` → `app-debug.apk`**. Отчёты тестов/Lint публикуются как `bmw-octane-quality-reports`.
+- Для получения APK: **Actions → Build Android APK → успешный запуск → Artifacts → `BMW-OCTANE-v1.7.33-debug-apk` → `app-debug.apk`**. Отчёты тестов/Lint публикуются как `bmw-octane-quality-reports`.
 - JVM-тесты в `app/src/test/java/com/example/bmwenettest/` покрывают HSFZ фрейминг и усечения, UDS DID, режимы опроса, планировщики, DME history/monitor, Fuel Refill, замороженную калибровку, baseline, guided test и STEADY targets.
 
 ## Документация и статус проверок
