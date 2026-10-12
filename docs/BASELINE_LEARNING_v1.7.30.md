@@ -80,7 +80,7 @@ within one LOGGER start are **not equivalent to different trips**.
   polling thread, ignores incomplete/corrupt lines and rejects rows from
   another fuel session.
 
-## Acceptance (real vehicle)
+## Provisional model export\n\nAfter a cell reaches the **review-ready** threshold, tap **Экспортировать черновую модель (CSV)**. This writes `bmw_baseline_candidate_v1730_<dataset-id>.csv`: first, a median within each segment; second, a median of segment medians within each LOGGER start; finally, the median of those LOGGER-start values (each start equal weight). The relative between-start median absolute deviation is reported. All coefficients remain **provisional** and must be tested on untouched complete trips and independently assessed fuel quality. The export is not wired to live Fuel Score, the existing octane calibration, or any ECU action.\n\n## Acceptance (real vehicle)
 
 1. Create dataset stopped; choose AUTO measurement mode; B+ polling.
 2. Warm engine, no mixing, check STEADY count increases during suitable cruise;
