@@ -53,6 +53,7 @@ internal object GuidedFuelTest {
     class Coverage {
         private val steady=mutableMapOf<BaselineLearning.Cell,Bucket>()
         private val accel=mutableMapOf<Int,Bucket>()
+        private val accelByCell=mutableMapOf<BaselineLearning.Cell,Bucket>()
         private val comparable=mutableMapOf<Int,Bucket>()
         var accepted=0
             private set
@@ -66,12 +67,17 @@ internal object GuidedFuelTest {
                 steady.getOrPut(cell){Bucket()}.add(s)
             } else {
                 accel.getOrPut(cell.rpmIndex){Bucket()}.add(s)
+                accelByCell.getOrPut(cell){Bucket()}.add(s)
                 val ref=OctaneCalibration.accelerationReference(s.rpm,s.map)
                 if(ref!=null && ref.validated && ref.trainingTrips>=3 && ref.knockMeanVms>0.0)
                     comparable.getOrPut(cell.rpmIndex){Bucket()}.add(
                         s,s.knock/ref.knockMeanVms)
             }
         }
+        fun cellProgress(c:BaselineLearning.Cell):CellProgress =
+            (if(c.phase==BaselineLearning.Phase.STEADY)steady[c]
+                else accelByCell[c])?.stat()?:CellProgress(0,0)
+
         fun captureReady():Boolean =
             steady.values.count{it.stat().reached}>=2 &&
                 accel.values.count{it.stat().reached}>=3
