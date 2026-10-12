@@ -603,6 +603,9 @@ class MainActivity : Activity() {
                 guidedSnapshot=null
                 refreshGuidedPanel()
                 loggerControl?.performClick()
+                // Immediately show the fuel-test screen after selecting a
+                // refill; do not occupy permanent home-screen space.
+                main.post { if(!isFinishing && !isDestroyed)showFuelTestOverview() }
             }.show()
     }
 
