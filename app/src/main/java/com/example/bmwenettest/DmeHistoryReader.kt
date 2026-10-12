@@ -152,6 +152,58 @@ internal class DmeHistoryReader(private val context:Context) {
         throw IOException("UDS response pending without final reply")
     }
 
+
+    /**
+     * Parked-only RAM readiness survey. Queries ONLY fixed, read-only UDS 0x22
+     * identifiers; it cannot detect arbitrary RAM access or configure a DDDI.
+     * A partial CSV is preserved if transport fails or the user cancels.
+     */
+    fun collectRamReadiness(cancel:()->Boolean,progress:(String)->Unit):Outcome {
+        verifyAllowed(cancel)
+        val dir=context.getExternalFilesDir(null) ?: context.filesDir
+        val output=File(dir,"bmw_ram_readiness_v1_${System.currentTimeMillis()}.csv")
+        var ok=0
+        var rejected=0
+        var completed=false
+        var problem:String?=null
+        output.bufferedWriter().use { writer ->
+            writer.appendLine("wall_time_ms,did,description,elapsed_ms,status,request_hex,response_hex,transport,peer")
+            try {
+                progress("RAM LAB: поиск сети ENET/VXSCAN…")
+                val (target,connected)=connect(cancel)
+                connected.use { conn ->
+                    for((index,probe) in RamReadinessProtocol.probes.withIndex()) {
+                        verifyAllowed(cancel)
+                        progress("RAM LAB: UDS 0x22 ${index+1}/${RamReadinessProtocol.probes.size}…")
+                        val request=RamReadinessProtocol.request(probe.did)
+                        val start=SystemClock.elapsedRealtime()
+                        val reply=transact(conn,request,
+                            { RamReadinessProtocol.positiveMatches(probe.did,it) },cancel)
+                        val elapsed=SystemClock.elapsedRealtime()-start
+                        if(reply.status=="OK")ok++ else rejected++
+                        writer.appendLine(DmeHistoryProtocol.csv(
+                            System.currentTimeMillis(),
+                            "%04X".format(java.util.Locale.US,probe.did),
+                            probe.title,elapsed,reply.status,DmeHistoryProtocol.hex(request),
+                            DmeHistoryProtocol.hex(reply.payload),target.transport,target.host))
+                        writer.flush()
+                    }
+                }
+                completed=true
+            }catch(e:Exception) {
+                problem="${e.javaClass.simpleName}: ${e.message ?: "unknown"}"
+                writer.appendLine(DmeHistoryProtocol.csv(System.currentTimeMillis(),
+                    "","","","ERROR","","", "", problem))
+                writer.flush()
+            }
+        }
+        val summary="RAM LAB (только UDS 0x22): ответов OK $ok, отказов $rejected. "+
+            if(completed) "Опрос завершён. RAM/0x2C НЕ проверялись."
+            else "Частичный журнал: ${problem ?: "unknown"}. RAM/0x2C НЕ проверялись."
+        progress(summary)
+        return Outcome(output,summary,completed && ok>0)
+    }
+
     fun collect(cancel:()->Boolean,progress:(String)->Unit):Outcome {
         verifyAllowed(cancel)
         val directory=context.getExternalFilesDir(null) ?: context.filesDir
