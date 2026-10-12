@@ -39,6 +39,14 @@ class MainActivity : Activity() {
     private var statusReceiver: BroadcastReceiver? = null
     private var liveLearningRpm:Double? = null
     private var liveLearningLoad:Double? = null
+    private var loggerControl:Button? = null
+    private lateinit var guidedTitle:TextView
+    private lateinit var guidedDetail:TextView
+    private lateinit var guidedNext:TextView
+    private lateinit var guidedProgress:ProgressBar
+    private lateinit var guidedAction:Button
+    private var guidedSnapshot:GuidedFuelTest.Overview?=null
+    private var guidedUiRefresh:Runnable?=null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -74,7 +82,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.30"
+            text="v1.7.31"
             textSize=13f
             setTextColor(sky)
         })
@@ -91,18 +99,13 @@ class MainActivity : Activity() {
         }
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val modeButton=Button(this).apply {
-            text="РЕЖИМ: "+prefs.getString("measurement_mode","AUTO")
-            textSize=14f
+            text="НОВАЯ ЗАПРАВКА"
+            textSize=13f
             isAllCaps=false
             minHeight=dp(52)
             setTextColor(Color.WHITE)
             backgroundTintList=ColorStateList.valueOf(Color.rgb(41,60,84))
-            setOnClickListener {
-                val next=if(prefs.getString("measurement_mode","AUTO")=="AUTO")"TEST" else "AUTO"
-                prefs.edit().putString("measurement_mode",next).apply()
-                text="РЕЖИМ: "+next
-                if(logging) Toast.makeText(this@MainActivity,"Новый режим активируется после перезапуска логгера",Toast.LENGTH_LONG).show()
-            }
+            setOnClickListener { showNewFuelTestDialog() }
         }
         controls.addView(modeButton,LinearLayout.LayoutParams(0,dp(54),1f).apply {
             rightMargin=dp(7)
@@ -137,6 +140,7 @@ class MainActivity : Activity() {
                 }
             }
         }
+        loggerControl=startButton
         controls.addView(startButton,LinearLayout.LayoutParams(0,dp(54),1.15f).apply {
             rightMargin=dp(5)
         })
@@ -154,6 +158,50 @@ class MainActivity : Activity() {
             setOnClickListener { showAdditionalMenu() }
         },LinearLayout.LayoutParams(dp(47),dp(54)))
         root.addView(controls)
+        val guidedPanel=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(12),dp(8),dp(12),dp(9))
+            background=android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.rgb(25,39,57));cornerRadius=dp(10).toFloat()
+            }
+        }
+        guidedTitle=TextView(this).apply {
+            textSize=17f;setTextColor(Color.WHITE)
+            text="Выбери заправленное топливо, чтобы начать тест"
+        }
+        guidedPanel.addView(guidedTitle)
+        guidedDetail=TextView(this).apply {
+            textSize=12f;setTextColor(muted)
+            text="Текущая заправка пока не выбрана"
+            setPadding(0,dp(5),0,dp(6))
+        }
+        guidedPanel.addView(guidedDetail)
+        guidedProgress=ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal).apply {
+            max=100;progress=0;progressTintList=ColorStateList.valueOf(sky)
+        }
+        guidedPanel.addView(guidedProgress,LinearLayout.LayoutParams(-1,dp(9)))
+        guidedNext=TextView(this).apply {
+            textSize=12f;setTextColor(Color.WHITE)
+            text="Подсказки по RPM и нагрузке появятся после начала записи."
+            setPadding(0,dp(8),0,dp(5))
+        }
+        guidedPanel.addView(guidedNext)
+        guidedAction=Button(this).apply {
+            text="ПОСМОТРЕТЬ РЕЗУЛЬТАТ"
+            textSize=12f;isAllCaps=false
+            setOnClickListener { showGuidedResult() }
+        }
+        val guidedButtons=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+        guidedButtons.addView(Button(this).apply {
+            text="КАРТА RPM × LOAD"
+            textSize=11f;isAllCaps=false
+            setOnClickListener { showGuidedCoverageMap() }
+        },LinearLayout.LayoutParams(0,dp(43),1f))
+        guidedButtons.addView(guidedAction,LinearLayout.LayoutParams(0,dp(43),1f))
+        guidedPanel.addView(guidedButtons)
+        root.addView(guidedPanel,LinearLayout.LayoutParams(-1,-2).apply {
+            topMargin=dp(7);bottomMargin=dp(4)
+        })
         dashboard=OctaneDashboard(this)
         status=dashboard.connectionView
         val scroll=ScrollView(this).apply {
@@ -185,6 +233,13 @@ class MainActivity : Activity() {
         } else {
             registerStatusReceiverPre33(filter)
         }
+        guidedUiRefresh=object:Runnable {
+            override fun run() {
+                refreshGuidedPanel()
+                main.postDelayed(this,4800L)
+            }
+        }
+        main.post(guidedUiRefresh!!)
     }
 
     // Android < 13 has no RECEIVER_NOT_EXPORTED overload. The only caller
@@ -203,7 +258,8 @@ class MainActivity : Activity() {
             "Резервный режим DME (B+ / B / A)", "Производительность опроса",
             "Считать историю и адаптации DME (LOGGER STOP)",
             "Сохранённые снимки истории DME", "Фоновый DME Monitor • журнал",
-            "Обучение эталона • RPM × нагрузка")
+            "Обучение эталона • RPM × нагрузка", "Режим замеров AUTO / TEST",
+            "История тестов топлива")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -225,6 +281,13 @@ class MainActivity : Activity() {
                     8 -> showDmeHistoryFiles()
                     9 -> showDmeMonitorLog()
                     10 -> showBaselineLearning()
+                    11 -> {
+                        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+                        val next=if(prefs.getString("measurement_mode","AUTO")=="AUTO")"TEST" else "AUTO"
+                        prefs.edit().putString("measurement_mode",next).apply()
+                        Toast.makeText(this,"Режим: $next. Вступит в силу после перезапуска LOGGER.",Toast.LENGTH_LONG).show()
+                    }
+                    12 -> showGuidedFuelHistory()
                 }
             }
             .setNegativeButton("Закрыть",null)
@@ -376,6 +439,309 @@ class MainActivity : Activity() {
      * A dataset is observational, fuel-scoped, and NEVER activated as the
      * frozen Fuel Score or a measured RON value.
      */
+
+    private fun showNewFuelTestDialog() {
+        if(EnetLoggerService.isLoggerActive || logging) {
+            Toast.makeText(this,"Заверши текущий LOGGER перед началом новой заправки",Toast.LENGTH_LONG).show()
+            return
+        }
+        val options=GuidedFuelTest.grades
+        val parent=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(24,12,24,0)
+        }
+        val label=TextView(this).apply {
+            text="Заявленная марка топлива (не лабораторный RON)"
+            textSize=14f
+        }
+        parent.addView(label)
+        val grade=Spinner(this)
+        grade.adapter=ArrayAdapter(this,android.R.layout.simple_spinner_dropdown_item,options)
+        grade.setSelection(options.indexOf("АИ-95"))
+        parent.addView(grade)
+        val station=EditText(this).apply {
+            hint="АЗС или заметка (необязательно)"
+            setSingleLine(true)
+            setTextSize(14f)
+        }
+        parent.addView(station)
+        AlertDialog.Builder(this)
+            .setTitle("Новая заправка")
+            .setMessage("Будет создан независимый тест топлива. Прошивка MG Flasher ST1; "+
+                "заявленная марка не доказывает качество. Если бензин недавно залит, "+
+                "дождись окончания перемешивания.")
+            .setView(parent)
+            .setNegativeButton("Отмена",null)
+            .setPositiveButton("Начать тест") { _,_->
+                val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+                val id=System.currentTimeMillis()
+                prefs.edit()
+                    .putLong(GuidedFuelTest.PREF_ID,id)
+                    .putBoolean(GuidedFuelTest.PREF_ACTIVE,true)
+                    .putBoolean(GuidedFuelTest.PREF_DONE,false)
+                    .putInt(GuidedFuelTest.PREF_FUEL_SESSION,
+                        prefs.getInt("fuel_session_id",1))
+                    .putString(GuidedFuelTest.PREF_GRADE,options[grade.selectedItemPosition])
+                    .putString(GuidedFuelTest.PREF_STATION,station.text.toString().take(100))
+                    .putString("measurement_mode","AUTO")
+                    .putBoolean(BaselineLearning.PREF_ENABLED,false)
+                    .commit()
+                guidedSnapshot=null
+                refreshGuidedPanel()
+                loggerControl?.performClick()
+            }.show()
+    }
+
+    private fun readGuided(id:Long,fuelSession:Int):GuidedFuelTest.Coverage {
+        val coverage=GuidedFuelTest.Coverage()
+        if(id<=0)return coverage
+        val file=File(getExternalFilesDir(null)?:filesDir,GuidedFuelTest.filename(id))
+        if(file.isFile)try {
+            file.useLines { lines ->
+                lines.forEach { line ->
+                    BaselineLearning.parse(line)?.let { point ->
+                        if(point.fuelSessionId==fuelSession)coverage.accept(point)
+                    }
+                }
+            }
+        }catch(_:Exception){}
+        return coverage
+    }
+
+    private fun refreshGuidedPanel() {
+        if(!::guidedTitle.isInitialized)return
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        val id=prefs.getLong(GuidedFuelTest.PREF_ID,0L)
+        if(id<=0L) {
+            guidedTitle.text="Новая заправка → Тестирование → Результат"
+            guidedDetail.text="Нажми «НОВАЯ ЗАПРАВКА» и выбери топливо"
+            guidedProgress.progress=0
+            guidedNext.text="Приложение само подскажет недостающие RPM и нагрузку."
+            guidedAction.isEnabled=false
+            return
+        }
+        val fuel=prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)
+        val grade=prefs.getString(GuidedFuelTest.PREF_GRADE,"Другое")?:"Другое"
+        val station=prefs.getString(GuidedFuelTest.PREF_STATION,"")?:""
+        val active=prefs.getBoolean(GuidedFuelTest.PREF_ACTIVE,false)
+        val done=prefs.getBoolean(GuidedFuelTest.PREF_DONE,false)
+        guidedTitle.text=grade+(if(station.isNotBlank())" • $station" else "")
+        guidedDetail.text="Чтение данных теста…"
+        executor.execute {
+            val state=readGuided(id,fuel).snapshot()
+            runOnUiThread {
+                if(isFinishing || isDestroyed ||
+                    prefs.getLong(GuidedFuelTest.PREF_ID,0L)!=id)return@runOnUiThread
+                guidedSnapshot=state
+                guidedProgress.progress=state.progress
+                guidedDetail.text=when {
+                    fuel!=prefs.getInt("fuel_session_id",1) -> "Заправка изменилась • тест остановлен"
+                    done -> "Измерения завершены • STEADY ${state.steadyReady}/2 · ACCEL ${state.accelReady}/3"
+                    active -> "Сбор ${state.progress}% • STEADY ${state.steadyReady}/2 · ACCEL ${state.accelReady}/3"
+                    else -> "Тест на паузе • STEADY ${state.steadyReady}/2 · ACCEL ${state.accelReady}/3"
+                }
+                guidedNext.text=if(done) "Результат предварительный: сравнение с архивным профилем, не измерение RON."
+                    else state.nextStep
+                guidedAction.isEnabled=true
+                guidedAction.text=if(done)"РЕЗУЛЬТАТ ТЕСТА"
+                    else "ПРОГРЕСС И РЕЗУЛЬТАТ"
+            }
+        }
+    }
+
+
+    private fun showGuidedCoverageMap() {
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        val id=prefs.getLong(GuidedFuelTest.PREF_ID,0L)
+        if(id<=0L) {
+            Toast.makeText(this,"Сначала выбери новую заправку",Toast.LENGTH_SHORT).show()
+            return
+        }
+        val fuel=prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)
+        executor.execute {
+            val c=readGuided(id,fuel)
+            runOnUiThread {
+                if(isFinishing || isDestroyed ||
+                    prefs.getLong(GuidedFuelTest.PREF_ID,0L)!=id)return@runOnUiThread
+                val dp={v:Int->(resources.displayMetrics.density*v+0.5f).toInt()}
+                val container=LinearLayout(this).apply {
+                    orientation=LinearLayout.VERTICAL
+                    setPadding(dp(9),dp(7),dp(9),dp(8))
+                }
+                fun section(phase:BaselineLearning.Phase) {
+                    val rpms=if(phase==BaselineLearning.Phase.STEADY)
+                        BaselineLearning.steadyRpm else BaselineLearning.accelRpm
+                    val loads=if(phase==BaselineLearning.Phase.STEADY)
+                        BaselineLearning.steadyLoad else BaselineLearning.accelLoad
+                    container.addView(TextView(this).apply {
+                        text=phase.name+" • RPM × нагрузка"
+                        textSize=15f;setTextColor(Color.WHITE)
+                        setPadding(0,dp(12),0,dp(4))
+                    })
+                    val header=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+                    header.addView(TextView(this).apply{
+                        text="RPM";textSize=11f;setTextColor(Color.LTGRAY)
+                    },LinearLayout.LayoutParams(dp(88),dp(27)))
+                    for(j in 0 until loads.size-1) {
+                        header.addView(TextView(this).apply{
+                            text="${loads[j]}–${loads[j+1]-1}%"
+                            textSize=11f;setTextColor(Color.LTGRAY)
+                            gravity=Gravity.CENTER
+                        },LinearLayout.LayoutParams(0,dp(27),1f))
+                    }
+                    container.addView(header)
+                    for(i in 0 until rpms.size-1) {
+                        val row=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+                        row.addView(TextView(this).apply {
+                            text="${rpms[i]}–${rpms[i+1]-1}"
+                            textSize=10f;setTextColor(Color.WHITE)
+                            gravity=Gravity.CENTER_VERTICAL
+                        },LinearLayout.LayoutParams(dp(88),dp(42)))
+                        for(j in 0 until loads.size-1) {
+                            val progress=c.cellProgress(BaselineLearning.Cell(phase,i,j))
+                            val bg=android.graphics.drawable.GradientDrawable().apply {
+                                setColor(when {
+                                    progress.reached->Color.rgb(29,117,99)
+                                    progress.count>0->Color.rgb(50,95,139)
+                                    else->Color.rgb(49,59,74)
+                                })
+                                cornerRadius=dp(5).toFloat()
+                            }
+                            row.addView(TextView(this).apply {
+                                text=if(progress.count==0)"—"
+                                    else "${progress.count} / ${progress.segments}с"
+                                textSize=11f
+                                setTextColor(Color.WHITE)
+                                gravity=Gravity.CENTER
+                                background=bg
+                            },LinearLayout.LayoutParams(0,dp(38),1f).apply {
+                                setMargins(dp(2),dp(2),dp(2),dp(2))
+                            })
+                        }
+                        container.addView(row)
+                    }
+                }
+                section(BaselineLearning.Phase.STEADY)
+                section(BaselineLearning.Phase.ACCEL)
+                container.addView(TextView(this).apply {
+                    text="Ячейка: точки / участки. Зелёный — 4+ точки "+
+                        "из 2+ участков; это только заполнение, не качество топлива. "+
+                        "ACCEL группируется по RPM для остановки теста. "+
+                        "Показаны данные именно текущей заправки."
+                    textSize=12f;setTextColor(Color.LTGRAY)
+                    setPadding(0,dp(12),0,0)
+                })
+                val scroll=ScrollView(this).apply { addView(container) }
+                AlertDialog.Builder(this)
+                    .setTitle("Карта сбора текущей заправки")
+                    .setView(scroll)
+                    .setPositiveButton("Закрыть",null).show()
+            }
+        }
+    }
+
+    private fun showGuidedResult() {
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        val id=prefs.getLong(GuidedFuelTest.PREF_ID,0L)
+        val snap=guidedSnapshot
+        if(id<=0 || snap==null) {
+            Toast.makeText(this,"Данные теста пока не доступны",Toast.LENGTH_SHORT).show()
+            return
+        }
+        val fuel=prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)
+        val changed=fuel!=prefs.getInt("fuel_session_id",1)
+        val finished=prefs.getBoolean(GuidedFuelTest.PREF_DONE,false)
+        val state=when {
+            changed -> "Топливная сессия сменилась — дальнейшая запись запрещена."
+            !snap.captureReady -> "Измерений для завершения автоматического теста пока недостаточно."
+            else -> "Объём измерений для предварительного сравнения достигнут."
+        }
+        val delta=snap.relativeKnockDeltaPct
+        val compare=if(delta!=null && snap.captureReady)
+            "Относительный сигнал детонации: "+
+                String.format(java.util.Locale.US,"%+.1f%%",delta)+
+                " к архивному профилю АИ-95 в сравнимых диапазонах RPM/MAP. "+
+                "Это отклонение сигнала, НЕ разница октанового числа и НЕ "+
+                "подтверждённая оценка качества топлива."
+        else "Сравнение с независимой базой пока невозможно: "+
+            "недостаточно принятых ACCEL-сегментов и диапазонов."
+        val dialog=AlertDialog.Builder(this)
+            .setTitle("Результат • "+(prefs.getString(GuidedFuelTest.PREF_GRADE,"Бензин")?:"Бензин"))
+            .setMessage("$state\n\nПрогресс сбора: ${snap.progress}%\n"+
+                "STEADY: ${snap.steadyReady}/2 ячеек, ${snap.steadyPoints} точек\n"+
+                "ACCEL: ${snap.accelReady}/3 областей, ${snap.accelPoints} точек\n"+
+                "Сравнимых ACCEL областей: ${snap.comparableAccelBins}\n\n"+
+                "$compare\n\n"+
+                "Реальное качество и лабораторный RON по этим данным не определены. "+
+                "Без проверенного внешнего топлива эталон нельзя считать абсолютным.")
+            .setPositiveButton("Закрыть",null)
+        if(!finished && !changed) {
+            dialog.setNeutralButton(if(prefs.getBoolean(GuidedFuelTest.PREF_ACTIVE,false))
+                "Пауза" else "Продолжить") { _,_->
+                prefs.edit().putBoolean(GuidedFuelTest.PREF_ACTIVE,
+                    !prefs.getBoolean(GuidedFuelTest.PREF_ACTIVE,false)).apply()
+                refreshGuidedPanel()
+            }
+            dialog.setNegativeButton("Завершить сбор") { _,_->
+                AlertDialog.Builder(this)
+                    .setTitle("Завершить текущий тест?")
+                    .setMessage("Недостающие области останутся непокрытыми. "+
+                        "История и CSV сохранятся; это не подтвердит качество топлива.")
+                    .setNegativeButton("Отмена",null)
+                    .setPositiveButton("Завершить") { _,_->
+                        prefs.edit().putBoolean(GuidedFuelTest.PREF_ACTIVE,false)
+                            .putBoolean(GuidedFuelTest.PREF_DONE,true).apply()
+                        refreshGuidedPanel()
+                    }.show()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun showGuidedFuelHistory() {
+        val dir=getExternalFilesDir(null)?:filesDir
+        val files=dir.listFiles()?.filter {
+            it.isFile && it.name.startsWith("bmw_fuel_test_v1731_") &&
+                it.name.endsWith(".csv")
+        }?.sortedByDescending{it.lastModified()}?.take(30).orEmpty()
+        if(files.isEmpty()) {
+            AlertDialog.Builder(this).setTitle("История заправок")
+                .setMessage("Пока нет записанных тестов.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        executor.execute {
+            val summaries=files.map { file ->
+                val rows=try {
+                    val meta=file.useLines{it.firstOrNull()}?:""
+                    val dataset=file.name.removePrefix("bmw_fuel_test_v1731_")
+                        .removeSuffix(".csv").toLongOrNull()?:0L
+                    val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+                    val current=dataset==prefs.getLong(GuidedFuelTest.PREF_ID,-1)
+                    val fuel=if(current)prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)
+                        else Regex("fuel_session=(\\d+)").find(meta)?.groupValues?.get(1)?.toIntOrNull()?:-1
+                    val coverage=readGuided(dataset,fuel).snapshot()
+                    val grade=Regex("grade=([^;]+)").find(meta)?.groupValues?.get(1)?:"Топливо"
+                    "$grade • ${coverage.progress}% • ${coverage.steadyReady}/2 STEADY · ${coverage.accelReady}/3 ACCEL"
+                }catch(_:Exception){file.name}
+                rows
+            }
+            runOnUiThread {
+                if(isFinishing || isDestroyed)return@runOnUiThread
+                AlertDialog.Builder(this)
+                    .setTitle("История тестов топлива")
+                    .setItems(summaries.toTypedArray()) { _,index ->
+                        AlertDialog.Builder(this)
+                            .setTitle("Сохранённый тест")
+                            .setMessage("${summaries[index]}\nФайл: ${files[index].name}\n"+
+                                "Архивный CSV сохраняется без изменения Fuel Score.")
+                            .setPositiveButton("OK",null).show()
+                    }
+                    .setNegativeButton("Закрыть",null).show()
+            }
+        }
+    }
+
     private fun showBaselineLearning() {
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         fun dp(v:Int)=(resources.displayMetrics.density*v+0.5f).toInt()
@@ -401,7 +767,7 @@ class MainActivity : Activity() {
             addView(scroll,LinearLayout.LayoutParams(-1,
                 (resources.displayMetrics.heightPixels-dp(220)).coerceIn(dp(260),dp(530))))
         }
-        val dialog=AlertDialog.Builder(this).setTitle("Обучение эталона • v1.7.30")
+        val dialog=AlertDialog.Builder(this).setTitle("Обучение эталона • v1.7.31")
             .setView(root).setPositiveButton("Закрыть",null).create()
 
         fun grid(phase:BaselineLearning.Phase,stats:BaselineLearning.Coverage) {
@@ -800,6 +1166,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        guidedUiRefresh?.let { main.removeCallbacks(it) }
+        guidedUiRefresh=null
         historyCancel=true
         statusReceiver?.let{try{unregisterReceiver(it)}catch(_:Exception){}}
         statusReceiver=null
