@@ -252,6 +252,14 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         }
     }
 
+    /** Fast, bounded updates independent of the slower score/dashboard refresh. */
+    fun updateFastReadings(rpmValue:Double?,mapValue:Double?,loadValue:Double?) {
+        rpm.text=format(rpmValue?:Double.NaN)
+        map.text=format(mapValue?:Double.NaN)
+        val l=loadValue?:Double.NaN
+        load.text=if(l.isFinite()) format(l)+"%" else "—"
+    }
+
     fun render(intent:Intent) {
         fun number(key:String)=intent.getDoubleExtra(key,Double.NaN)
         fun count(key:String)=intent.getIntExtra(key,0)
@@ -277,9 +285,8 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         val conf=count(EnetLoggerService.EXTRA_SESSION_CONFIDENCE).coerceIn(0,100)
         confidence.text="$conf%"
         progress.progress=conf
-        rpm.text=format(number(EnetLoggerService.EXTRA_RPM))
-        load.text=format(number(EnetLoggerService.EXTRA_LOAD)) + "%"
-        map.text=format(number(EnetLoggerService.EXTRA_MAP))
+        updateFastReadings(number(EnetLoggerService.EXTRA_RPM),
+            number(EnetLoggerService.EXTRA_MAP),number(EnetLoggerService.EXTRA_LOAD))
         coolant.text=format(number(EnetLoggerService.EXTRA_COOLANT)) + "°"
         oil.text=format(number(EnetLoggerService.EXTRA_OIL)) + "°"
         iat.text=format(number(EnetLoggerService.EXTRA_IAT)) + "°"
