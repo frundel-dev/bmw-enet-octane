@@ -68,3 +68,29 @@ The new **Дополнительно → Обучение эталона • RPM
 Raw accepted observations are written to independent `bmw_baseline_learning_v1730_<dataset-id>.csv` files. No additional ECU reads occur. Each row contains trip ID, fuel session ID, phase, segment ID, RPM, LOAD, MAP, IAT, coolant, trims, knock mean and ignition spread. STEADY samples are de-correlated at ≥2.5s and ACCEL at ≥1.5s. Unwarmed, incomplete knock/ign, high trims, knock-active, potentially mixed fuel and unknown speed are excluded. After a suspected refill the active dataset is automatically paused; a new set must be started with LOGGER stopped. Old datasets remain available on disk.
 
 When at least one cell is review-ready, **Экспортировать черновую модель (CSV)** writes a separate `bmw_baseline_candidate_v1730_<id>.csv` with an equal-trip-weighted median-of-segment-medians, between-trip MAD and explicit `ron_verified=false`; it is not loaded by Fuel Score.\n\n24 observations from ≥4 distinct segments across ≥2 logger starts are marked **ready for independent evaluation**, NOT verified as reference gasoline. The user must independently validate fuel and reserve separate runs for hold-out verification; **no self-training of live Fuel Score, no change to OctaneCalibration, and no claims of RON.** See `docs/BASELINE_LEARNING_v1.7.30.md`.
+
+## v1.7.31: guided fuel test on the home screen
+
+**Main flow:** tap **НОВАЯ ЗАПРАВКА**, choose the *claimed* fuel grade
+(92/95/98/100/other) and optionally the station, then the app launches its
+read-only DME logger in AUTO measurement mode. The main card shows accepted
+STEADY and ACCEL coverage, current collection percentage and a safe suggestion
+about the next RPM × LOAD / MAP region. The test completes automatically
+once two STEADY cells and three ACCEL RPM groups have at least four accepted
+observations from at least two separate segments each, or the user may end it
+early and see "insufficient measurements". A session can be paused or resumed
+via the result dialog and resumes across LOGGER restarts. Confirmed detected
+refuelling pauses it to prevent fuel mixing.
+
+**Result:** historical immutable AI-95 acceleration references allow only a
+**provisional relative knock-signal delta**, with equal weighting of acceleration
+segments and RPM bins where supported. The result is **not** absolute octane,
+cannot establish true petrol quality and never learns its own reference from
+the current unknown gasoline. Absent coverage yields **insufficient data**.
+No user-session data modifies `OctaneCalibration.kt` or live Fuel Score.
+The home screen keeps existing low-level diagnostics in the overflow menu.
+Per-fill CSVs (`bmw_fuel_test_v1731_<id>.csv`) and a read-only local history
+preserve previous tests. See `docs/GUIDED_FUEL_TEST_v1.7.31.md`.
+
+Unit tests, lint and debug APK assembly are required. Real-road DME validation
+is still needed to confirm practical coverage and slow-value freshness.
