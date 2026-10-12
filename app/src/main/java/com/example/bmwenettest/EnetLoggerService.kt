@@ -17,6 +17,9 @@ class EnetLoggerService : Service() {
         const val ACTION_START = "enet.START"
         const val ACTION_STOP = "enet.STOP"
         const val ACTION_STATUS = "enet.STATUS"
+        const val ACTION_FAST_TELEMETRY = "enet.FAST_TELEMETRY"
+        const val EXTRA_STEADY_TARGET_INDEX = "steady_target_index"
+        const val EXTRA_STEADY_HOLD_MS = "steady_hold_ms"
         const val EXTRA_STATUS = "status"
         const val EXTRA_STATE = "state"
         const val EXTRA_RPM = "rpm"
@@ -200,6 +203,18 @@ class EnetLoggerService : Service() {
         tone.release()
         super.onDestroy()
     }
+    /** Lightweight UI-only snapshot; no extra ECU reads or notification writes. */
+    private fun emitFastTelemetry(rpm:Double?,map:Double?,load:Double?,
+                                  progress:SteadyTargets.Tracker.CaptureProgress) {
+        val intent=Intent(ACTION_FAST_TELEMETRY).setPackage(packageName)
+            .putExtra(EXTRA_RPM,rpm?.takeIf{it.isFinite()}?:Double.NaN)
+            .putExtra(EXTRA_MAP,map?.takeIf{it.isFinite()}?:Double.NaN)
+            .putExtra(EXTRA_LOAD,load?.takeIf{it.isFinite()}?:Double.NaN)
+            .putExtra(EXTRA_STEADY_TARGET_INDEX,progress.targetIndex)
+            .putExtra(EXTRA_STEADY_HOLD_MS,progress.dwellMs)
+        sendBroadcast(intent)
+    }
+
     private fun emit(s:String, state:String?=null, rpm:Double?=null, transport:String?=null, runId:Int?=null, hz:Double?=null, reconnects:Int?=null, summary:String?=null, fuelScore:Double?=null, runQuality:Int?=null, sessionScore:Double?=null, sessionConfidence:Int?=null, sessionRuns:Int?=null, coolant:Double?=null, oil:Double?=null, load:Double?=null, map:Double?=null, iat:Double?=null, validPoints:Int?=null, highPoints:Int?=null, knockEvents:Int?=null, superEvents:Int?=null, resultState:String?=null, mode:String?=null, segments:Int?=null, coverage:Int?=null, speed:Double?=null,
         fuelPct:Double?=null, fuelId:Int?=null, phase:String?=null,
         steadyPoints:Int?=null, accelPoints:Int?=null, refuelNote:String?=null, mixingKm:Double?=null,steadyConf:Int?=null,accelConf:Int?=null,
@@ -372,6 +387,7 @@ class EnetLoggerService : Service() {
             return SteadyTargets.Tracker(session,past)
         }
         var steadyTargetTracker=loadSteadyTargets(fuelSessionId)
+        var lastAcknowledgedTargetSegment=0
         steadyTargetSnapshot=steadyTargetTracker.snapshot("Включи AUTO и собирай целевые STEADY")
         var mixingKm=prefs.getFloat("mixing_remaining_km",0f).toDouble()
         var lastDistanceSampleTime=0L
@@ -429,6 +445,7 @@ class EnetLoggerService : Service() {
             lastBenchmarkMs=0L
             sampleTimes.clear()
             // Do not merge one ACCEL/STEADY segment across poll topologies.
+            steadyTargetTracker.resetCandidate()
             captureActive=false
             captureTailUntil=0L
             previousSampleTime=0L
@@ -655,6 +672,7 @@ class EnetLoggerService : Service() {
                         tankUpdate.refill?.let { refill ->
                             fuelSessionId++
                             steadyTargetTracker=loadSteadyTargets(fuelSessionId)
+                            lastAcknowledgedTargetSegment=0
                             steadyTargetSnapshot=steadyTargetTracker.snapshot("Заправка сменилась: ждём окончания смешивания топлива")
                             if(prefs.getBoolean(GuidedFuelTest.PREF_ACTIVE,false)) {
                                 prefs.edit().putBoolean(GuidedFuelTest.PREF_ACTIVE,false).apply()
@@ -880,6 +898,13 @@ class EnetLoggerService : Service() {
                                 SteadyTargets.HEADER+"\n")
                         file.appendText(SteadyTargets.serialize(targetEntry)+"\n")
                         steadyTargetTracker.saved(targetEntry,now)
+                        // One acknowledgement per durably recorded steady segment.
+                        // Do not beep on merely entering the band or a failed CSV write.
+                        if(autoMode && running &&
+                            lastAcknowledgedTargetSegment!=targetEntry.segmentId) {
+                            lastAcknowledgedTargetSegment=targetEntry.segmentId
+                            tone.startTone(ToneGenerator.TONE_PROP_ACK,180)
+                        }
                     } catch(_:Exception) {
                         // Storage errors never fake a completed benchmark or
                         // interrupt the primary read-only ENET logger.
@@ -1143,6 +1168,9 @@ class EnetLoggerService : Service() {
                         lastFineSummary.medianVms?:"",lastFineSummary.dispersionPct?:"",
                         "", "")).joinToString(","))}
                     samples++
+                    // This broadcast is intentionally every completed FAST cycle.
+                    // Dashboard's heavyweight status stays at every fourth cycle.
+                    emitFastTelemetry(r,m,l,steadyTargetTracker.progress(now))
                     val effectiveMode=when {
                         batchEnabled && pollModeActive=="B+" -> "B+"
                         batchEnabled -> "B"
@@ -1283,6 +1311,7 @@ class EnetLoggerService : Service() {
                 reconnects++; consecutiveFailures++; sampleTimes.clear()
                 if(outageFrom==null) outageFrom=SystemClock.elapsedRealtime()
                 // Do not combine samples on opposite sides of a network interruption.
+                steadyTargetTracker.resetCandidate()
                 captureActive=false; captureTailUntil=0L; previousSampleTime=0L
                 previousRpm=null; previousMap=null; lastQualified=0L;lastSteadyObservation=0L
                 runWeightedRatio=0.0; runWeight=0.0; runValidPoints=0; runHighPoints=0
