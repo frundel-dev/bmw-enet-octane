@@ -263,6 +263,7 @@ internal class DmeHistoryReader(private val context:Context) {
                             writer.flush()
                             pendingRequest=null
                             pendingKind=null
+                            pendingStart=0L
                             if(reply.status!="OK")
                                 throw IOException("${kind.name}: отрицательный ответ ${reply.status}; тест остановлен")
                             when(kind) {
