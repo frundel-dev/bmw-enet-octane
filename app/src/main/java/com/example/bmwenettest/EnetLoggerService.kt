@@ -926,7 +926,7 @@ class EnetLoggerService : Service() {
                     val postFastStarted=SystemClock.elapsedRealtime()
                     val fuelQuarantined=
                         prefs.getInt("fuel_session_id",fuelSessionId)!=fuelSessionId ||
-                        !RefuelEligibility.mayAssessFuel(refuelStore.hasPending(),mixingKm)
+                        !RefuelEligibility.mayAssessFuel(refuelStore.hasPending() || fuelDetector.pending,mixingKm)
                     if(fuelQuarantined) {
                         captureActive=false;captureTailUntil=0L
                         steadyTargetTracker.resetCandidate()
@@ -1109,7 +1109,7 @@ class EnetLoggerService : Service() {
                     // AUTO logger, even without a fuel test or baseline mode.
                     // Uses already-read values only; no DME reads or writes.
                     val targetEligible=steadyAuto && trimComparable &&
-                        !refuelStore.hasPending() && mixingKm<=0.0 &&
+                        !refuelStore.hasPending() && !fuelDetector.pending && mixingKm<=0.0 &&
                         speed!=null && speed>=15.0 &&
                         knockStatus!=1 && (superKnock==null || superKnock==0) &&
                         knockMean!=null && knockMean>0.0 && ignSpread!=null &&
@@ -1139,7 +1139,7 @@ class EnetLoggerService : Service() {
                     steadyTargetSnapshot=steadyTargetTracker.snapshot(
                         steadyTargetTracker.advice(r,m,targetEligible,warm))
                     if(steadyWindow && warm && knockMean!=null && knockMean>0.0 &&
-                        !refuelStore.hasPending() && mixingKm<=0.0 &&
+                        !refuelStore.hasPending() && !fuelDetector.pending && mixingKm<=0.0 &&
                         r!=null && m!=null && l!=null && i!=null && coolant!=null) {
                         val coarseCell=OctaneCalibration.steadyCell(r,m)
                         val fineCell=OctaneCalibration.fineSteadyCell(r,m,l,i,coolant)
@@ -1196,7 +1196,7 @@ class EnetLoggerService : Service() {
                         prefs.getBoolean(GuidedFuelTest.PREF_ACTIVE,false) &&
                         prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)==fuelSessionId
                     if(autoMode && (baselineRecording || guidedRecording) &&
-                        !refuelStore.hasPending() && mixingKm<=0.0 &&
+                        !refuelStore.hasPending() && !fuelDetector.pending && mixingKm<=0.0 &&
                         warm && trimComparable && speed!=null && speed>=15.0 &&
                         knockMean!=null && knockMean>0.0 && ignSpread!=null &&
                         knockStatus!=1 && (superKnock==null || superKnock==0) &&
@@ -1317,7 +1317,7 @@ class EnetLoggerService : Service() {
                         }
                     }
                     val b95=if(measurementWindow) baseline95(r,m) else null
-                    val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && !refuelStore.hasPending() && mixingKm<=0.0 && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5))) knockMean/b95.v else null
+                    val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && !refuelStore.hasPending() && !fuelDetector.pending && mixingKm<=0.0 && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5))) knockMean/b95.v else null
                     if(autoMode && measurementWindow && ratio95!=null) lastQualified=now
                     if(captureActive && measurementWindow && ratio95!=null && (!autoMode || now-lastAutoAcceptedTime>=1200L)) {
                         if(autoMode) {
@@ -1377,7 +1377,7 @@ class EnetLoggerService : Service() {
                         OctaneCalibration.experimentalScore(accelV08Sum/accelV08Weight) else null
                     val highRpmMean=if(highRpmPoints>0) highRpmRatioSum/highRpmPoints else null
                     val highRpmBaselineAvg=if(highRpmPoints>0) highRpmBaselineSum.toDouble()/highRpmPoints else null
-                    val resultState=when { refuelStore.hasPending() -> "REFUEL CHECK"; mixingKm>0.0 -> "MIXING"; sessionConfidence<60 -> "COLLECTING"; sessionScore==null -> "COLLECTING"; sessionScore>=95.0 -> "NORMAL"; sessionScore>=92.0 -> "BORDERLINE"; else -> "BELOW BASELINE" }
+                    val resultState=when { (refuelStore.hasPending() || fuelDetector.pending) -> "REFUEL CHECK"; mixingKm>0.0 -> "MIXING"; sessionConfidence<60 -> "COLLECTING"; sessionScore==null -> "COLLECTING"; sessionScore>=95.0 -> "NORMAL"; sessionScore>=92.0 -> "BORDERLINE"; else -> "BELOW BASELINE" }
                     // Heartbeat is written regardless of captureActive. Keep measurement
                     // CSV unchanged, but make short connection tests analyzable.
                     if(now-lastTelemetryTime>=2500L) {
