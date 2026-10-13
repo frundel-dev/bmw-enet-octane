@@ -342,7 +342,7 @@ class MainActivity : Activity() {
             "RAM LAB 3 • RAM 0x23 (офлайн)",
             "RAM LAB 4 • одно чтение RAM RPM",
             "RAM LAB 6 • скорость прямого RAM 0x23",
-            "RAM LAB Suite 1.0 • тесты 7–12")
+            "RAM LAB Suite 1.0.1 • тесты 7–12")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -471,7 +471,7 @@ class MainActivity : Activity() {
         // Never combine AlertDialog.setMessage and setItems: Android
         // renders the message instead of the stage list.
         AlertDialog.Builder(this)
-            .setTitle("RAM LAB Suite 1.0 • выбери этап")
+            .setTitle("RAM LAB Suite 1.0.1 • выбери этап")
             .setItems(labels) { _,selected ->
                 val item=entries[selected]
                 if(!RamSuiteProtocol.allowed(item,completed)) {
