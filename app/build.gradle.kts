@@ -16,8 +16,8 @@ android {
         applicationId = "com.example.bmwenettest.octane2"
         minSdk = 26
         targetSdk = 35
-        versionCode = 200
-        versionName = "2.0.0-experimental"
+        versionCode = 202
+        versionName = "2.0.1-experimental"
     }
     testOptions {
         unitTests.isIncludeAndroidResources = false
