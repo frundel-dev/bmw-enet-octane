@@ -822,10 +822,15 @@ class EnetLoggerService : Service() {
                             }
                         }
                     }
+                    val speedForMixing=slowSpeed?.takeIf {
+                        if(optimizedSlow)slowScheduler.fresh(0x0D,now)
+                        else slowSensorAtMs>0L &&
+                            SampleFreshness.isFresh(now,slowSensorAtMs)
+                    }
                     if(lastDistanceSampleTime>0L && now-lastDistanceSampleTime in 1L..10000L &&
-                        mixingKm>0.0 && slowSpeed!=null &&
+                        mixingKm>0.0 && speedForMixing!=null &&
                         prefs.getInt("fuel_session_id",fuelSessionId)==fuelSessionId) {
-                        val traveled=(slowSpeed!!*(now-lastDistanceSampleTime)/3600000.0).coerceAtLeast(0.0)
+                        val traveled=(speedForMixing*(now-lastDistanceSampleTime)/3600000.0).coerceAtLeast(0.0)
                         mixingKm=(mixingKm-traveled).coerceAtLeast(0.0)
                         prefs.edit().putFloat("mixing_remaining_km",mixingKm.toFloat())
                             .putString(RefuelSessionStore.PREF_ACTIVE_STATE,
