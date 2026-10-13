@@ -15,7 +15,8 @@ internal data class Octane2Cycle(
     val actualLambda:Double?,val lambdaPid:Int?,
     val lambdaAgeMs:Long?,val lambdaAux:Double?,val commandedEq:Double?,
     val commandedAgeMs:Long?,val stft:Double?,val ltft:Double?,
-    val controlState:String?,val steadyIndex:Int,val steadyHoldMs:Long
+    val controlState:String?,val steadyIndex:Int,val steadyHoldMs:Long,
+    val legacySessionScore:Double?,val legacyConfidence:Int
 )
 internal object Octane2CycleCsv {
     const val HEADER="wall_time_ms,elapsed_ms,trip_id,fuel_session,epoch,poll_mode,"+
@@ -25,7 +26,7 @@ internal object Octane2CycleCsv {
         "knock_mean_vms,ignition_spread_deg,"+
         "actual_lambda,actual_lambda_pid,lambda_age_ms,lambda_voltage_or_current,"+
         "commanded_equivalence_ratio,commanded_age_ms,stft_pct,ltft_pct,"+
-        "fuel_control_state,steady_region,steady_hold_ms"
+        "fuel_control_state,steady_region,steady_hold_ms,legacy17_score,legacy17_confidence_pct"
     fun file(start:Long)="bmw_octane2_comparison_v1_${start}.csv"
     fun encode(s:Octane2Cycle):String {
         fun n(v:Double?)=v?.takeIf{it.isFinite()}?.toString()?:""
@@ -39,10 +40,11 @@ internal object Octane2CycleCsv {
             n(s.ignitionSpread),n(s.actualLambda),s.lambdaPid?:"",
             l(s.lambdaAgeMs),n(s.lambdaAux),n(s.commandedEq),
             l(s.commandedAgeMs),n(s.stft),n(s.ltft),
-            txt(s.controlState?:""),s.steadyIndex,s.steadyHoldMs
+            txt(s.controlState?:""),s.steadyIndex,s.steadyHoldMs,
+            n(s.legacySessionScore),s.legacyConfidence
         ).joinToString(",")
     }
     fun acceptedRows(lines:Sequence<String>)=lines.count {
-        it.isNotBlank() && !it.startsWith("#") && it!=HEADER && it.split(',').size==34
+        it.isNotBlank() && !it.startsWith("#") && it!=HEADER && it.split(',').size==36
     }
 }
