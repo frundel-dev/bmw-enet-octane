@@ -866,7 +866,11 @@ class EnetLoggerService : Service() {
                     }
                     val ramLatency=if(ramReadAllowed)
                         SystemClock.elapsedRealtime()-ramStarted else null
-                    val r=if(acceptedRam)ramRpm else obdRpm
+                    // Preserve 1.7 Fuel Score and STEADY classification against
+                    // the unchanged OBD source. RAM-first is the separate 2.0
+                    // stream until moving-load validation establishes equivalence.
+                    val r=obdRpm
+                    val octane2Rpm=if(acceptedRam)ramRpm else obdRpm
                     val selectedRpmSource=if(acceptedRam)"RAM_NKW" else "OBD_01_0C"
 
                     // Exact OBD capability masks: optional lambda/loop data
@@ -1329,7 +1333,7 @@ class EnetLoggerService : Service() {
                     samples++
                     // This broadcast is intentionally every completed FAST cycle.
                     // Dashboard's heavyweight status stays at every fourth cycle.
-                    emitFastTelemetry(r,m,l,steadyTargetTracker.progress(now))
+                    emitFastTelemetry(octane2Rpm,m,l,steadyTargetTracker.progress(now))
                     val effectiveMode=when {
                         batchEnabled && pollModeActive=="B+" -> "B+"
                         batchEnabled -> "B"
@@ -1348,7 +1352,7 @@ class EnetLoggerService : Service() {
                     saveComparison(Octane2Cycle(
                         System.currentTimeMillis(),benchmarkNow-started,
                         learningTripId,fuelSessionId,reconnects,effectiveMode,
-                        obdRpm,ramRpm,r,selectedRpmSource,ramPolicy.state.name,
+                        obdRpm,ramRpm,octane2Rpm,selectedRpmSource,ramPolicy.state.name,
                         obdRpmLatency,ramLatency,
                         if(ramReadAllowed)ramStarted-rpmObdStarted else null,
                         benchmarkNow-cycleStart,cycleGap,m,l,speed,i,coolant,
