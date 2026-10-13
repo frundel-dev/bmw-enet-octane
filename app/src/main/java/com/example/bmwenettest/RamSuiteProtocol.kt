@@ -30,6 +30,17 @@ internal object RamSuiteProtocol {
         stage==Stage.SIGNAL ||
             (Stage.SIGNAL.number until stage.number).all { it in completed }
 
+    /** Picker options are always six visible items; no AlertDialog message is used. */
+    fun menuItems(completed:Set<Int>):Array<String> =
+        Stage.entries.map { stage ->
+            val state=when {
+                stage.number in completed -> "✓ Технически завершён"
+                allowed(stage,completed) -> "Можно запускать"
+                else -> "Заблокирован предыдущим этапом"
+            }
+            "LAB ${stage.number} • ${stage.label}\\n$state"
+        }.toTypedArray()
+
     fun nextStage(completed:Set<Int>):Stage? =
         Stage.entries.firstOrNull { it.number !in completed &&
             allowed(it,completed) }
