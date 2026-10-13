@@ -11,6 +11,16 @@ import java.io.*
 import java.net.*
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 class EnetLoggerService : Service() {
     companion object {
@@ -93,7 +103,10 @@ class EnetLoggerService : Service() {
         @Volatile var isLoggerActive:Boolean = false
             private set
     }
-    private val executor = Executors.newSingleThreadExecutor()
+    // One coroutine owns the primary TCP socket; never run overlapping UDS reads.
+    private val pollingDispatcher=Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+    private val pollingScope=CoroutineScope(SupervisorJob()+pollingDispatcher)
+    private var pollingJob:Job?=null
     @Volatile private var running = false
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -163,7 +176,7 @@ class EnetLoggerService : Service() {
                 "fast_sample_age_ms,rpm,load_pct,map_kpa_abs,speed_kmh,"+
                 "fast_hz,knock_valid,ignition_valid,note\n")
         }
-        executor.execute { loop() }
+        pollingJob=pollingScope.launch { loop() }
     }
     private fun createSteadySurveyFile(fuelId:Int):File {
         val dir=getExternalFilesDir(null)?:filesDir
@@ -198,12 +211,16 @@ class EnetLoggerService : Service() {
         androidNetworkMonitor?.stop(); androidNetworkMonitor=null
         try{socket?.close()}catch(_:Exception){}
         isLoggerActive=false
+        pollingJob?.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
     }
     override fun onDestroy() {
         androidNetworkMonitor?.stop(); androidNetworkMonitor=null
         running=false;try{socket?.close()}catch(_:Exception){}
         isLoggerActive=false
+        pollingJob?.cancel()
+        pollingJob?.invokeOnCompletion { pollingDispatcher.close() }
+            ?:pollingDispatcher.close()
         if(wakeLock?.isHeld==true) wakeLock?.release()
         if(wifiLock?.isHeld==true) wifiLock?.release()
         tone.release()
@@ -336,7 +353,7 @@ class EnetLoggerService : Service() {
                else estimate.coerceAtMost(94)
     }
 
-    private fun loop() {
+    private suspend fun loop() {
         val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0
         // A new trip ID on each LOGGER start. Not equivalent to a separate day.
         val learningTripId=System.currentTimeMillis()
@@ -535,6 +552,7 @@ class EnetLoggerService : Service() {
                 kind,host,"mode="+pollModeActive+";"+reason)
         }
 
+        try {
         while(running) {
             try {
                 connectionStage="NETWORK"; connectionTransport=""; connectionIp=null
@@ -1582,6 +1600,7 @@ class EnetLoggerService : Service() {
                     }
                 }
             } catch(e:Exception) {
+                if(e is CancellationException)throw e
                 if(!running) break
                 val failureAt=SystemClock.elapsedRealtime()
                 recentPollFailures.addLast(failureAt)
@@ -1631,7 +1650,7 @@ class EnetLoggerService : Service() {
                 if(vxscanWifiBlocked) {
                     val deadline=SystemClock.elapsedRealtime()+1200L
                     while(running && vxscanWifiBlocked && SystemClock.elapsedRealtime()<deadline) {
-                        SystemClock.sleep(30L)
+                        delay(30L)
                     }
                 }
                 val retryMs=when(consecutiveFailures) {
@@ -1643,15 +1662,19 @@ class EnetLoggerService : Service() {
                 }
                 connectionEvent("RETRY",reconnects,"BACKOFF",connectionTransport,connectionIp,
                     "delay_ms=$retryMs;wifi_blocked=$vxscanWifiBlocked;failures=$consecutiveFailures")
-                if(running) SystemClock.sleep(retryMs)
+                if(running) delay(retryMs)
             }
         }
-        // Always flush the final buffered samples when polling ends normally.
+        } finally {
+        // Drain/flush even when the Service is cancelled during a reconnect.
+        withContext(NonCancellable) {
         observationJournal?.close()
         try{compareWriter?.flush();compareWriter?.close()}catch(_:Exception){}
         if(observationJournal?.failed==true && !journalFailureNoted)
             connectionEvent("OBSERVATION_JOURNAL_FAILED",reconnects,
                 "FILE",connectionTransport,null,"Journal close/flush failed")
+        }
+        }
     }
     // Octane Engine v0.2: empirical AI-95 baseline from validated v1.7.2 + independent v1.7.3 AI-95 runs.
     // RPM x MAP bins: median knock_mean_vms and number of baseline samples.
