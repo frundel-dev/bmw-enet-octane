@@ -149,4 +149,83 @@ class RefuelSessionStoreTest {
         assertFalse(RefuelEligibility.mayAssessFuel(false,Double.NaN))
         assertTrue(RefuelEligibility.mayAssessFuel(false,0.0))
     }
+    @Test fun firstFuelSelectionUsesSessionOneAndSkipsMixing() {
+        val p=MemoryPrefs().apply {
+            // A stale level can survive migration from an older installation.
+            edit().putInt("fuel_session_id",1)
+                .putFloat("last_fuel_pct",18f).commit()
+        }
+        val sessions=store(p)
+        assertFalse(sessions.hasCurrentFuel())
+        assertNull(sessions.detected(18.0,70.0,1000L))
+        val first=sessions.confirm("АИ-95","АЗС 1","Без оценки",
+            10000L,manual=true)!!
+        assertEquals(1,first.sessionId)
+        assertFalse(first.wasPending)
+        assertEquals(1,p.getInt("fuel_session_id",0))
+        assertEquals(first.id,p.getLong(GuidedFuelTest.PREF_ID,0))
+        assertEquals(1,p.getInt(GuidedFuelTest.PREF_FUEL_SESSION,0))
+        assertEquals("INITIAL",p.getString(RefuelSessionStore.PREF_LAST_SOURCE,""))
+        assertEquals("COLLECTING",sessions.state())
+        assertFalse("Stale detector cache must be re-established",
+            p.contains("last_fuel_pct"))
+        assertEquals(0f,p.getFloat("mixing_remaining_km",-1f),0f)
+        assertTrue(p.getBoolean(GuidedFuelTest.PREF_ACTIVE,false))
+        assertTrue(store(p).hasCurrentFuel()) // recreated activity or process
+        assertEquals(1,p.getInt("fuel_session_id",0))
+        assertTrue(File(temp.root,"events_v2.csv").readText().contains("INITIAL"))
+    }
+
+    @Test fun subsequentConfirmedRefuelIsSessionTwoAndUsesMixing() {
+        val p=MemoryPrefs()
+        val sessions=store(p)
+        assertNotNull(sessions.confirm("АИ-98","","Без оценки",1000L,manual=true))
+        val next=sessions.confirm("АИ-100","АЗС","Без оценки",2000L,manual=true)!!
+        assertEquals(2,next.sessionId)
+        assertEquals("MIXING",sessions.state())
+        assertEquals(RefuelSessionStore.MIXING_DISTANCE_KM,
+            p.getFloat("mixing_remaining_km",0f))
+        assertEquals("MANUAL",p.getString(RefuelSessionStore.PREF_LAST_SOURCE,""))
+    }
+
+    @Test fun preservesLegacyNumberingInsteadOfRenumberingHistoricalData() {
+        val p=MemoryPrefs().apply {
+            edit().putInt("fuel_session_id",5)
+                .putString("legacy_csv_marker","unchanged").commit()
+        }
+        val sessions=store(p)
+        assertFalse(sessions.hasCurrentFuel())
+        val selected=sessions.confirm("АИ-100","","Без оценки",3000L,manual=true)!!
+        assertEquals(5,selected.sessionId)
+        assertEquals("unchanged",p.getString("legacy_csv_marker",""))
+        assertEquals(0f,p.getFloat("mixing_remaining_km",-1f),0f)
+        assertTrue(store(p).hasCurrentFuel())
+    }
+
+    @Test fun existingFuelSurvivesLoggerRestartsAndMetadataEditsWithoutNewSession() {
+        val p=prefs()
+        val s=store(p)
+        assertTrue(s.hasCurrentFuel())
+        val session=p.getInt("fuel_session_id",0)
+        assertTrue(s.editFuel(100L,"АИ-100","Другая АЗС","Без оценки"))
+        assertTrue(store(p).hasCurrentFuel())
+        assertEquals(session,p.getInt("fuel_session_id",0))
+        assertEquals(100L,p.getLong(GuidedFuelTest.PREF_ID,0L))
+    }
+
+    @Test fun legacy92RemainsReadableButIsNotNewSelection() {
+        val p=MemoryPrefs().apply {
+            edit().putInt("fuel_session_id",2)
+                .putLong(GuidedFuelTest.PREF_ID,555L)
+                .putInt(GuidedFuelTest.PREF_FUEL_SESSION,2)
+                .putString(GuidedFuelTest.PREF_GRADE,"АИ-92").commit()
+        }
+        assertTrue(store(p).hasCurrentFuel())
+        assertFalse(GuidedFuelTest.selectableGrades.contains("АИ-92"))
+        assertFalse(GuidedFuelTest.selectableGrades.contains("Другое"))
+        assertNull(store(p).confirm("АИ-92","","Без оценки",4000L,manual=true))
+        assertEquals("АИ-92",p.getString(GuidedFuelTest.PREF_GRADE,""))
+        assertEquals(2,p.getInt("fuel_session_id",0))
+    }
+
 }
