@@ -464,6 +464,276 @@ internal class DmeHistoryReader(private val context:Context) {
         return Outcome(file,summary,completed)
     }
 
+
+    /**
+     * RAM LAB Suite 1.0: six independent on-car tests with locked progression.
+     * Read-only standard OBD, known 4A49 DID, verified Nkw RAM and ONE
+     * software-exact candidate Dzw_tot_kr. No UDS 0x2C, session/security,
+     * flashing, arbitrary addresses or parallel sockets.
+     */
+    fun collectRamSuiteStage(stage:RamSuiteProtocol.Stage,
+                             cancel:()->Boolean,progress:(String)->Unit):Outcome {
+        verifyAllowed(cancel)
+        val prefs=context.getSharedPreferences("bmw_ram_suite",Context.MODE_PRIVATE)
+        fun key(number:Int)=RamSuiteProtocol.VERSION+"_"+number
+        val prior=RamSuiteProtocol.Stage.entries
+            .filter { prefs.getBoolean(key(it.number),false) }
+            .map { it.number }.toSet()
+        if(!RamSuiteProtocol.allowed(stage,prior))
+            throw IOException("Этап ${stage.number} заблокирован до успешного предыдущего теста")
+        val dir=context.getExternalFilesDir(null) ?: context.filesDir
+        val file=File(dir,"bmw_ram_suite_${stage.number}_${System.currentTimeMillis()}.csv")
+        val times=ArrayList<Long>()
+        val rpmValues=ArrayList<Double>()
+        val retardValues=ArrayList<Double>()
+        var completed=false
+        var failure:String?=null
+        var peer=""
+        var transport=""
+        var activeStage="CONNECT"
+        var activeRequest=byteArrayOf()
+        var initialRpm=0.0
+        var lastRpm=0.0
+        var samples=0
+        val started=SystemClock.elapsedRealtime()
+        file.bufferedWriter().use { writer ->
+            writer.appendLine("wall_time_ms,elapsed_ms,test,stage,index,status,"+
+                "latency_ms,rpm,retard_deg,request_hex,response_hex,transport,"+
+                "peer,a2l,swfl,detail")
+            fun row(event:String,index:Int,status:String,latency:Long?,
+                    rpm:Double?,retard:Double?,req:ByteArray,res:ByteArray,
+                    detail:String="") {
+                writer.appendLine(DmeHistoryProtocol.csv(
+                    System.currentTimeMillis(),SystemClock.elapsedRealtime()-started,
+                    stage.number,event,index,status,latency ?: "",rpm ?: "",
+                    retard ?: "",DmeHistoryProtocol.hex(req),
+                    DmeHistoryProtocol.hex(res),transport,peer,
+                    RamMemoryProtocol.APPROVED_A2L,RamMemoryProtocol.APPROVED_SWFL,
+                    detail))
+                writer.flush()
+            }
+            fun limit() {
+                verifyAllowed(cancel)
+                if(SystemClock.elapsedRealtime()-started >
+                    stage.seconds*1000L) throw IOException("Stage time limit exceeded")
+            }
+            fun read(conn:Socket,event:String,idx:Int,req:ByteArray,
+                     accept:(ByteArray)->Boolean,
+                     decodeRpm:(ByteArray)->Double?={ null },
+                     decodeRetard:(ByteArray)->Double?={ null }):ByteArray {
+                limit()
+                activeStage=event
+                activeRequest=req
+                val t0=SystemClock.elapsedRealtime()
+                val response=try {
+                    transact(conn,req,accept,cancel)
+                }catch(e:Exception) {
+                    row(event,idx,"TRANSPORT_ERROR",
+                        SystemClock.elapsedRealtime()-t0,null,null,req,byteArrayOf(),
+                        "${e.javaClass.simpleName}: ${e.message}")
+                    throw e
+                }
+                val elapsed=SystemClock.elapsedRealtime()-t0
+                val rpm=if(response.status=="OK")decodeRpm(response.payload) else null
+                val retard=if(response.status=="OK")decodeRetard(response.payload) else null
+                val nrc=if(response.payload.size==3 &&
+                    response.payload[0]==0x7F.toByte()) {
+                    "%02X".format(java.util.Locale.US,response.payload[2].toInt() and 255)
+                }else ""
+                row(event,idx,response.status,elapsed,rpm,retard,req,
+                    response.payload,if(nrc.isNotBlank())"NRC_0x$nrc" else "")
+                if(response.status!="OK")
+                    throw IOException("$event refused ${response.status} NRC=0x$nrc")
+                times.add(elapsed)
+                if(rpm!=null)rpmValues.add(rpm)
+                if(retard!=null)retardValues.add(retard)
+                activeStage=""
+                activeRequest=byteArrayOf()
+                return response.payload
+            }
+
+            val speedReq=byteArrayOf(0x01,0x0D)
+            val obdReq=byteArrayOf(0x01,0x0C)
+            val rpmReq=RamSuiteProtocol.memoryRequest("Nkw")
+            val retardReq=RamSuiteProtocol.memoryRequest("Dzw_tot_kr")
+            val ignitionReq=byteArrayOf(0x22,0x4A,0x49)
+
+            fun gate(conn:Socket,index:Int) {
+                val result=read(conn,"SPEED_GATE",index,speedReq,
+                    { DiagnosticResponse.obd(it,0x0D)!=null })
+                if(!RamSuiteProtocol.speedStationary(result))
+                    throw IOException("Speed not confirmed 0 km/h; STOP")
+            }
+            fun reference(conn:Socket,index:Int):Double {
+                val payload=read(conn,"OBD_REFERENCE",index,obdReq,
+                    { DiagnosticResponse.obd(it,0x0C)!=null },
+                    { RamSuiteProtocol.obdRpm(it) })
+                val rpm=RamSuiteProtocol.obdRpm(payload)
+                if(rpm==null || !RamMemoryProtocol.parkedIdleRpm(rpm))
+                    throw IOException("Engine not at stable idle")
+                if(initialRpm==0.0)initialRpm=rpm
+                if(!RamSuiteProtocol.plausible(rpm,initialRpm))
+                    throw IOException("Reference idle changed by >150 RPM")
+                lastRpm=rpm
+                return rpm
+            }
+            fun measureRam(conn:Socket,index:Int,signal:String):Double {
+                val req=if(signal=="Nkw")rpmReq else retardReq
+                val payload=read(conn,"RAM_$signal",index,req,
+                    { RamMemoryProtocol.decodePositive(it,2)!=null },
+                    if(signal=="Nkw")({ RamSuiteProtocol.rpm(it) }) else ({ null }),
+                    if(signal=="Dzw_tot_kr")({ RamSuiteProtocol.retardDegrees(it) })
+                    else ({ null }))
+                val data=if(signal=="Nkw")RamSuiteProtocol.rpm(payload)
+                    else RamSuiteProtocol.retardDegrees(payload)
+                if(data==null)throw IOException("$signal invalid decoded value")
+                if(signal=="Nkw" && !RamSuiteProtocol.plausible(data,initialRpm))
+                    throw IOException("Unexpected RPM from RAM ($data)")
+                return data
+            }
+            fun paced(ms:Long=RamSuiteProtocol.PACE_MS) {
+                limit()
+                Thread.sleep(ms)
+            }
+            try {
+                progress("RAM LAB Suite: этап ${stage.number}, подключение к DME…")
+                when(stage) {
+                    RamSuiteProtocol.Stage.RECONNECT -> {
+                        // Intentional graceful close/reopen only AFTER completed
+                        // transfers. Never corrupt an in-flight HSFZ response.
+                        for(attempt in 1..RamSuiteProtocol.count(stage)) {
+                            limit()
+                            val (target,conn)=connect(cancel)
+                            peer=target.host
+                            transport=target.transport
+                            conn.use { socket ->
+                                gate(socket,attempt)
+                                reference(socket,attempt)
+                                measureRam(socket,attempt,"Nkw")
+                                samples++
+                                row("DISCONNECT",attempt,"GRACEFUL",null,
+                                    null,null,byteArrayOf(),byteArrayOf(),
+                                    "Socket closed after complete response")
+                            }
+                            if(attempt<2)paced(800)
+                        }
+                    }
+                    else -> {
+                        val (target,conn)=connect(cancel)
+                        peer=target.host
+                        transport=target.transport
+                        conn.use { socket ->
+                            gate(socket,0)
+                            reference(socket,0)
+                            when(stage) {
+                                RamSuiteProtocol.Stage.SIGNAL -> {
+                                    // Candidate decoded via A2L, but not yet
+                                    // established as cylinder knock correction.
+                                    repeat(RamSuiteProtocol.count(stage)) { i ->
+                                        measureRam(socket,i+1,"Dzw_tot_kr")
+                                        read(socket,"IGNITION_DID_4A49",i+1,ignitionReq,
+                                            { RamSuiteProtocol.packedIgnitionReply(it) })
+                                        samples++
+                                        if(i+1<RamSuiteProtocol.count(stage))paced()
+                                    }
+                                }
+                                RamSuiteProtocol.Stage.RPM_DYNAMICS -> {
+                                    // Parked idle fluctuation test, never ask
+                                    // driver to rev or test while driving.
+                                    repeat(RamSuiteProtocol.count(stage)) { i ->
+                                        val first=if(i%2==0)"Nkw" else "OBD"
+                                        val a=if(first=="Nkw")
+                                            measureRam(socket,i+1,"Nkw")
+                                        else reference(socket,i+1)
+                                        paced()
+                                        val b=if(first=="Nkw")
+                                            reference(socket,i+1)
+                                        else measureRam(socket,i+1,"Nkw")
+                                        val delta=kotlin.math.abs(a-b)
+                                        row("PAIR_DELTA",i+1,"OK",null,
+                                            delta,null,byteArrayOf(),byteArrayOf(),
+                                            "absolute_rpm_difference")
+                                        if(delta>100.0)
+                                            throw IOException("RAM/OBD disagreement $delta rpm")
+                                        samples++
+                                        if(i+1<RamSuiteProtocol.count(stage))paced()
+                                    }
+                                }
+                                RamSuiteProtocol.Stage.SEQUENTIAL -> {
+                                    repeat(RamSuiteProtocol.count(stage)) { i ->
+                                        measureRam(socket,i+1,"Nkw")
+                                        measureRam(socket,i+1,"Dzw_tot_kr")
+                                        samples++
+                                        if(i+1<RamSuiteProtocol.count(stage))paced()
+                                    }
+                                }
+                                RamSuiteProtocol.Stage.REPEATABILITY -> {
+                                    repeat(2) { pass ->
+                                        gate(socket,pass+1)
+                                        reference(socket,pass+1)
+                                        repeat(6) { i ->
+                                            val index=pass*6+i+1
+                                            measureRam(socket,index,"Nkw")
+                                            measureRam(socket,index,"Dzw_tot_kr")
+                                            samples++
+                                            if(i!=5)paced()
+                                        }
+                                        if(pass==0)paced(1800)
+                                    }
+                                }
+                                RamSuiteProtocol.Stage.SOAK -> {
+                                    repeat(RamSuiteProtocol.count(stage)) { i ->
+                                        val cycleStart=SystemClock.elapsedRealtime()
+                                        if(i%10==0) {
+                                            gate(socket,i+1)
+                                            reference(socket,i+1)
+                                        }
+                                        measureRam(socket,i+1,"Nkw")
+                                        measureRam(socket,i+1,"Dzw_tot_kr")
+                                        samples++
+                                        if((i+1)%10==0 || i==0)
+                                            progress("RAM LAB Suite • 12: ${i+1}/"+
+                                                "${RamSuiteProtocol.count(stage)} образцов")
+                                        val elapsed=SystemClock.elapsedRealtime()-cycleStart
+                                        if(i+1<RamSuiteProtocol.count(stage))
+                                            paced((1000L-elapsed).coerceAtLeast(0L))
+                                    }
+                                }
+                                RamSuiteProtocol.Stage.RECONNECT -> error("handled above")
+                            }
+                            gate(socket,99)
+                            reference(socket,99)
+                        }
+                    }
+                }
+                completed=samples==RamSuiteProtocol.count(stage)
+            }catch(e:Exception) {
+                failure="${e.javaClass.simpleName}: ${e.message ?: "unknown"}"
+                row("STOP",samples,"ERROR",null,null,null,activeRequest,
+                    byteArrayOf(),"at $activeStage: $failure")
+            }
+            val stat=RamBatchBenchmarkProtocol.stats(times)
+            row("SUMMARY",samples,if(completed)"TECHNICAL_PASS" else "PARTIAL",
+                null,null,null,byteArrayOf(),byteArrayOf(),
+                "count=$samples;roundtrips=${stat?.count ?: 0};"+
+                "median_ms=${stat?.medianMs ?: "n/a"};p95_ms=${stat?.p95Ms ?: "n/a"};"+
+                "ram_rpm_n=${rpmValues.size};candidate_retard_n=${retardValues.size};"+
+                "obd_start=$initialRpm;obd_last=$lastRpm;"+
+                "error=${failure ?: "none"};"+
+                "signal_semantics_NOT_validated")
+        }
+        if(completed)prefs.edit().putBoolean(key(stage.number),true).apply()
+        val summary=if(completed)
+            "RAM LAB Suite ${stage.number}: технический этап выполнен, "+
+                "$samples/${RamSuiteProtocol.count(stage)} циклов. "+
+                "Это НЕ подтверждает физический смысл нового RAM-показателя "+
+                "и не доказывает качество топлива."
+        else "RAM LAB Suite ${stage.number}: остановлено на $samples циклах. "+
+            "${failure ?: "unknown"}; CSV сохранён. Перед повтором изучи отказ."
+        progress(summary)
+        return Outcome(file,summary,completed)
+    }
+
     fun collectRamReadiness(cancel:()->Boolean,progress:(String)->Unit):Outcome {
         verifyAllowed(cancel)
         val dir=context.getExternalFilesDir(null) ?: context.filesDir
