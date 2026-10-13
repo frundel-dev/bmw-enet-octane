@@ -62,6 +62,33 @@ class MainActivity : Activity() {
     private lateinit var octane2LiveStatus:TextView
     private lateinit var octane2LambdaStatus:TextView
     private var pendingOctane2Export:File?=null
+    private lateinit var homeFuelTitle:TextView
+    private lateinit var homeFuelMeta:TextView
+    private lateinit var homeConnection:TextView
+    private lateinit var homeCaptureState:TextView
+    private lateinit var homeNextMode:TextView
+    private lateinit var homeTargetAState:TextView
+    private lateinit var homeTargetBState:TextView
+    private lateinit var analysisSummary:TextView
+    private lateinit var diagnosticSummary:TextView
+    private lateinit var navButtons:List<TextView>
+    private lateinit var tabPages:List<android.view.View>
+    private var selectedTab=0
+    private var firstTarget=Octane2UiState.target(null)
+    private var secondTarget=Octane2UiState.target(null)
+    private var connection=Octane2UiState.Connection.DISCONNECTED
+    private var transportLabel="ENET / VXSCAN"
+    private var lastFastReceivedAt=0L
+    private var latestRpm:Double?=null
+    private var latestMap:Double?=null
+    private var lastActualLambda:Double?=null
+    private var lastRamState="LOCKED"
+    private var lastPollHz:Double?=null
+    private var lastReconnectCount=0
+    private val surface=Color.rgb(23,34,52)
+    private val accentBlue=Color.rgb(89,171,255)
+    private val accentGreen=Color.rgb(75,219,183)
+    private val tertiary=Color.rgb(158,175,196)
     private val fastStaleClear=Runnable {
         showFastTelemetry(null,null,null,-1,0L)
     }
@@ -116,6 +143,8 @@ class MainActivity : Activity() {
             gravity=Gravity.CENTER_VERTICAL
         }
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        logging=EnetLoggerService.isLoggerActive
+        connection=if(logging)Octane2UiState.Connection.CONNECTING else Octane2UiState.Connection.DISCONNECTED
         val modeButton=Button(this).apply {
             text="НОВАЯ ЗАПРАВКА"
             textSize=13f
@@ -129,7 +158,7 @@ class MainActivity : Activity() {
             rightMargin=dp(7)
         })
         val startButton=Button(this).apply {
-            text="START LOGGER"
+            text=if(logging)"ОСТАНОВИТЬ" else "НАЧАТЬ СБОР"
             textSize=15f
             isAllCaps=false
             minHeight=dp(52)
@@ -143,14 +172,18 @@ class MainActivity : Activity() {
                         return@setOnClickListener
                     }
                     logging=true
-                    text="STOP LOGGER"
+                    text="ОСТАНОВИТЬ"
+                    connection=Octane2UiState.Connection.CONNECTING
+                    renderHomeState()
                     backgroundTintList=ColorStateList.valueOf(Color.rgb(255,179,126))
                     dashboard.setLogging(true)
                     startForegroundService(Intent(this@MainActivity,EnetLoggerService::class.java)
                         .setAction(EnetLoggerService.ACTION_START))
                 } else {
                     logging=false
-                    text="START LOGGER"
+                    text="НАЧАТЬ СБОР"
+                    connection=Octane2UiState.Connection.DISCONNECTED
+                    renderHomeState()
                     backgroundTintList=ColorStateList.valueOf(sky)
                     startService(Intent(this@MainActivity,EnetLoggerService::class.java)
                         .setAction(EnetLoggerService.ACTION_STOP))
