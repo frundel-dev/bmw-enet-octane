@@ -64,8 +64,11 @@ class Octane2DiagnosticsTest {
     }
 
     @Test fun fuelControlStatusIsUnavailableWhenMalformed() {
-        assertEquals("CLOSED_LOOP",Octane2Lambda.controlStatus(byteArrayOf(1,0)))
-        assertEquals("OPEN_LOAD_OR_DECEL",Octane2Lambda.controlStatus(byteArrayOf(2,0)))
+        assertEquals("ENGINE_OFF",Octane2Lambda.controlStatus(byteArrayOf(0,0)))
+        assertEquals("OPEN_INSUFFICIENT_TEMP",Octane2Lambda.controlStatus(byteArrayOf(1,0)))
+        assertEquals("CLOSED_LOOP",Octane2Lambda.controlStatus(byteArrayOf(2,0)))
+        assertEquals("OPEN_LOAD_OR_DECEL",Octane2Lambda.controlStatus(byteArrayOf(4,0)))
+        assertEquals("CLOSED_LOOP_O2_FAULT",Octane2Lambda.controlStatus(byteArrayOf(16,0)))
         assertNull(Octane2Lambda.controlStatus(byteArrayOf(0x10,0)))
         assertNull(Octane2Lambda.controlStatus(byteArrayOf(1)))
     }
