@@ -39,9 +39,16 @@ internal class RefuelSessionStore(context:Context) {
     data class Pending(val id:Long,val detectedAt:Long,val from:Double?,
                        val to:Double?,val oldSession:Int)
     data class Confirmed(val id:Long,val sessionId:Int,val wasPending:Boolean)
-    private val prefs:SharedPreferences=context.getSharedPreferences("bmw_native",Context.MODE_PRIVATE)
-    private val eventFile=File(context.getExternalFilesDir(null)?:context.filesDir,
-        "bmw_refuel_decisions_v2.csv")
+    internal constructor(prefs:SharedPreferences,eventFile:File):this(prefs,eventFile,true)
+    private constructor(prefs:SharedPreferences,eventFile:File,unused:Boolean) {
+        this.prefs=prefs
+        this.eventFile=eventFile
+    }
+    private val prefs:SharedPreferences
+    private val eventFile:File
+    constructor(context:Context):this(context.getSharedPreferences("bmw_native",Context.MODE_PRIVATE),
+        File(context.getExternalFilesDir(null)?:context.filesDir,
+            "bmw_refuel_decisions_v2.csv"),true)
 
     fun pending():Pending?=synchronized(lock) {
         val id=prefs.getLong(PREF_PENDING_ID,0L)
@@ -168,7 +175,10 @@ internal class RefuelSessionStore(context:Context) {
     fun editFuel(id:Long,grade:String,station:String,rating:String):Boolean=synchronized(lock) {
         if(grade !in GuidedFuelTest.grades || id<=0L)return@synchronized false
         val session=prefs.getInt(PREF_META_SESSION_PREFIX+id,-1)
-        if(session<1 && id!=prefs.getLong(GuidedFuelTest.PREF_ID,0L))
+        // Preserve ability to correct a historical refill created by 1.7.
+        // Its older CSV may be the only identity record in the app.
+        if(session<1 && id!=prefs.getLong(GuidedFuelTest.PREF_ID,0L) &&
+            !File(eventFile.parentFile,GuidedFuelTest.filename(id)).isFile)
             return@synchronized false
         val editor=prefs.edit()
             .putString(PREF_META_GRADE_PREFIX+id,grade)
