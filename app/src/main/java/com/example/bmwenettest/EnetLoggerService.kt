@@ -120,6 +120,8 @@ class EnetLoggerService : Service() {
     private val connectionLogLock = Any()
     private var socket: Socket? = null
     private var logFile: File? = null
+    // Accessed only by the one primary DME polling coroutine.
+    private var highSpeedMetrics:HighSpeedMetrics?=null
     private val tone by lazy { ToneGenerator(AudioManager.STREAM_MUSIC, 85) }
 
     override fun onBind(intent: Intent?) = null
@@ -374,6 +376,8 @@ class EnetLoggerService : Service() {
     private suspend fun loop() {
         val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0
         val ramFrameReader=HsfzReusableReader()
+        val highspeed=HighSpeedMetrics()
+        highSpeedMetrics=highspeed
         val csvWriter=AsyncCsvWriter(onFailure={ file,error ->
             connectionEvent("ASYNC_CSV_WRITE_FAILED",reconnects,"FILE",
                 "ASYNC",null,"file=${file.name};error=${error.javaClass.simpleName}: ${error.message}")
@@ -733,11 +737,12 @@ class EnetLoggerService : Service() {
                     val cycleStart=SystemClock.elapsedRealtime()
                     var slowRequestCount=0
                     val obdStarted=SystemClock.elapsedRealtime()
-                    fun pid(id:Int):ByteArray? {
-                        val q=hsfz(byteArrayOf(0x01,id.toByte())); socket!!.getOutputStream().write(q); socket!!.getOutputStream().flush()
-                        return readFrames(socket!!.getInputStream()).mapNotNull{payload(it)}
-                            .firstOrNull { DiagnosticResponse.obd(it,id)!=null }
-                    }
+                    fun pid(id:Int):ByteArray? =
+                        measuredDiagnostic("OBD_%02X".format(java.util.Locale.US,id), {
+                            hsfz(byteArrayOf(0x01,id.toByte()))
+                        }) { replies ->
+                            replies.firstOrNull { DiagnosticResponse.obd(it,id)!=null }
+                        }
                     fun obd(p:ByteArray?,id:Int)=p?.let{DiagnosticResponse.obd(it,id)}
                     val rpmObdStarted=SystemClock.elapsedRealtime()
                     val obdRpm=obd(pid(0x0C),0x0C)?.takeIf{it.size==2}
@@ -1689,6 +1694,7 @@ class EnetLoggerService : Service() {
             }
         }
         } finally {
+        highSpeedMetrics=null
         // Drain/flush even when the Service is cancelled during a reconnect.
         withContext(NonCancellable) {
         observationJournal?.close()
@@ -1757,33 +1763,72 @@ class EnetLoggerService : Service() {
         }
     }
 
-    private fun udsMixedBatch():Map<Int,ByteArray>? {
-        val s=socket ?: return null
-        s.getOutputStream().write(hsfz(MixedDidBatch.request()))
-        s.getOutputStream().flush()
-        return readFrames(s.getInputStream()).mapNotNull { payload(it) }
-            .firstNotNullOfOrNull { MixedDidBatch.parse(it) }
-    }
-
-    private fun udsBatch(dids:List<Int>,dataBytes:Int):Map<Int,ByteArray>? {
-        val s=socket ?: return null
-        val message=hsfz(DmeBatchParser.request(dids))
-        s.getOutputStream().write(message)
-        s.getOutputStream().flush()
-        val payloads=readFrames(s.getInputStream()).mapNotNull { payload(it) }
-        return payloads.firstNotNullOfOrNull { p ->
-            DmeBatchParser.parse(p,dids,dataBytes)
+    /**
+     * Timings use Android monotonic time. Keep strictly one unfinished
+     * transaction on the single socket; the wrapper does not read ahead.
+     * Null/negative/malformed responses are never marked successful.
+     */
+    private fun <T> measuredDiagnostic(
+        channel:String,build:()->ByteArray,decode:(List<ByteArray>)->T?
+    ):T? {
+        val s=socket?:return null
+        val start=System.nanoTime()
+        var builtAt=start
+        var sentAt=start
+        var firstAt:Long?=null
+        var receivedAt=start
+        var decodedAt=start
+        var valid=false
+        var fingerprint:Int?=null
+        try {
+            val bytes=build()
+            builtAt=System.nanoTime()
+            s.getOutputStream().write(bytes)
+            s.getOutputStream().flush()
+            sentAt=System.nanoTime()
+            val received=readFrames(FirstByteMeasuredStream(
+                s.getInputStream(),{t->if(firstAt==null)firstAt=t}))
+            receivedAt=System.nanoTime()
+            val payloads=received.mapNotNull(::payload)
+            val result=decode(payloads)
+            decodedAt=System.nanoTime()
+            valid=result!=null
+            if(valid)fingerprint=payloads.fold(1){a,b->31*a+b.contentHashCode()}
+            return result
+        } finally {
+            val end=System.nanoTime()
+            // Instrumentation must never suppress the original read/parse
+            // exception, including HSFZ timeout and truncated responses.
+            try {
+                highSpeedMetrics?.record(channel,start,HighSpeedMetrics.Request(
+                    (builtAt-start).coerceAtLeast(0L),
+                    (sentAt-builtAt).coerceAtLeast(0L),
+                    firstAt?.let{(it-sentAt).coerceAtLeast(0L)},
+                    firstAt?.let{((if(receivedAt>=it)receivedAt else end)-it)
+                        .coerceAtLeast(0L)},
+                    (decodedAt-receivedAt).coerceAtLeast(0L),valid,fingerprint))
+            }catch(_:Exception){}
         }
     }
 
-    private fun udsData(did:Int):ByteArray? {
-        val s=socket ?: return null
-        val hi=((did ushr 8) and 255).toByte(); val lo=(did and 255).toByte()
-        val q=hsfz(byteArrayOf(0x22,hi,lo))
-        s.getOutputStream().write(q); s.getOutputStream().flush()
-        return readFrames(s.getInputStream()).mapNotNull{payload(it)}
-            .firstNotNullOfOrNull { DiagnosticResponse.uds(it,did) }
-    }
+    private fun udsMixedBatch():Map<Int,ByteArray>? =
+        measuredDiagnostic("DID_BATCH_8", { hsfz(MixedDidBatch.request()) }) {
+            replies->replies.firstNotNullOfOrNull { MixedDidBatch.parse(it) }
+        }
+
+    private fun udsBatch(dids:List<Int>,dataBytes:Int):Map<Int,ByteArray>? =
+        measuredDiagnostic("DID_BATCH_${dids.size}", {
+            hsfz(DmeBatchParser.request(dids))
+        }) { replies ->
+            replies.firstNotNullOfOrNull { DmeBatchParser.parse(it,dids,dataBytes) }
+        }
+
+    private fun udsData(did:Int):ByteArray? =
+        measuredDiagnostic("DID_%04X".format(java.util.Locale.US,did), {
+            hsfz(byteArrayOf(0x22,(did ushr 8).toByte(),did.toByte()))
+        }) { replies ->
+            replies.firstNotNullOfOrNull { DiagnosticResponse.uds(it,did) }
+        }
     data class D(val ip:String)
     private fun discover(n:Network,bs:List<String>):D? {
         val s=DatagramSocket(null)
