@@ -4,10 +4,10 @@ package com.example.bmwenettest
  * UDS 0x23 ReadMemoryByAddress, prepared for RAM LAB 3.
  *
  * The request encoder and response decoder are usable for OFFLINE fixtures.
- * Live ECU requests MUST pass through [approvedVehicleRequest], which is
- * deliberately disabled until a firmware-exact, independently verified
- * address/size/encoding profile exists. Never derive an ECU RAM address from
- * a UDS DID, an arbitrary user input or a generic vehicle model.
+ * Live ECU reads are restricted to a single SWFL/A2L-matched Nkw location
+ * in the published MG Flasher A2L. Actual ECU identity cannot be auto-read
+ * via rejected F18x DIDs and must be manually confirmed before the ONE
+ * diagnostic memory read. Do not derive a RAM address from a UDS DID.
  */
 internal object RamMemoryProtocol {
     const val MAX_READ_BYTES = 8
@@ -23,9 +23,34 @@ internal object RamMemoryProtocol {
         val sizeBytes: Int
     )
 
-    // Intentionally empty. Neither MG Flasher binaries nor RAM LAB 1's
-    // negative F18x responses establish the car's exact firmware/addresses.
-    private val vehicleApprovedLocations: List<VerifiedLocation> = emptyList()
+    const val APPROVED_A2L = "R4C9J797B"
+    const val APPROVED_SWFL = "00005D55-070.060.007"
+    const val A2L_INTERNAL_PROJECT = "R4C2J797B"
+    const val RPM_SIGNAL = "Nkw"
+    // Published source file matched A2L and SWFL from MG Flasher vehicle
+    // diagnostics. Its internal PROJECT ID is the MG1CS201 R4C2 variant
+    // also associated with R4C9 externally; no other firmware permitted.
+    // Source blob SHA d04645de63325a9db7ea1856088d657fb798551f.
+    private val vehicleApprovedLocations: List<VerifiedLocation> = listOf(
+        VerifiedLocation(
+            softwareId=APPROVED_A2L,
+            sourceReference="mgflasher-team/mgflasher-map-packs " +
+                "R4C9J797B_5d55-070_060_007.a2l @d04645de",
+            signal=RPM_SIGNAL,
+            address=0x60003B64L,
+            addressBytes=4,
+            sizeBytes=2
+        )
+    )
+
+    /** From A2L SWORD, BYTE_ORDER MSB_LAST, identity conversion: rpm. */
+    fun decodeNkwRpm(data:ByteArray):Int? {
+        if(data.size!=2)return null
+        val unsigned=(data[0].toInt() and 0xFF) or
+            ((data[1].toInt() and 0xFF) shl 8)
+        val value=if(unsigned>=0x8000)unsigned-0x10000 else unsigned
+        return value.takeIf { it in 0..10000 }
+    }
 
     fun liveProfileAvailable(): Boolean = vehicleApprovedLocations.isNotEmpty()
 
