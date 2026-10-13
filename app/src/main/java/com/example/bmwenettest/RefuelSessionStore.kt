@@ -28,6 +28,8 @@ internal class RefuelSessionStore(context:Context) {
         const val PREF_LAST_LEVEL="octane2_last_manual_level"
         const val PREF_LAST_MANUAL_AT="octane2_last_manual_at"
         const val PREF_LAST_SOURCE="octane2_last_refuel_source"
+        const val PREF_WAS_ACTIVE="octane2_pending_was_active"
+        const val PREF_WAS_BASELINE="octane2_pending_was_baseline"
         const val PREF_RATING_PREFIX="octane2_refuel_rating_"
         const val PREF_META_GRADE_PREFIX="octane2_refuel_grade_"
         const val PREF_META_STATION_PREFIX="octane2_refuel_station_"
@@ -82,6 +84,8 @@ internal class RefuelSessionStore(context:Context) {
             .putInt(PREF_PENDING_SESSION,current)
             .putLong(PREF_LAST_EVENT_ID,id)
             .putString(PREF_ACTIVE_STATE,"REFUEL_PENDING")
+            .putBoolean(PREF_WAS_ACTIVE,prefs.getBoolean(GuidedFuelTest.PREF_ACTIVE,false))
+            .putBoolean(PREF_WAS_BASELINE,prefs.getBoolean(BaselineLearning.PREF_ENABLED,false))
             .putBoolean(GuidedFuelTest.PREF_ACTIVE,false)
             .putBoolean(BaselineLearning.PREF_ENABLED,false)
             .commit()
@@ -128,7 +132,8 @@ internal class RefuelSessionStore(context:Context) {
                 .putString(PREF_LAST_SOURCE,if(pending!=null)"AUTO" else "MANUAL")
                 .remove(PREF_PENDING_ID).remove(PREF_PENDING_TIME)
                 .remove(PREF_PENDING_FROM).remove(PREF_PENDING_TO)
-                .remove(PREF_PENDING_SESSION)
+                .remove(PREF_PENDING_SESSION).remove(PREF_WAS_ACTIVE)
+                .remove(PREF_WAS_BASELINE)
             if(pending==null) {
                 edit.putLong(PREF_LAST_MANUAL_AT,wall)
                 val fuel=prefs.getFloat("last_fuel_pct",Float.NaN)
@@ -144,9 +149,14 @@ internal class RefuelSessionStore(context:Context) {
     fun reject(id:Long,wall:Long=System.currentTimeMillis()):Boolean=synchronized(lock) {
         val candidate=pending()?:return@synchronized false
         if(candidate.id!=id)return@synchronized false
+        val oldActive=prefs.getBoolean(PREF_WAS_ACTIVE,false)
+        val oldBaseline=prefs.getBoolean(PREF_WAS_BASELINE,false)
         val ok=prefs.edit().remove(PREF_PENDING_ID).remove(PREF_PENDING_TIME)
             .remove(PREF_PENDING_FROM).remove(PREF_PENDING_TO)
-            .remove(PREF_PENDING_SESSION)
+            .remove(PREF_PENDING_SESSION).remove(PREF_WAS_ACTIVE)
+            .remove(PREF_WAS_BASELINE)
+            .putBoolean(GuidedFuelTest.PREF_ACTIVE,oldActive)
+            .putBoolean(BaselineLearning.PREF_ENABLED,oldBaseline)
             .putString(PREF_ACTIVE_STATE,"ACTIVE")
             .commit()
         if(ok)audit(id,wall,"AUTO","REJECTED",candidate.oldSession,
