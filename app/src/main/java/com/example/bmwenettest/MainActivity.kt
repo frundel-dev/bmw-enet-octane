@@ -1653,7 +1653,9 @@ class MainActivity : Activity() {
                     val fuel=if(current)prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)
                         else Regex("fuel_session=(\\d+)").find(meta)?.groupValues?.get(1)?.toIntOrNull()?:-1
                     val coverage=readGuided(dataset,fuel).snapshot()
-                    val grade=Regex("grade=([^;]+)").find(meta)?.groupValues?.get(1)?:"Топливо"
+                    val legacyGrade=Regex("grade=([^;]+)").find(meta)?.groupValues?.get(1)?:"Топливо"
+                    val grade=prefs.getString(RefuelSessionStore.PREF_META_GRADE_PREFIX+dataset,legacyGrade)
+                        ?:legacyGrade
                     val rating=prefs.getString("octane2_refuel_rating_"+dataset,"")?:""
                     "$grade • ${coverage.progress}% • ${coverage.steadyReady}/2 STEADY · ${coverage.accelReady}/3 ACCEL"+
                         if(rating.isNotBlank() && rating!="Без оценки")" • $rating" else ""
@@ -1669,7 +1671,12 @@ class MainActivity : Activity() {
                             .setTitle("Сохранённый тест")
                             .setMessage("${summaries[index]}\nФайл: ${files[index].name}\n"+
                                 "Архивный CSV сохраняется без изменения Fuel Score.")
-                            .setPositiveButton("OK",null).show()
+                            .setPositiveButton("Изменить топливо") { _,_ ->
+                                editFuelMetadata(files[index].name
+                                    .removePrefix("bmw_fuel_test_v1731_")
+                                    .removeSuffix(".csv").toLongOrNull()?:0L)
+                            }
+                            .setNegativeButton("Закрыть",null).show()
                     }
                     .setNegativeButton("Закрыть",null).show()
             }
@@ -2066,11 +2073,9 @@ class MainActivity : Activity() {
                             val fields=refuelEvents[which].split(",")
                             val builder=AlertDialog.Builder(this).setTitle("Возможная заправка")
                                 .setMessage(eventLabels[which]+"\n\nОпределено по изменению уровня топлива. Сегменты уже разделены для безопасности расчётов.")
-                            if(fields.getOrNull(4)=="PENDING" || fields.size<5) {
-                                builder.setPositiveButton("Подтвердить") { _,_ -> markRefuelEvent(fields[1],"CONFIRMED") }
-                                    .setNegativeButton("Не было") { _,_ -> markRefuelEvent(fields[1],"REJECTED") }
-                                    .setNeutralButton("Позже",null)
-                            } else builder.setPositiveButton("OK",null)
+                            // v1.7 already changed the session before confirmation.
+                            // Never repeat that destructive legacy action from v2 UI.
+                            builder.setPositiveButton("Закрыть",null)
                             builder.show()
                         } else {
                             val fileIndex=which-eventLabels.size
@@ -2084,21 +2089,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun markRefuelEvent(id:String,decision:String) {
-        val file=File(getExternalFilesDir(null)?:filesDir,"bmw_fuel_events.csv")
-        if(!file.isFile)return
-        val lines=file.readLines().toMutableList()
-        val index=lines.indexOfLast { it.split(",").getOrNull(1)==id }
-        if(index<0)return
-        lines[index]=lines[index].split(",").take(4).joinToString(",")+"," + decision
-        file.writeText(lines.joinToString("\n",postfix="\n"))
-        if(decision=="REJECTED") {
-            getSharedPreferences("bmw_native",MODE_PRIVATE).edit()
-                .putInt("refuel_rejected_id",id.toIntOrNull()?:-1).apply()
-        }
-        Toast.makeText(this,if(decision=="CONFIRMED")"Заправка подтверждена" else "Ложное событие отмечено; история не удалена",Toast.LENGTH_LONG).show()
-    }
-
+    // Legacy bmw_fuel_events.csv is a read-only archive. All new
+    // confirmations are durable RefuelSessionStore transitions.
     override fun onDestroy() {
         main.removeCallbacks(fastStaleClear)
         guidedUiRefresh?.let { main.removeCallbacks(it) }
