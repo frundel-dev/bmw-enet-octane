@@ -1361,7 +1361,8 @@ class EnetLoggerService : Service() {
                         currentLambdaAge,freshActualLambda?.auxiliary,
                         lambdaEq,commandedAge,stft1,ltft1,fuelControlState,
                         steadyTargetTracker.progress(now).targetIndex,
-                        steadyTargetTracker.progress(now).dwellMs
+                        steadyTargetTracker.progress(now).dwellMs,
+                        sessionScore,sessionConfidence
                     ))
                     emitOctane2(obdRpm,ramRpm,ramPolicy.state.name,
                         freshActualLambda?.lambda,freshActualLambda?.sourcePid)
