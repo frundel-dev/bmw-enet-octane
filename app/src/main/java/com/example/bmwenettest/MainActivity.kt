@@ -91,6 +91,11 @@ class MainActivity : Activity() {
     private val tertiary=Color.rgb(158,175,196)
     private val fastStaleClear=Runnable {
         showFastTelemetry(null,null,null,-1,0L)
+        lastActualLambda=null
+        octane2LambdaStatus.text="Фактическая λ: нет свежих данных"
+        if(logging && connection==Octane2UiState.Connection.CONNECTED)
+            connection=Octane2UiState.Connection.CONNECTING
+        renderHomeState()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -379,6 +384,9 @@ class MainActivity : Activity() {
         // Use the original, live-connected views; only their hierarchy
         // changes. The diagnostic service, receiver and fuel storage remain.
         root.removeView(controls)
+        // Refuelling is controlled from its own card, technical tools from Settings.
+        controls.removeView(modeButton)
+        if(controls.childCount>1)controls.removeViewAt(controls.childCount-1)
         root.removeView(quickPanel)
         root.removeView(targetPanel)
         quickPanel.removeView(octane2LiveStatus)
@@ -640,7 +648,8 @@ class MainActivity : Activity() {
         }
         guidedUiRefresh=object:Runnable {
             override fun run() {
-                if(fuelOverviewDialog?.isShowing==true) refreshGuidedPanel()
+                if(fuelOverviewDialog?.isShowing==true || selectedTab==0 ||
+                    selectedTab==2) refreshGuidedPanel()
                 main.postDelayed(this,4800L)
             }
         }
@@ -1177,6 +1186,17 @@ class MainActivity : Activity() {
             setTextSize(14f)
         }
         parent.addView(station)
+        val subjectiveLabel=TextView(this).apply {
+            text="Личная оценка после заправки (не влияет на алгоритм)"
+            textSize=13f;setPadding(0,12,0,0)
+        }
+        parent.addView(subjectiveLabel)
+        val subjective=Spinner(this).apply {
+            adapter=ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("Без оценки","Понравилось","Нейтрально","Не понравилось"))
+        }
+        parent.addView(subjective)
         AlertDialog.Builder(this)
             .setTitle("Новая заправка")
             .setMessage("Будет создан независимый тест топлива. Прошивка MG Flasher ST1; "+
@@ -1195,15 +1215,18 @@ class MainActivity : Activity() {
                         prefs.getInt("fuel_session_id",1))
                     .putString(GuidedFuelTest.PREF_GRADE,options[grade.selectedItemPosition])
                     .putString(GuidedFuelTest.PREF_STATION,station.text.toString().take(100))
+                    .putString("octane2_refuel_rating_"+id,
+                        subjective.selectedItem.toString())
                     .putString("measurement_mode","AUTO")
                     .putBoolean(BaselineLearning.PREF_ENABLED,false)
                     .commit()
                 guidedSnapshot=null
                 refreshGuidedPanel()
-                loggerControl?.performClick()
-                // Immediately show the fuel-test screen after selecting a
-                // refill; do not occupy permanent home-screen space.
-                main.post { if(!isFinishing && !isDestroyed)showFuelTestOverview() }
+                selectTab(0)
+                renderHomeState()
+                Toast.makeText(this@MainActivity,
+                    "Заправка сохранена. Запусти сбор кнопкой «НАЧАТЬ СБОР».",
+                    Toast.LENGTH_LONG).show()
             }.show()
     }
 
@@ -1249,6 +1272,7 @@ class MainActivity : Activity() {
                     prefs.getLong(GuidedFuelTest.PREF_ID,0L)!=id)return@runOnUiThread
                 guidedSnapshot=state
                 guidedProgress.progress=state.progress
+                renderHomeState()
                 guidedDetail.text=when {
                     fuel!=prefs.getInt("fuel_session_id",1) -> "Заправка изменилась • тест остановлен"
                     done -> "Измерения завершены • STEADY ${state.steadyReady}/2 · ACCEL ${state.accelReady}/3"
@@ -1437,7 +1461,9 @@ class MainActivity : Activity() {
                         else Regex("fuel_session=(\\d+)").find(meta)?.groupValues?.get(1)?.toIntOrNull()?:-1
                     val coverage=readGuided(dataset,fuel).snapshot()
                     val grade=Regex("grade=([^;]+)").find(meta)?.groupValues?.get(1)?:"Топливо"
-                    "$grade • ${coverage.progress}% • ${coverage.steadyReady}/2 STEADY · ${coverage.accelReady}/3 ACCEL"
+                    val rating=prefs.getString("octane2_refuel_rating_"+dataset,"")?:""
+                    "$grade • ${coverage.progress}% • ${coverage.steadyReady}/2 STEADY · ${coverage.accelReady}/3 ACCEL"+
+                        if(rating.isNotBlank() && rating!="Без оценки")" • $rating" else ""
                 }catch(_:Exception){file.name}
                 rows
             }
