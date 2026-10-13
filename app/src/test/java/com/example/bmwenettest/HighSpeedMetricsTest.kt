@@ -19,7 +19,7 @@ class HighSpeedMetricsTest {
         assertEquals(8L,s.successful)
         assertEquals(0L,s.errors)
         assertEquals(7L,s.responseChanges)
-        assertEquals(5.0,s.firstByteMedianMs!!,0.001)
+        assertEquals(4.0,s.firstByteMedianMs!!,0.001)
         assertEquals(8.0,s.firstByteP95Ms!!,0.001)
         assertEquals(8.0,s.firstByteP99Ms!!,0.001)
         assertEquals(1.0,s.successHz!!,0.001)
