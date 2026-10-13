@@ -751,6 +751,17 @@ class MainActivity : Activity() {
         super.onResume()
         if(::homeFuelTitle.isInitialized) {
             logging=EnetLoggerService.isLoggerActive
+            if(!logging) {
+                connection=Octane2UiState.Connection.DISCONNECTED
+                latestRpm=null;latestMap=null;lastActualLambda=null
+            } else if(lastFastReceivedAt==0L) {
+                connection=Octane2UiState.Connection.CONNECTING
+            }
+            loggerControl?.let { button ->
+                button.text=if(logging)"ОСТАНОВИТЬ" else "НАЧАТЬ СБОР"
+                button.backgroundTintList=ColorStateList.valueOf(
+                    if(logging)Color.rgb(255,179,126) else accentBlue)
+            }
             renderHomeState()
             refreshGuidedPanel()
         }
