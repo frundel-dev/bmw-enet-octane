@@ -937,13 +937,25 @@ class EnetLoggerService : Service() {
                     // Never begin 0x23 while driving without a parked 0 km/h
                     // reference cross-check. All reads use the SAME TCP owner.
                     val ramStarted=SystemClock.elapsedRealtime()
+                    // Do not trust a cached speed=0 for the initial RAM
+                    // address read. The parked gate must have a fresh, exact
+                    // OBD 01 0D response immediately before the first 0x23.
+                    var ramGateSpeed=speed
+                    var ramGateFresh=if(optimizedSlow)
+                        slowScheduler.fresh(0x0D,ramStarted)
+                    else slowSensorAtMs>0L &&
+                        SampleFreshness.isFresh(ramStarted,slowSensorAtMs)
+                    if(ramPolicy.state==Octane2RamPolicy.State.NEEDS_PARKED_CHECK &&
+                        ramGateFresh && ramGateSpeed==0.0 &&
+                        obdRpm!=null && RamMemoryProtocol.parkedIdleRpm(obdRpm)) {
+                        val immediate=obd(pid(0x0D),0x0D)
+                        ramGateSpeed=immediate?.takeIf{it.size==1}
+                            ?.firstOrNull()?.let{(it.toInt() and 255).toDouble()}
+                        ramGateFresh=ramGateSpeed==0.0
+                    }
                     val ramReadAllowed=(lastRamRequestMs==0L ||
                         ramStarted-lastRamRequestMs>=300L) &&
-                        ramPolicy.canRead(
-                        obdRpm,speed,if(optimizedSlow)
-                            slowScheduler.fresh(0x0D,ramStarted)
-                        else slowSensorAtMs>0L &&
-                            SampleFreshness.isFresh(ramStarted,slowSensorAtMs))
+                        ramPolicy.canRead(obdRpm,ramGateSpeed,ramGateFresh)
                     var ramRpm:Double?=null
                     var acceptedRam=false
                     if(ramReadAllowed && running) {
