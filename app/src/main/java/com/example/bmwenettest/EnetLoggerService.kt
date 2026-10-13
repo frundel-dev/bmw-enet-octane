@@ -373,6 +373,7 @@ class EnetLoggerService : Service() {
         var actualLambdaAt=0L
         var lambdaChecked=false
         var lambdaPid:Int?=null
+        var lambdaBackupPid:Int?=null
         var lambdaNextPoll=0L
         var fuelControlSupported=false
         var fuelControlState:String?=null
@@ -656,6 +657,7 @@ class EnetLoggerService : Service() {
                 // Support masks and sensor timestamps are scoped to the TCP session.
                 lambdaChecked=false
                 lambdaPid=null
+                lambdaBackupPid=null
                 actualLambda=null
                 actualLambdaAt=0L
                 fuelControlNext=0L
@@ -985,11 +987,14 @@ class EnetLoggerService : Service() {
                     if(!lambdaChecked) {
                         lambdaChecked=true
                         val mask20=obd(pid(0x20),0x20)
+                        val sensor34=Octane2Lambda.supported(mask20,0x34)
+                        val sensor24=Octane2Lambda.supported(mask20,0x24)
                         lambdaPid=when {
-                            Octane2Lambda.supported(mask20,0x34) -> 0x34
-                            Octane2Lambda.supported(mask20,0x24) -> 0x24
+                            sensor34 -> 0x34
+                            sensor24 -> 0x24
                             else -> null
                         }
+                        lambdaBackupPid=if(sensor34 && sensor24)0x24 else null
                         val mask00=obd(pid(0x00),0x00)
                         fuelControlSupported=Octane2Lambda.supportedBase(mask00,0x03)
                     }
@@ -997,6 +1002,12 @@ class EnetLoggerService : Service() {
                     if(lambdaPid!=null && lambdaNow>=lambdaNextPoll) {
                         val id=lambdaPid!!
                         actualLambda=Octane2Lambda.decode(id,obd(pid(id),id))
+                        // Test supported alternate only on a later cycle. Do
+                        // not repeatedly hammer an ECU that rejects a PID.
+                        if(actualLambda==null) {
+                            lambdaPid=lambdaBackupPid
+                            lambdaBackupPid=null
+                        }
                         actualLambdaAt=if(actualLambda!=null)
                             SystemClock.elapsedRealtime() else 0L
                         lambdaNextPoll=SystemClock.elapsedRealtime()+4000L
