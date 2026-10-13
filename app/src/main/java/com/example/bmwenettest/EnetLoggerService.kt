@@ -445,6 +445,7 @@ class EnetLoggerService : Service() {
         val recentPollFailures=java.util.ArrayDeque<Long>()
         var experimentalRollback=false
         val fuelDetector=FuelRefillDetector(prefs.getFloat("last_fuel_pct",Float.NaN).toDouble())
+        val refuelStore=RefuelSessionStore(this)
         var fuelSessionId=prefs.getInt("fuel_session_id",1)
         val targetDir=getExternalFilesDir(null)?:filesDir
         fun loadSteadyTargets(session:Int):SteadyTargets.Tracker {
@@ -750,34 +751,17 @@ class EnetLoggerService : Service() {
                         slowSensorAtMs=SystemClock.elapsedRealtime()
                         lastSlow=now
                     }
-                    // Tank level is a slow optional OBD parameter. No value means unsupported/unavailable.
-                    if(now-lastFuelPoll>=15000L) {
-                        slowFuel=obd(pid(0x2F),0x2F)?.firstOrNull()?.let {
-                            (it.toInt() and 255)*100.0/255.0
-                        }
-                        lastFuelPoll=now
-                        if(slowFuel!=null) fuelSupported=true
-                        val tankUpdate=fuelDetector.observe(slowFuel,now)
-                        fuelDetector.stableLevel?.let { prefs.edit().putFloat("last_fuel_pct",it.toFloat()).apply() }
-                        tankUpdate.refill?.let { refill ->
-                            fuelSessionId++
-                            steadyTargetTracker=loadSteadyTargets(fuelSessionId)
-                            lastAcknowledgedTargetSegment=0
-                            steadyTargetSnapshot=steadyTargetTracker.snapshot("Заправка сменилась: ждём окончания смешивания топлива")
-                            if(prefs.getBoolean(GuidedFuelTest.PREF_ACTIVE,false)) {
-                                prefs.edit().putBoolean(GuidedFuelTest.PREF_ACTIVE,false).apply()
-                                emit("Тест топлива приостановлен: возможная новая заправка. Не смешивай два бензина в одной оценке.")
-                            }
-                            // Prevent an unverified refill/fuel change silently
-                            // contaminating an existing experimental baseline.
-                            if(prefs.getBoolean(BaselineLearning.PREF_ENABLED,false)) {
-                                prefs.edit().putBoolean(BaselineLearning.PREF_ENABLED,false).apply()
-                                emit("Обучение приостановлено: обнаружена возможная заправка. Создай новый набор после проверки топлива.")
-                            }
-                            mixingKm=5.0 // Heuristic minimum driving distance to allow partial mixing.
-                            prefs.edit().putInt("fuel_session_id",fuelSessionId).putFloat("mixing_remaining_km",mixingKm.toFloat()).apply()
-                            val events=File(getExternalFilesDir(null)?:filesDir,"bmw_fuel_events.csv")
-                            events.appendText("${System.currentTimeMillis()},$fuelSessionId,${"%.1f".format(java.util.Locale.US,refill.fromPercent)},${"%.1f".format(java.util.Locale.US,refill.toPercent)},PENDING\n")
+                    // Adopt user-confirmed session on the one diagnostic thread.
+                    // Never issue a second DME connection or merge different fills.
+                    val newConfirmedId=prefs.getInt("fuel_session_id",fuelSessionId)
+                    if(newConfirmedId!=fuelSessionId) {
+                        fuelSessionId=newConfirmedId
+                        mixingKm=prefs.getFloat("mixing_remaining_km",
+                            RefuelSessionStore.MIXING_DISTANCE_KM).toDouble()
+                        steadyTargetTracker=loadSteadyTargets(fuelSessionId)
+                        lastAcknowledgedTargetSegment=0
+                        steadyTargetSnapshot=steadyTargetTracker.snapshot(
+                            "Новая заправка подтверждена: MIXING (эвристический карантин)")
                             logFile=createLogFile(fuelSessionId)
                             steadySurveyFile=createSteadySurveyFile(fuelSessionId)
                             dmeProbeResults.clear()
@@ -795,8 +779,31 @@ class EnetLoggerService : Service() {
                             accelV08Sum=0.0;accelV08Weight=0.0;accelV08Points=0
                             highRpmRatioSum=0.0; highRpmPoints=0; highRpmOver120=0; highRpmBaselineSum=0
                             lastAutoAcceptedTime=0L; lastQualified=0L; previousSampleTime=0L; previousRpm=null; previousMap=null
-                            lastRefuelNote="Возможная заправка: ${"%.0f".format(refill.fromPercent)}% → ${"%.0f".format(refill.toPercent)}% • сессия #$fuelSessionId"
-                            emit(lastRefuelNote)
+                        lastRefuelNote="Топливная сессия #$fuelSessionId подтверждена; "+
+                            "переходный период не гарантирует полного перемешивания."
+                        connectionEvent("FUEL_SESSION_CONFIRMED",reconnects,
+                            "FUEL",transport,null,"session=$fuelSessionId;heuristic_mixing=$mixingKm")
+                        emit(lastRefuelNote)
+                    }
+                    // Tank level is a slow optional OBD parameter. No value means unsupported/unavailable.
+                    if(now-lastFuelPoll>=15000L) {
+                        slowFuel=obd(pid(0x2F),0x2F)?.firstOrNull()?.let {
+                            (it.toInt() and 255)*100.0/255.0
+                        }
+                        lastFuelPoll=now
+                        if(slowFuel!=null) fuelSupported=true
+                        val tankUpdate=fuelDetector.observe(slowFuel,now)
+                        fuelDetector.stableLevel?.let { prefs.edit().putFloat("last_fuel_pct",it.toFloat()).apply() }
+                        tankUpdate.refill?.let { refill ->
+                            if(refuelStore.detected(refill.fromPercent,
+                                    refill.toPercent,System.currentTimeMillis())!=null) {
+                                steadyTargetTracker.resetCandidate(forceNewSegment=true)
+                                captureActive=false;captureTailUntil=0L
+                                lastRefuelNote="Обнаружена возможная заправка: "+
+                                    "${"%.0f".format(refill.fromPercent)}% → "+
+                                    "${"%.0f".format(refill.toPercent)}% • ожидает подтверждения"
+                                emit(lastRefuelNote)
+                            }
                         }
                     }
                     if(lastDistanceSampleTime>0L && now-lastDistanceSampleTime in 1L..10000L && mixingKm>0.0 && slowSpeed!=null) {
@@ -805,11 +812,6 @@ class EnetLoggerService : Service() {
                         prefs.edit().putFloat("mixing_remaining_km",mixingKm.toFloat()).apply()
                     }
                     lastDistanceSampleTime=now
-                    if(prefs.getInt("refuel_rejected_id",-1)==fuelSessionId) {
-                        mixingKm=0.0
-                        prefs.edit().putFloat("mixing_remaining_km",0f).remove("refuel_rejected_id").apply()
-                        lastRefuelNote="Событие заправки #$fuelSessionId отклонено. Файлы замеров сохранены раздельно."
-                    }
                     val freshnessNow=SystemClock.elapsedRealtime()
                     if(optimizedSlow) {
                         if(!slowScheduler.fresh(0x0D,freshnessNow))slowSpeed=null
@@ -902,11 +904,18 @@ class EnetLoggerService : Service() {
                     }
                     val foctanMs=SystemClock.elapsedRealtime()-foctanStarted
                     val postFastStarted=SystemClock.elapsedRealtime()
-                    val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
+                    val fuelQuarantined=refuelStore.hasPending() || mixingKm>0.0
+                    if(fuelQuarantined) {
+                        captureActive=false;captureTailUntil=0L
+                        steadyTargetTracker.resetCandidate()
+                    }
+                    val testWindow = !fuelQuarantined &&
+                        r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
                     // v1.7.32 measurement assistant: keep polling continuously, persist only measurement segments.
                     if(((autoMode && r!=null && l!=null && m!=null && r>=1300.0 && r<=4500.0 &&
                         l>=15.0 && m>=88.0 && m<=250.0 && (speed==null || speed>=15.0)) ||
-                        (!autoMode && r!=null && r>=1800.0)) && !captureActive) {
+                        (!autoMode && r!=null && r>=1800.0)) &&
+                        !fuelQuarantined && !captureActive) {
                         captureActive=true; runId++; armed2000=false; signaled4500=false; runStart=now;
                         if(autoMode)lastQualified=now; runStartRpm=r; runMaxRpm=r; runMaxLoad=l?:0.0; runMaxMap=m?:0.0; runSamples=0; lastSummary=""; runWeightedRatio=0.0; runWeight=0.0; runValidPoints=0; runHighPoints=0; runKnockEvents=0; runSuperEvents=0; lastRunScore=null; lastRunQuality=0
                         if(!autoMode) tone.startTone(ToneGenerator.TONE_PROP_BEEP,120)
@@ -1039,7 +1048,9 @@ class EnetLoggerService : Service() {
 
                     if(testWindow && knockMean!=null && ignSpread!=null) validOctaneSamples++
                     val confidence=(validOctaneSamples*2).coerceAtMost(100)
-                    val measurementWindow=r!=null && l!=null && m!=null && r>=2000.0 && r<=4500.0 && l>=55.0 && m>=130.0
+                    val measurementWindow=!fuelQuarantined &&
+                        r!=null && l!=null && m!=null && r>=2000.0 &&
+                        r<=4500.0 && l>=55.0 && m>=130.0
                     val dt=(now-previousSampleTime).coerceAtLeast(1L)/1000.0
                     val rpmRate=if(r!=null && previousRpm!=null && previousSampleTime>0L && dt<=5.0) (r-previousRpm!!)/dt else null
                     val mapRate=if(m!=null && previousMap!=null && previousSampleTime>0L && dt<=5.0) (m-previousMap!!)/dt else null
@@ -1049,7 +1060,8 @@ class EnetLoggerService : Service() {
                         m!=null && m>=150.0 && (throttle==null || throttle>=25.0)
                     // STEADY v0.8 observes ordinary urban/cruise load independently
                     // from the old high-load RPM x MAP baseline (which is unchanged).
-                    val steadyWindow=autoMode && r!=null && l!=null && m!=null &&
+                    val steadyWindow=autoMode && !fuelQuarantined &&
+                        r!=null && l!=null && m!=null &&
                         r>=1300.0 && r<4500.0 && l in 15.0..68.0 && m in 88.0..150.0 &&
                         (speed==null || speed>=15.0)
                     val steadyAuto=steadyWindow && warm && rpmRate!=null && mapRate!=null &&
@@ -1075,7 +1087,7 @@ class EnetLoggerService : Service() {
                     // AUTO logger, even without a fuel test or baseline mode.
                     // Uses already-read values only; no DME reads or writes.
                     val targetEligible=steadyAuto && trimComparable &&
-                        !fuelDetector.pending && mixingKm<=0.0 &&
+                        !refuelStore.hasPending() && mixingKm<=0.0 &&
                         speed!=null && speed>=15.0 &&
                         knockStatus!=1 && (superKnock==null || superKnock==0) &&
                         knockMean!=null && knockMean>0.0 && ignSpread!=null &&
@@ -1105,7 +1117,7 @@ class EnetLoggerService : Service() {
                     steadyTargetSnapshot=steadyTargetTracker.snapshot(
                         steadyTargetTracker.advice(r,m,targetEligible,warm))
                     if(steadyWindow && warm && knockMean!=null && knockMean>0.0 &&
-                        !fuelDetector.pending && mixingKm<=0.0 &&
+                        !refuelStore.hasPending() && mixingKm<=0.0 &&
                         r!=null && m!=null && l!=null && i!=null && coolant!=null) {
                         val coarseCell=OctaneCalibration.steadyCell(r,m)
                         val fineCell=OctaneCalibration.fineSteadyCell(r,m,l,i,coolant)
@@ -1162,7 +1174,7 @@ class EnetLoggerService : Service() {
                         prefs.getBoolean(GuidedFuelTest.PREF_ACTIVE,false) &&
                         prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)==fuelSessionId
                     if(autoMode && (baselineRecording || guidedRecording) &&
-                        !fuelDetector.pending && mixingKm<=0.0 &&
+                        !refuelStore.hasPending() && mixingKm<=0.0 &&
                         warm && trimComparable && speed!=null && speed>=15.0 &&
                         knockMean!=null && knockMean>0.0 && ignSpread!=null &&
                         knockStatus!=1 && (superKnock==null || superKnock==0) &&
@@ -1283,7 +1295,7 @@ class EnetLoggerService : Service() {
                         }
                     }
                     val b95=if(measurementWindow) baseline95(r,m) else null
-                    val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && !fuelDetector.pending && mixingKm<=0.0 && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5))) knockMean/b95.v else null
+                    val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && !refuelStore.hasPending() && mixingKm<=0.0 && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5))) knockMean/b95.v else null
                     if(autoMode && measurementWindow && ratio95!=null) lastQualified=now
                     if(captureActive && measurementWindow && ratio95!=null && (!autoMode || now-lastAutoAcceptedTime>=1200L)) {
                         if(autoMode) {
@@ -1343,7 +1355,7 @@ class EnetLoggerService : Service() {
                         OctaneCalibration.experimentalScore(accelV08Sum/accelV08Weight) else null
                     val highRpmMean=if(highRpmPoints>0) highRpmRatioSum/highRpmPoints else null
                     val highRpmBaselineAvg=if(highRpmPoints>0) highRpmBaselineSum.toDouble()/highRpmPoints else null
-                    val resultState=when { mixingKm>0.0 -> "MIXING"; fuelDetector.pending -> "REFUEL CHECK"; sessionConfidence<60 -> "COLLECTING"; sessionScore==null -> "COLLECTING"; sessionScore>=95.0 -> "NORMAL"; sessionScore>=92.0 -> "BORDERLINE"; else -> "BELOW BASELINE" }
+                    val resultState=when { refuelStore.hasPending() -> "REFUEL CHECK"; mixingKm>0.0 -> "MIXING"; sessionConfidence<60 -> "COLLECTING"; sessionScore==null -> "COLLECTING"; sessionScore>=95.0 -> "NORMAL"; sessionScore>=92.0 -> "BORDERLINE"; else -> "BELOW BASELINE" }
                     // Heartbeat is written regardless of captureActive. Keep measurement
                     // CSV unchanged, but make short connection tests analyzable.
                     if(now-lastTelemetryTime>=2500L) {
@@ -1352,7 +1364,7 @@ class EnetLoggerService : Service() {
                             stft1,ltft1,a)
                         lastTelemetryTime=now
                     }
-                    if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns,oil?:"",if(autoMode)"AUTO" else "TEST",coverageBins.size,speed?:"",slowFuel?:"",fuelSessionId,drivePhase,steadyPoints,accelPoints,steadyScore?:"",accelScore?:"",if(fuelDetector.pending)1 else 0,"%.2f".format(java.util.Locale.US,mixingKm),steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,highRpmMean?:"",highRpmPoints,highRpmOver120,highRpmBaselineAvg?:"",acceptedAutoSegments.size,
+                    if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns,oil?:"",if(autoMode)"AUTO" else "TEST",coverageBins.size,speed?:"",slowFuel?:"",fuelSessionId,drivePhase,steadyPoints,accelPoints,steadyScore?:"",accelScore?:"",if(refuelStore.hasPending())1 else 0,"%.2f".format(java.util.Locale.US,mixingKm),steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,highRpmMean?:"",highRpmPoints,highRpmOver120,highRpmBaselineAvg?:"",acceptedAutoSegments.size,
                         steadySurveyPoints,steadySurveyCells.size,accelV08Score?:"",accelV08Points,
                         OctaneCalibration.VERSION,steadyRef?.knockMeanVms?:"",accelRef?.knockMeanVms?:"",
                         ltft1?:"",combinedTrim?:"",a?:"",lastFineCell,
