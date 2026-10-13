@@ -51,11 +51,23 @@ class RamMemoryProtocolTest {
         }
     }
 
-    @Test fun vehicleRequestIsDisabledUntilVerifiedSoftwareProfileExists() {
-        assertFalse(codec.liveProfileAvailable())
-        assertNull(codec.approvedVehicleRequest("SYNTHETIC","RPM"))
+    @Test fun onlyExactFirmwareMatchedRpmLocationMayBeRequested() {
+        assertTrue(codec.liveProfileAvailable())
+        val expected=byteArrayOf(0x23,0x14,0x60,0,0x3B,0x64,0x02)
+        assertArrayEquals(expected,codec.approvedVehicleRequest(
+            codec.APPROVED_A2L,codec.RPM_SIGNAL))
+        assertEquals("00005D55-070.060.007",codec.APPROVED_SWFL)
+        assertNull(codec.approvedVehicleRequest("SYNTHETIC",codec.RPM_SIGNAL))
         assertNull(codec.approvedVehicleRequest("","RPM"))
         assertNull(codec.approvedVehicleRequest("known DID 4A37","RPM"))
+        assertNull(codec.approvedVehicleRequest(codec.APPROVED_A2L,"Knock"))
+    }
+
+    @Test fun littleEndianSignedNkwDecoderRejectsOutOfRange() {
+        assertEquals(750,codec.decodeNkwRpm(byteArrayOf(0xEE.toByte(),0x02)))
+        assertEquals(0,codec.decodeNkwRpm(byteArrayOf(0,0)))
+        assertNull(codec.decodeNkwRpm(byteArrayOf(0xFF.toByte(),0xFF.toByte())))
+        assertNull(codec.decodeNkwRpm(byteArrayOf(0xFF.toByte())))
     }
 
     @Test fun offlineFixtureProducesValidResponseWithoutAccessingTransport() {
