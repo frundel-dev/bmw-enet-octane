@@ -1234,10 +1234,12 @@ class MainActivity : Activity() {
 
     private fun maybeOfferStationaryRefuel() {
         val pending=refuelStore.pending()?:return
-        if(!canConfirmRefuelNow() || presentedRefuelId==pending.id ||
-            isFinishing || isDestroyed ||
-            (EnetLoggerService.isLoggerActive &&
-                (stoppedSinceMs<=0L || SystemClock.elapsedRealtime()-stoppedSinceMs<15000L)))
+        // Without live DME speed, never infer the car is stationary:
+        // keep a persistent banner and wait for a deliberate user action.
+        if(!EnetLoggerService.isLoggerActive || !canConfirmRefuelNow() ||
+            presentedRefuelId==pending.id || isFinishing || isDestroyed ||
+            stoppedSinceMs<=0L ||
+            SystemClock.elapsedRealtime()-stoppedSinceMs<15000L)
             return
         presentedRefuelId=pending.id
         main.post {
