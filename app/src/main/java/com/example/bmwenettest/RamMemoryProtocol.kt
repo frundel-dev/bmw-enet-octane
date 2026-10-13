@@ -64,6 +64,22 @@ internal object RamMemoryProtocol {
         return encode(location.address,location.addressBytes,location.sizeBytes)
     }
 
+    /** Fail closed when OBD speed or reference RPM cannot confirm safe conditions. */
+    fun vehicleStationary(obdSpeedData:ByteArray):Boolean =
+        obdSpeedData.size==1 && (obdSpeedData[0].toInt() and 0xFF)==0
+
+    fun parkedIdleRpm(rpm:Double):Boolean =
+        rpm.isFinite() && rpm in 450.0..1800.0
+
+    fun matchesObdRpm(before:Double,after:Double,ramRpm:Int):Boolean {
+        if(!parkedIdleRpm(before) || !parkedIdleRpm(after) ||
+            ramRpm !in 0..10000)return false
+        val low=minOf(before,after)
+        val high=maxOf(before,after)
+        return (high-low)<=120.0 &&
+            ramRpm.toDouble() in (low-100.0)..(high+100.0)
+    }
+
     /** Format identifier: high nibble size-length, low nibble address-length. */
     fun encode(address: Long, addressBytes: Int, sizeBytes: Int): ByteArray {
         require(addressBytes in 1..4) { "Unsupported memory address width" }
