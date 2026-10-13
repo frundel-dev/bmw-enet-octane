@@ -14,6 +14,20 @@ internal object Octane2UiState {
     data class Guidance(val heading:String,val instructions:String,
                         val nextTarget:Int,val allCovered:Boolean)
 
+    /**
+     * Preserve historical SteadyTargets CSV on disk, but never credit a new
+     * user-defined refuel with accepted rows from an older fuel test sharing
+     * the same underlying DME fuel-session identifier.
+     */
+    fun recordsForCurrentRefuel(records:Iterable<SteadyTargets.Record>,
+                                fuelSessionId:Int,testStartMs:Long,
+                                testFuelSessionId:Int):List<SteadyTargets.Record> {
+        val cutoff=if(testStartMs>0L && testFuelSessionId==fuelSessionId)
+            testStartMs else 0L
+        return records.filter { it.fuelSessionId==fuelSessionId &&
+            it.wallTimeMs>=cutoff }
+    }
+
     fun target(counts:IntArray?):Target {
         if(counts==null || counts.size<5)return Target(0,0,0,0,Stage.NOT_STARTED)
         val points=counts[0].coerceAtLeast(0)
