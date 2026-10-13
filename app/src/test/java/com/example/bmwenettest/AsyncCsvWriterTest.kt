@@ -20,6 +20,7 @@ class AsyncCsvWriterTest {
         assertEquals(1000,lines.size)
         lines.forEachIndexed { i,line -> assertEquals("$i,measurement",line) }
         dir.deleteRecursively()
+        Unit
     }
 
     @Test fun separateFilesHaveIndependentOrderedAppendStreams()=runBlocking {
@@ -35,6 +36,7 @@ class AsyncCsvWriterTest {
         assertEquals((0 until 75).map{"old-$it"},first.readLines())
         assertEquals((0 until 75).map{"new-$it"},second.readLines())
         dir.deleteRecursively()
+        Unit
     }
 
     @Test fun writeFailureIsReportedRatherThanSilentlyDropped()=runBlocking {
@@ -47,5 +49,6 @@ class AsyncCsvWriterTest {
         assertEquals(1,errors.size)
         assertTrue(errors[0].contains("file.csv"))
         dir.deleteRecursively()
+        Unit
     }
 }
