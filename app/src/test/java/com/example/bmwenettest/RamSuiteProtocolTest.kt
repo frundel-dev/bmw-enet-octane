@@ -15,6 +15,8 @@ class RamSuiteProtocolTest {
         assertEquals(RamSuiteProtocol.Stage.SIGNAL,p.nextStage(emptySet()))
         assertTrue(p.allowed(RamSuiteProtocol.Stage.RPM_DYNAMICS,setOf(7)))
         assertFalse(p.allowed(RamSuiteProtocol.Stage.SEQUENTIAL,setOf(7)))
+        assertFalse(p.allowed(RamSuiteProtocol.Stage.SOAK,setOf(11)))
+        assertTrue(p.allowed(RamSuiteProtocol.Stage.SOAK,(7..11).toSet()))
         assertEquals(RamSuiteProtocol.Stage.SEQUENTIAL,p.nextStage(setOf(7,8)))
         assertEquals(null,p.nextStage((7..12).toSet()))
     }
