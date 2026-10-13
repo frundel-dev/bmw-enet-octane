@@ -717,8 +717,7 @@ class MainActivity : Activity() {
         if(!::homeFuelTitle.isInitialized)return
         val pref=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val id=pref.getLong(GuidedFuelTest.PREF_ID,0L)
-        val hasFuel=id>0L && pref.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)==
-            pref.getInt("fuel_session_id",1)
+        val hasFuel=refuelStore.hasCurrentFuel()
         val grade=pref.getString(GuidedFuelTest.PREF_GRADE,"Топливо")?:"Топливо"
         val station=pref.getString(GuidedFuelTest.PREF_STATION,"")?:""
         homeFuelTitle.text=if(hasFuel)grade else "Топливо не выбрано"
@@ -1410,11 +1409,17 @@ class MainActivity : Activity() {
             return
         }
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
-        val options=GuidedFuelTest.selectableGrades
         val gradeValue=prefs.getString(RefuelSessionStore.PREF_META_GRADE_PREFIX+id,
             if(prefs.getLong(GuidedFuelTest.PREF_ID,0L)==id)
                 prefs.getString(GuidedFuelTest.PREF_GRADE,"АИ-95") else "АИ-95")
             ?:"АИ-95"
+        // Historical AI-92/Другое values remain selectable only when they
+        // are already stored in this record, so saving an unchanged edit
+        // cannot silently relabel legacy diagnostics.
+        val options=(GuidedFuelTest.selectableGrades+
+            listOf(gradeValue).filter{
+                it in GuidedFuelTest.grades && it !in GuidedFuelTest.selectableGrades
+            }).distinct()
         val stationValue=prefs.getString(RefuelSessionStore.PREF_META_STATION_PREFIX+id,
             if(prefs.getLong(GuidedFuelTest.PREF_ID,0L)==id)
                 prefs.getString(GuidedFuelTest.PREF_STATION,"") else "")?:""
