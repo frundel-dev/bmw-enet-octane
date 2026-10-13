@@ -376,14 +376,160 @@ class MainActivity : Activity() {
         guidedPanel.addView(guidedButtons)
         dashboard=OctaneDashboard(this)
         status=dashboard.connectionView
-        val scroll=ScrollView(this).apply {
-            setFillViewport(true)
-            addView(dashboard)
+        // Use the original, live-connected views; only their hierarchy
+        // changes. The diagnostic service, receiver and fuel storage remain.
+        root.removeView(controls)
+        root.removeView(quickPanel)
+        root.removeView(targetPanel)
+        quickPanel.removeView(octane2LiveStatus)
+        quickPanel.removeView(octane2LambdaStatus)
+        fun smallText(t:String,size:Float=13f,color:Int=Color.WHITE)=TextView(this).apply {
+            text=t;textSize=size;setTextColor(color);includeFontPadding=false
         }
-        root.addView(scroll,LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,0,1f
-        ))
+        fun card(title:String)=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(12),dp(10),dp(12),dp(11))
+            background=android.graphics.drawable.GradientDrawable().apply {
+                setColor(surface);cornerRadius=dp(12).toFloat()
+                setStroke(dp(1),Color.rgb(45,62,83))
+            }
+            addView(smallText(title,11f,tertiary))
+        }
+        fun section()=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(0,dp(4),0,dp(12))
+        }
+        fun addCard(parent:LinearLayout,child:android.view.View) {
+            parent.addView(child,LinearLayout.LayoutParams(-1,-2).apply {
+                bottomMargin=dp(9)
+            })
+        }
+        fun action(text:String,block:()->Unit)=Button(this).apply {
+            this.text=text;isAllCaps=false;textSize=12f;minHeight=dp(44)
+            backgroundTintList=ColorStateList.valueOf(Color.rgb(41,60,84))
+            setOnClickListener{block()}
+        }
+        val home=section()
+        val fuelCard=card("ТЕКУЩАЯ ЗАПРАВКА")
+        homeFuelTitle=smallText("Топливо не выбрано",19f)
+        homeFuelMeta=smallText("Заправка не выбрана",12f,tertiary)
+        fuelCard.addView(homeFuelTitle)
+        fuelCard.addView(homeFuelMeta)
+        fuelCard.addView(action("НОВАЯ ЗАПРАВКА"){showNewFuelTestDialog()})
+        addCard(home,fuelCard)
+
+        val networkCard=card("СВЯЗЬ С DME И СБОР")
+        homeConnection=smallText("Отключено • ENET / VXSCAN",13f,accentBlue)
+        homeCaptureState=smallText("Диагностика остановлена",12f,tertiary)
+        networkCard.addView(homeConnection)
+        networkCard.addView(homeCaptureState)
+        addCard(home,networkCard)
+
+        // Measured coverage remains the canonical persisted SteadyTargets
+        // sample/segment/trip counter; never infer it from UI timers.
+        targetPanel.addView(smallText(
+            "Критерий: 24 точки, 4 независимых участка, 2 запуска LOGGER на область.",
+            10f,tertiary))
+        homeTargetAState=smallText("2500–2999: не начато",11f,tertiary)
+        homeTargetBState=smallText("3000–3499: не начато",11f,tertiary)
+        targetPanel.addView(homeTargetAState)
+        targetPanel.addView(homeTargetBState)
+        addCard(home,targetPanel)
+
+        val guidance=card("СЛЕДУЮЩИЙ РЕЖИМ")
+        homeNextMode=smallText(
+            "STEADY • 2500–2999 об/мин\nMAP 105–129 кПа",16f,Color.WHITE)
+        guidance.addView(homeNextMode)
+        addCard(home,guidance)
+        addCard(home,quickPanel)
+        addCard(home,controls)
+
+        val refuels=section()
+        val refuelCard=card("ЗАПРАВКИ")
+        refuelCard.addView(smallText(
+            "Текущая заправка, её история и субъективная оценка — только здесь.",
+            13f,tertiary))
+        refuelCard.addView(action("СОЗДАТЬ ЗАПРАВКУ"){showNewFuelTestDialog()})
+        refuelCard.addView(action("ТЕКУЩАЯ ЗАПРАВКА"){showFuelTestOverview()})
+        refuelCard.addView(action("ИСТОРИЯ ЗАПРАВОК"){showGuidedFuelHistory()})
+        addCard(refuels,refuelCard)
+
+        val analysis=section()
+        val analysisCard=card("АНАЛИЗ ТОПЛИВА")
+        analysisSummary=smallText(
+            "2.0: недостаточно данных. Научно валидированного Fuel Score пока нет.",
+            14f,Color.WHITE)
+        analysisCard.addView(analysisSummary)
+        analysisCard.addView(action("КАРТА RPM × LOAD • STEADY / ACCEL"){
+            showGuidedCoverageMap()
+        })
+        analysisCard.addView(action("ПРЕДВАРИТЕЛЬНЫЙ АНАЛИЗ ЗАПРАВКИ"){
+            showGuidedResult()
+        })
+        analysisCard.addView(action("СРАВНИТЬ 1.7 ↔ 2.0 И ЭКСПОРТИРОВАТЬ CSV"){
+            showOctane2ComparisonFiles()
+        })
+        addCard(analysis,analysisCard)
+
+        val diagnostics=section()
+        val diagnosticCard=card("ДИАГНОСТИЧЕСКИЕ ИСТОЧНИКИ")
+        diagnosticSummary=smallText("Нет свежих данных • RAM / DID / OBD",12f,tertiary)
+        diagnosticCard.addView(diagnosticSummary)
+        diagnosticCard.addView(octane2LiveStatus)
+        diagnosticCard.addView(octane2LambdaStatus)
+        addCard(diagnostics,diagnosticCard)
+        diagnostics.addView(dashboard)
+
+        val settings=section()
+        val settingsCard=card("НАСТРОЙКИ")
+        settingsCard.addView(smallText(
+            "Параметры диагностики и резервные режимы. Изменения RAM/SWFL применяются после остановки сбора.",
+            12f,tertiary))
+        settingsCard.addView(action("RAM / SWFL • ПРОФИЛЬ"){showOctane2RamProfile()})
+        settingsCard.addView(action("РЕЖИМ ОПРОСА DME"){showPollingModeDialog()})
+        settingsCard.addView(action("OFFLINE REPLAY"){showObservationReplay()})
+        settingsCard.addView(action("ДОПОЛНИТЕЛЬНО • ДИАГНОСТИКА / ЭКСПОРТ"){
+            showAdditionalMenu()
+        })
+        addCard(settings,settingsCard)
+
+        tabPages=listOf(home,refuels,analysis,diagnostics,settings).map { section ->
+            ScrollView(this).apply {
+                isFillViewport=true
+                isVerticalScrollBarEnabled=false
+                addView(section)
+            }
+        }
+        val holder=android.widget.FrameLayout(this)
+        tabPages.forEach { view ->
+            holder.addView(view,android.widget.FrameLayout.LayoutParams(-1,-1))
+        }
+        root.addView(holder,LinearLayout.LayoutParams(-1,0,1f))
+        val nav=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            background=android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.rgb(18,29,45))
+                setStroke(dp(1),Color.rgb(45,62,83))
+            }
+        }
+        navButtons=listOf("Главная","Заправки","Анализ","Диагностика","Настройки")
+            .mapIndexed{index,label ->
+                TextView(this).apply {
+                    text=label;textSize=if(index==3)10f else 11f
+                    gravity=Gravity.CENTER
+                    isClickable=true
+                    contentDescription="Раздел: $label"
+                    setOnClickListener{selectTab(index)}
+                    nav.addView(this,LinearLayout.LayoutParams(0,dp(52),1f))
+                }
+            }
+        root.addView(nav,LinearLayout.LayoutParams(-1,dp(52)))
         setContentView(root)
+        selectTab(savedInstanceState?.getInt("octane2_tab",0)?:0)
+        dashboard.setLogging(logging)
+        if(logging)startButton.backgroundTintList=
+            ColorStateList.valueOf(Color.rgb(255,179,126))
+        renderHomeState()
         statusReceiver=object:BroadcastReceiver() {
             override fun onReceive(context:Context?,intent:Intent?) {
                 if(intent?.action==EnetLoggerService.ACTION_OCTANE2) {
