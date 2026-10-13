@@ -164,6 +164,12 @@ internal class RefuelSessionStore private constructor(
                 .remove(PREF_PENDING_FROM).remove(PREF_PENDING_TO)
                 .remove(PREF_PENDING_SESSION).remove(PREF_WAS_ACTIVE)
                 .remove(PREF_WAS_BASELINE)
+            if(firstSelection) {
+                // The old cached PID 0x2F level may belong to an earlier
+                // installation/fill. Re-baseline the *detector cache* from
+                // fresh reads, without deleting any raw diagnostic records.
+                edit.remove("last_fuel_pct")
+            }
             if(pending==null && !firstSelection) {
                 edit.putLong(PREF_LAST_MANUAL_AT,wall)
                 val fuel=prefs.getFloat("last_fuel_pct",Float.NaN)
