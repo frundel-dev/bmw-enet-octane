@@ -13,7 +13,10 @@ import java.util.Locale
  * Files written by older releases remain untouched. Event CSV is audit only;
  * preferences are the durable source for pending events and active session.
  */
-internal class RefuelSessionStore(context:Context) {
+internal class RefuelSessionStore private constructor(
+    private val prefs:SharedPreferences,private val eventFile:File,
+    @Suppress("UNUSED_PARAMETER") unused:Boolean
+) {
     companion object {
         private val lock=Any()
         const val MIXING_DISTANCE_KM=5f // heuristic quarantine, NOT proof of blending
@@ -40,12 +43,6 @@ internal class RefuelSessionStore(context:Context) {
                        val to:Double?,val oldSession:Int)
     data class Confirmed(val id:Long,val sessionId:Int,val wasPending:Boolean)
     internal constructor(prefs:SharedPreferences,eventFile:File):this(prefs,eventFile,true)
-    private constructor(prefs:SharedPreferences,eventFile:File,unused:Boolean) {
-        this.prefs=prefs
-        this.eventFile=eventFile
-    }
-    private val prefs:SharedPreferences
-    private val eventFile:File
     constructor(context:Context):this(context.getSharedPreferences("bmw_native",Context.MODE_PRIVATE),
         File(context.getExternalFilesDir(null)?:context.filesDir,
             "bmw_refuel_decisions_v2.csv"),true)
