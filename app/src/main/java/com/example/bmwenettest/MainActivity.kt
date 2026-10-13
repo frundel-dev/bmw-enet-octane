@@ -467,19 +467,11 @@ class MainActivity : Activity() {
             prefs.getBoolean(RamSuiteProtocol.VERSION+"_"+it.number,false)
         }.map { it.number }.toSet()
         val entries=RamSuiteProtocol.Stage.entries
-        val labels=entries.map { item ->
-            val status=when {
-                item.number in completed -> "✓ Технически завершён"
-                RamSuiteProtocol.allowed(item,completed) -> "Можно запускать"
-                else -> "Заблокирован предыдущим этапом"
-            }
-            "LAB ${item.number} • ${item.label}\n$status"
-        }.toTypedArray()
-        AlertDialog.Builder(this).setTitle("RAM LAB Suite 1.0 • 6 этапов")
-            .setMessage("В одной APK — шесть независимых испытаний. "+
-                "Результаты сохраняются отдельно. Следующий этап открывается "+
-                "только после корректного завершения предыдущего; "+
-                "технический PASS не подтверждает физический смысл новых сигналов.")
+        val labels=RamSuiteProtocol.menuItems(completed)
+        // Never combine AlertDialog.setMessage and setItems: Android
+        // renders the message instead of the stage list.
+        AlertDialog.Builder(this)
+            .setTitle("RAM LAB Suite 1.0 • выбери этап")
             .setItems(labels) { _,selected ->
                 val item=entries[selected]
                 if(!RamSuiteProtocol.allowed(item,completed)) {
