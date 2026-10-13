@@ -273,6 +273,220 @@ internal class DmeHistoryReader(private val context:Context) {
         return Outcome(file,summary,successful)
     }
 
+
+    /**
+     * RAM LAB 5: strict, parked-only dynamic DID experiment.
+     * No session change / security access. At most one 2C-02 definition,
+     * six 22-F3EF reads and one targeted 2C-03 cleanup in the same socket.
+     * Never reuse a socket after an ambiguous/failed HSFZ transaction.
+     */
+    fun collectRamDynamicDid(cancel:()->Boolean,progress:(String)->Unit):Outcome {
+        verifyAllowed(cancel)
+        val dir=context.getExternalFilesDir(null) ?: context.filesDir
+        val file=File(dir,"bmw_ram_dynamic_v5_${System.currentTimeMillis()}.csv")
+        var problem:String?=null
+        var confirmedCleanup=false
+        var created=false
+        var readCount=0
+        var benchmarkRpm:Int?=null
+        var beforeRpm:Double?=null
+        var afterRpm:Double?=null
+        val sampleDurations=ArrayList<Long>()
+        var directDuration:Long?=null
+        var obdDuration:Long?=null
+        var transport=""
+        var peer=""
+        var cleanupState="NOT_NEEDED"
+        file.bufferedWriter().use { writer ->
+            writer.appendLine("wall_time_ms,stage,status,elapsed_ms,request_hex,response_hex,decoded,transport,peer,profile")
+            fun record(stage:String,status:String,duration:Long?,request:ByteArray,
+                       response:ByteArray,decoded:Any?="") {
+                writer.appendLine(DmeHistoryProtocol.csv(
+                    System.currentTimeMillis(),stage,status,duration ?: "",
+                    DmeHistoryProtocol.hex(request),DmeHistoryProtocol.hex(response),
+                    decoded,transport,peer,
+                    RamMemoryProtocol.APPROVED_A2L+"/"+RamMemoryProtocol.APPROVED_SWFL))
+                writer.flush()
+            }
+            try {
+                if(!RamDynamicDidProtocol.sourceMatches())
+                    throw IOException("RPM source mapping does not match approved SWFL")
+                val ramRequest=RamMemoryProtocol.approvedVehicleRequest(
+                    RamMemoryProtocol.APPROVED_A2L,RamMemoryProtocol.RPM_SIGNAL)
+                    ?: throw IOException("RAM location is not approved")
+                progress("RAM LAB 5: подключение к DME…")
+                val (target,socket)=connect(cancel)
+                transport=target.transport
+                peer=target.host
+                socket.use { conn ->
+                    var connectionSynchronized=true
+                    var definitionMayExist=false
+                    val deadline=SystemClock.elapsedRealtime()+RamDynamicDidProtocol.MAX_EXPERIMENT_MS
+                    // Do not stop receiving a reply because the user tapped
+                    // Cancel. User cancellation is checked BETWEEN requests.
+                    // An interrupted worker or a newly active logger still aborts.
+                    val criticalCancel:()->Boolean = {
+                        Thread.currentThread().isInterrupted || EnetLoggerService.isLoggerActive
+                    }
+                    fun transfer(stage:String,req:ByteArray,
+                                 expected:(ByteArray)->Boolean,
+                                 duringDynamic:Boolean=false):Reply {
+                        if(SystemClock.elapsedRealtime()>deadline &&
+                            stage!="CLEAR_DDDI")throw IOException("RAM LAB 5 overall deadline reached")
+                        if(!duringDynamic)verifyAllowed(cancel)
+                        val start=SystemClock.elapsedRealtime()
+                        val reply=try {
+                            transact(conn,req,expected,
+                                if(duringDynamic)criticalCancel else cancel)
+                        }catch(e:Exception) {
+                            // After a timeout/truncated/unmatched response,
+                            // an unread reply may still be in the TCP stream.
+                            connectionSynchronized=false
+                            throw e
+                        }
+                        val elapsed=SystemClock.elapsedRealtime()-start
+                        record(stage,reply.status,elapsed,req,reply.payload)
+                        when(stage) {
+                            "DIRECT_RAM"->directDuration=elapsed
+                            "OBD_RPM_BEFORE"->obdDuration=elapsed
+                            "DYNAMIC_READ"->sampleDurations.add(elapsed)
+                        }
+                        return reply
+                    }
+                    fun obd(id:Int,stage:String,duringDynamic:Boolean=false):ByteArray {
+                        val q=byteArrayOf(0x01,id.toByte())
+                        val reply=transfer(stage,q,{
+                            DiagnosticResponse.obd(it,id)!=null
+                        },duringDynamic)
+                        val data=if(reply.status=="OK")
+                            DiagnosticResponse.obd(reply.payload,id) else null
+                        if(data==null)throw IOException("$stage: no valid OBD response")
+                        return data
+                    }
+                    fun rpm(data:ByteArray):Double {
+                        if(data.size!=2)throw IOException("OBD RPM length mismatch")
+                        return (((data[0].toInt() and 255) shl 8) or
+                            (data[1].toInt() and 255))/4.0
+                    }
+                    try {
+                        progress("RAM LAB 5: проверка стоянки и RPM…")
+                        if(!RamMemoryProtocol.vehicleStationary(obd(0x0D,"OBD_SPEED_BEFORE")))
+                            throw IOException("Vehicle speed is not zero")
+                        beforeRpm=rpm(obd(0x0C,"OBD_RPM_BEFORE"))
+                        if(!RamMemoryProtocol.parkedIdleRpm(beforeRpm!!))
+                            throw IOException("Engine must be at stable idle")
+                        verifyAllowed(cancel)
+                        progress("RAM LAB 5: проверка доступности F3EF…")
+                        val probe=RamDynamicDidProtocol.preflightRequest()
+                        val probeReply=transfer("DDDI_COLLISION_CHECK",probe,{
+                            it.size>=3 && it[0]==0x62.toByte() &&
+                                it[1]==0xF3.toByte() && it[2]==0xEF.toByte()
+                        })
+                        if(!RamDynamicDidProtocol.isVacantRead(probeReply.payload))
+                            throw IOException("F3EF not confirmed vacant; NO DDDI created")
+                        verifyAllowed(cancel)
+                        progress("RAM LAB 5: контрольное чтение Nkw по 0x23…")
+                        val direct=transfer("DIRECT_RAM",ramRequest,{
+                            RamMemoryProtocol.decodePositive(it,2)!=null
+                        })
+                        benchmarkRpm=if(direct.status=="OK")
+                            RamMemoryProtocol.decodePositive(direct.payload,2)
+                                ?.let(RamMemoryProtocol::decodeNkwRpm) else null
+                        if(benchmarkRpm==null ||
+                            kotlin.math.abs(benchmarkRpm!!-beforeRpm!!)>100)
+                            throw IOException("Direct RAM RPM not confirmed; no 0x2C request")
+                        verifyAllowed(cancel)
+                        progress("RAM LAB 5: одно создание динамического DID F3EF…")
+                        definitionMayExist=true // request may reach ECU despite timeout
+                        val defined=transfer("DEFINE_DDDI",RamDynamicDidProtocol.defineRequest(),{
+                            RamDynamicDidProtocol.defineResponseMatches(it)
+                        },duringDynamic=true)
+                        if(defined.status!="OK") {
+                            definitionMayExist=false // explicit NRC; no definition
+                            throw IOException("ECU refused 0x2C: ${defined.status}; no retries")
+                        }
+                        created=true
+                        progress("RAM LAB 5: чтение RPM через F3EF…")
+                        for(index in 0 until RamDynamicDidProtocol.SAMPLES) {
+                            verifyAllowed(cancel) // between frames only
+                            val rr=transfer("DYNAMIC_READ",RamDynamicDidProtocol.readRequest(),{
+                                RamDynamicDidProtocol.readRpm(it)!=null
+                            },duringDynamic=true)
+                            val decoded=if(rr.status=="OK")
+                                RamDynamicDidProtocol.readRpm(rr.payload) else null
+                            if(decoded==null)
+                                throw IOException("Dynamic DID invalid or rejected at read ${index+1}")
+                            readCount++
+                            record("RPM_VALUE_${index+1}","VALID",null,
+                                byteArrayOf(),rr.payload,decoded)
+                            if(kotlin.math.abs(decoded-beforeRpm!!)>120)
+                                throw IOException("Dynamic RPM deviates from OBD reference")
+                        }
+                        verifyAllowed(cancel)
+                        progress("RAM LAB 5: контрольная проверка OBD RPM…")
+                        afterRpm=rpm(obd(0x0C,"OBD_RPM_AFTER",duringDynamic=true))
+                        if(!RamMemoryProtocol.parkedIdleRpm(afterRpm!!) ||
+                            !RamMemoryProtocol.matchesObdRpm(
+                                beforeRpm!!,afterRpm!!,benchmarkRpm!!))
+                            throw IOException("OBD drift/consistency check failed")
+                    } finally {
+                        // Always attempt targeted cleanup if 0x2C was accepted
+                        // and TCP framing is still synchronized. Ignore UI
+                        // cancellation for this one cleanup transaction.
+                        if(definitionMayExist) {
+                            if(connectionSynchronized) {
+                                try {
+                                    progress("RAM LAB 5: удаление только F3EF…")
+                                    val clear=transfer("CLEAR_DDDI",
+                                        RamDynamicDidProtocol.clearRequest(),{
+                                            RamDynamicDidProtocol.clearResponseMatches(it)
+                                        },duringDynamic=true)
+                                    confirmedCleanup=clear.status=="OK"
+                                    cleanupState=if(confirmedCleanup)"CONFIRMED"
+                                        else "REJECTED_${clear.status}"
+                                }catch(e:Exception) {
+                                    cleanupState="NOT_CONFIRMED_${e.javaClass.simpleName}"
+                                }
+                            } else cleanupState="NOT_CONFIRMED_TRANSPORT_DESYNC"
+                            record("CLEANUP_STATUS",cleanupState,null,
+                                byteArrayOf(),byteArrayOf(),
+                                if(created)"Definition was acknowledged" else
+                                    "Definition possibly sent without ACK")
+                        }
+                    }
+                }
+            }catch(e:Exception) {
+                problem="${e.javaClass.simpleName}: ${e.message ?: "unknown"}"
+                record("STOP","ERROR",null,byteArrayOf(),byteArrayOf(),problem)
+            }
+            record("SUMMARY",when {
+                confirmedCleanup && readCount==RamDynamicDidProtocol.SAMPLES &&
+                    problem==null -> "COMPLETE"
+                created && !confirmedCleanup -> "CLEANUP_UNCONFIRMED"
+                else -> "PARTIAL"
+            },null,byteArrayOf(),byteArrayOf(),
+                "reads=$readCount, direct_ms=$directDuration, obd_ms=$obdDuration, "+
+                "dynamic_ms=${sampleDurations.joinToString(";")}, "+
+                "rpm_direct=$benchmarkRpm, obd_before=$beforeRpm, obd_after=$afterRpm, "+
+                "cleanup=$cleanupState")
+        }
+        val successful=confirmedCleanup && problem==null &&
+            readCount==RamDynamicDidProtocol.SAMPLES
+        val summary=if(successful) {
+            val median=RamBatchBenchmarkProtocol.stats(sampleDurations)?.medianMs
+            "RAM LAB 5: F3EF прочитан $readCount раз, очистка подтверждена. "+
+                "Медиана динамического чтения $median мс; "+
+                "контрольный 0x23 $directDuration мс; OBD $obdDuration мс. "+
+                "Частота постоянного RAM Logging ещё не проверена."
+        }else "RAM LAB 5 завершён без подтверждения: ${problem ?: "недостаточно данных"}; "+
+            "DDDI cleanup=$cleanupState. Смотри CSV. "+
+            if(cleanupState.startsWith("NOT_CONFIRMED"))
+                "ОЧИСТКА НЕ ПОДТВЕРЖДЕНА: не повторять тест до анализа."
+            else "Не повторяй тест до анализа причин."
+        progress(summary)
+        return Outcome(file,summary,successful)
+    }
+
     fun collectRamReadiness(cancel:()->Boolean,progress:(String)->Unit):Outcome {
         verifyAllowed(cancel)
         val dir=context.getExternalFilesDir(null) ?: context.filesDir
