@@ -176,7 +176,17 @@ class EnetLoggerService : Service() {
                 "fast_sample_age_ms,rpm,load_pct,map_kpa_abs,speed_kmh,"+
                 "fast_hz,knock_valid,ignition_valid,note\n")
         }
-        pollingJob=pollingScope.launch { loop() }
+        pollingJob=pollingScope.launch { loop() }.also { job ->
+            // Completion runs only after loop() has drained all queued CSV
+            // writes. Also handles STOP before the coroutine gets scheduled.
+            job.invokeOnCompletion {
+                if(!running) {
+                    isLoggerActive=false
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+            }
+        }
     }
     private fun createSteadySurveyFile(fuelId:Int):File {
         val dir=getExternalFilesDir(null)?:filesDir
@@ -618,8 +628,8 @@ class EnetLoggerService : Service() {
                         connectionStage="FAST_TCP"
                         try {
                             val quick=network.socketFactory.createSocket()
-                            quick.tcpNoDelay=true
                             try {
+                                quick.tcpNoDelay=true
                                 quick.soTimeout=1800
                                 quick.connect(InetSocketAddress(rememberedIp,6801),1300)
                                 socket=quick; activeNet=network; transport=kind; gatewayIp=rememberedIp
@@ -1674,11 +1684,6 @@ class EnetLoggerService : Service() {
         if(observationJournal?.failed==true && !journalFailureNoted)
             connectionEvent("OBSERVATION_JOURNAL_FAILED",reconnects,
                 "FILE",connectionTransport,null,"Journal close/flush failed")
-        isLoggerActive=false
-        if(!running) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-        }
         }
         }
     }
