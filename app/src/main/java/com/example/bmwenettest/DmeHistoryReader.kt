@@ -273,6 +273,198 @@ internal class DmeHistoryReader(private val context:Context) {
         return Outcome(file,summary,successful)
     }
 
+
+    /**
+     * RAM LAB 6: bounded on-car performance comparison of the single RPM
+     * location already validated in RAM LAB 4 and normal OBD RPM.
+     * ONLY 0x23 and OBD 0x01, with one owned socket, strict parsing,
+     * 150 ms minimum pause between successive RPM reads in each block.
+     */
+    fun collectRamDirectBenchmark(cancel:()->Boolean,progress:(String)->Unit):Outcome {
+        verifyAllowed(cancel)
+        val dir=context.getExternalFilesDir(null) ?: context.filesDir
+        val file=File(dir,"bmw_ram_direct_v6_${System.currentTimeMillis()}.csv")
+        val ramTimes=ArrayList<Long>()
+        val obdTimes=ArrayList<Long>()
+        val ramRates=ArrayList<Double>()
+        val obdRates=ArrayList<Double>()
+        var problem:String?=null
+        var completed=false
+        var referenceRpm:Double?=null
+        var finalRpm:Double?=null
+        var transport=""
+        var peer=""
+        var activeStage="CONNECT"
+        var activeRequest=byteArrayOf()
+        file.bufferedWriter().use { writer ->
+            writer.appendLine(
+                "wall_time_ms,stage,round,block,sample,status,elapsed_ms,rpm,"+
+                "request_hex,response_hex,transport,peer,profile,detail")
+            fun row(stage:String,round:Int,block:Int,sample:Int,status:String,
+                    elapsed:Long?,rpm:Double?,request:ByteArray,response:ByteArray,
+                    detail:String="") {
+                writer.appendLine(DmeHistoryProtocol.csv(
+                    System.currentTimeMillis(),stage,round,block,sample,status,
+                    elapsed ?: "",rpm ?: "",DmeHistoryProtocol.hex(request),
+                    DmeHistoryProtocol.hex(response),transport,peer,
+                    RamMemoryProtocol.APPROVED_A2L+"/"+RamMemoryProtocol.APPROVED_SWFL,
+                    detail))
+                writer.flush()
+            }
+            try {
+                val ramReq=RamDirectBenchmarkProtocol.rpmRequest(
+                    RamDirectBenchmarkProtocol.Source.DIRECT_RAM)
+                val obdReq=RamDirectBenchmarkProtocol.rpmRequest(
+                    RamDirectBenchmarkProtocol.Source.OBD)
+                val speedReq=RamDirectBenchmarkProtocol.speedRequest()
+                progress("RAM LAB 6: поиск VXSCAN / ENET…")
+                val (target,socket)=connect(cancel)
+                transport=target.transport
+                peer=target.host
+                socket.use { conn ->
+                    val deadline=SystemClock.elapsedRealtime()+
+                        RamDirectBenchmarkProtocol.MAX_RUN_MS
+
+                    fun transfer(request:ByteArray,stage:String,round:Int,
+                                 block:Int,sample:Int,expected:(ByteArray)->Boolean):Reply {
+                        verifyAllowed(cancel)
+                        if(SystemClock.elapsedRealtime()>=deadline)
+                            throw IOException("RAM LAB 6 overall time limit reached")
+                        activeStage=stage
+                        activeRequest=request
+                        val started=SystemClock.elapsedRealtime()
+                        val response=transact(conn,request,expected,cancel)
+                        val elapsed=SystemClock.elapsedRealtime()-started
+                        val rpm=if(stage=="RAM_SAMPLE")
+                            RamDirectBenchmarkProtocol.decodeRpm(
+                                RamDirectBenchmarkProtocol.Source.DIRECT_RAM,response.payload)
+                            else if(stage=="OBD_SAMPLE"||stage=="OBD_BASELINE"||
+                                stage=="OBD_FINAL")
+                                RamDirectBenchmarkProtocol.decodeRpm(
+                                    RamDirectBenchmarkProtocol.Source.OBD,response.payload)
+                            else null
+                        row(stage,round,block,sample,response.status,elapsed,
+                            rpm,request,response.payload)
+                        activeStage=""
+                        activeRequest=byteArrayOf()
+                        if(response.status!="OK")
+                            throw IOException("$stage: ECU refused request: ${response.status}")
+                        return response
+                    }
+
+                    fun stationaryGate(round:Int) {
+                        val r=transfer(speedReq,"SPEED_GATE",round,0,0,
+                            { DiagnosticResponse.obd(it,0x0D)!=null })
+                        val speed=DiagnosticResponse.obd(r.payload,0x0D)
+                        if(speed==null || !RamMemoryProtocol.vehicleStationary(speed))
+                            throw IOException("Vehicle not confirmed stationary")
+                    }
+
+                    stationaryGate(0)
+                    progress("RAM LAB 6: проверка стабильных оборотов холостого хода…")
+                    val initial=transfer(obdReq,"OBD_BASELINE",0,0,0,
+                        { DiagnosticResponse.obd(it,0x0C)!=null })
+                    referenceRpm=RamDirectBenchmarkProtocol.decodeRpm(
+                        RamDirectBenchmarkProtocol.Source.OBD,initial.payload)
+                    if(referenceRpm==null ||
+                        !RamMemoryProtocol.parkedIdleRpm(referenceRpm!!))
+                        throw IOException("Stable engine idle (450–1800 RPM) required")
+
+                    for(round in 0 until RamDirectBenchmarkProtocol.ROUNDS) {
+                        stationaryGate(round+1)
+                        for((blockNo,source) in RamDirectBenchmarkProtocol.order(round)
+                            .withIndex()) {
+                            progress("RAM LAB 6: серия ${round+1}/"+
+                                "${RamDirectBenchmarkProtocol.ROUNDS}, "+
+                                if(source==RamDirectBenchmarkProtocol.Source.DIRECT_RAM)
+                                    "прямой RAM 0x23…" else "OBD RPM…")
+                            val request=if(source==RamDirectBenchmarkProtocol.Source.DIRECT_RAM)
+                                ramReq else obdReq
+                            val blockStart=SystemClock.elapsedRealtime()
+                            for(index in 0 until RamDirectBenchmarkProtocol.SAMPLES_PER_BLOCK) {
+                                verifyAllowed(cancel)
+                                val stage=if(source==RamDirectBenchmarkProtocol.Source.DIRECT_RAM)
+                                    "RAM_SAMPLE" else "OBD_SAMPLE"
+                                val started=SystemClock.elapsedRealtime()
+                                val r=transfer(request,stage,round+1,blockNo+1,index+1,
+                                    { bytes ->
+                                        RamDirectBenchmarkProtocol.decodeRpm(source,bytes)!=null
+                                    })
+                                val duration=SystemClock.elapsedRealtime()-started
+                                val rpm=RamDirectBenchmarkProtocol.decodeRpm(source,r.payload)
+                                if(!RamDirectBenchmarkProtocol.isValidIdleSample(
+                                        rpm,referenceRpm!!))
+                                    throw IOException(
+                                        "RPM sample not plausible at idle: $rpm")
+                                if(source==RamDirectBenchmarkProtocol.Source.DIRECT_RAM)
+                                    ramTimes.add(duration)
+                                else obdTimes.add(duration)
+                                if(index<RamDirectBenchmarkProtocol.SAMPLES_PER_BLOCK-1) {
+                                    // Deliberate cap on ECU polling pressure. This
+                                    // pause is INCLUDED in observed block rate.
+                                    Thread.sleep(RamDirectBenchmarkProtocol.PACE_MS)
+                                }
+                            }
+                            val blockElapsed=SystemClock.elapsedRealtime()-blockStart
+                            val hz=RamDirectBenchmarkProtocol.observedRateHz(
+                                RamDirectBenchmarkProtocol.SAMPLES_PER_BLOCK,blockElapsed)
+                                ?: throw IOException("Invalid block duration")
+                            if(source==RamDirectBenchmarkProtocol.Source.DIRECT_RAM)
+                                ramRates.add(hz) else obdRates.add(hz)
+                            row("BLOCK_RATE",round+1,blockNo+1,0,"OK",blockElapsed,
+                                null,byteArrayOf(),byteArrayOf(),
+                                "source=${source.name};samples="+
+                                "${RamDirectBenchmarkProtocol.SAMPLES_PER_BLOCK};"+
+                                "observed_hz=${"%.3f".format(java.util.Locale.US,hz)};"+
+                                "pace_ms=${RamDirectBenchmarkProtocol.PACE_MS}")
+                        }
+                    }
+                    stationaryGate(RamDirectBenchmarkProtocol.ROUNDS+1)
+                    val final=transfer(obdReq,"OBD_FINAL",
+                        RamDirectBenchmarkProtocol.ROUNDS+1,0,0,
+                        { DiagnosticResponse.obd(it,0x0C)!=null })
+                    finalRpm=RamDirectBenchmarkProtocol.decodeRpm(
+                        RamDirectBenchmarkProtocol.Source.OBD,final.payload)
+                    if(!RamDirectBenchmarkProtocol.isValidIdleSample(
+                            finalRpm,referenceRpm!!))
+                        throw IOException("Engine RPM drifted outside idle window")
+                    completed=true
+                }
+            }catch(e:Exception) {
+                problem="${e.javaClass.simpleName}: ${e.message ?: "unknown"}"
+                row("ERROR",0,0,0,"STOP",null,null,
+                    activeRequest,byteArrayOf(),"$activeStage: $problem")
+            }
+            fun report(source:String,durations:List<Long>,rates:List<Double>):String {
+                val stats=RamBatchBenchmarkProtocol.stats(durations)
+                return if(stats==null)"$source: no valid samples" else
+                    "$source: n=${stats.count}, med=${stats.medianMs}ms, "+
+                    "p95=${stats.p95Ms}ms, paced_block_hz="+
+                    "%.2f".format(java.util.Locale.US,rates.average())
+            }
+            row("SUMMARY",0,0,0,if(completed)"COMPLETE" else "PARTIAL",
+                null,null,byteArrayOf(),byteArrayOf(),
+                report("RAM",ramTimes,ramRates)+" | "+
+                report("OBD",obdTimes,obdRates)+"; "+
+                "rpm_baseline=$referenceRpm; rpm_final=$finalRpm; "+
+                "error=${problem ?: ""}")
+        }
+        val ram=RamBatchBenchmarkProtocol.stats(ramTimes)
+        val obd=RamBatchBenchmarkProtocol.stats(obdTimes)
+        val summary="RAM LAB 6: RAM ${ram?.count ?: 0}/"+
+            "${RamDirectBenchmarkProtocol.TOTAL_PER_SOURCE}, OBD "+
+            "${obd?.count ?: 0}/${RamDirectBenchmarkProtocol.TOTAL_PER_SOURCE}. "+
+            "RAM медиана/p95 ${ram?.medianMs ?: "—"}/"+
+            "${ram?.p95Ms ?: "—"} мс; "+
+            "OBD ${obd?.medianMs ?: "—"}/${obd?.p95Ms ?: "—"} мс. "+
+            if(completed)"Четыре коротких блока каждого типа завершены; "+
+                "оценка устойчивой частоты длинного LOGGER не проводилась."
+            else "Частичный результат: ${problem ?: "unknown"}. "+
+                "Чтение остановлено; CSV сохранён."
+        progress(summary)
+        return Outcome(file,summary,completed)
+    }
+
     fun collectRamReadiness(cancel:()->Boolean,progress:(String)->Unit):Outcome {
         verifyAllowed(cancel)
         val dir=context.getExternalFilesDir(null) ?: context.filesDir
