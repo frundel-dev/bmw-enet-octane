@@ -4,6 +4,8 @@ import java.io.BufferedWriter
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -23,28 +25,66 @@ internal class AsyncCsvWriter(
     private val onFailure:(File,Throwable)->Unit,
     capacity:Int=512
 ) {
-    private data class Entry(val file:File,val text:String)
+    data class QueueSnapshot(
+        val depth:Int,val offered:Long,val written:Long,val lost:Long,
+        val failedFiles:Int,val waitP95Ms:Double?,val writeP95Ms:Double?,
+        val maxDepth:Int
+    )
+    private data class Entry(val file:File,val text:String,val createdAtNs:Long)
     private val queue=Channel<Entry>(capacity)
+    private val pending=AtomicInteger(0)
+    private val maximum=AtomicInteger(0)
+    private val offered=AtomicLong(0)
+    private val written=AtomicLong(0)
+    private val lost=AtomicLong(0)
+    private val statsLock=Any()
+    private val waiting=LongArray(128)
+    private val writing=LongArray(128)
+    private var waitTotal=0L
+    private var writeTotal=0L
+    private fun recordTiming(waitNs:Long,writeNs:Long) = synchronized(statsLock) {
+        waiting[(waitTotal++%waiting.size).toInt()]=waitNs.coerceAtLeast(0L)
+        writing[(writeTotal++%writing.size).toInt()]=writeNs.coerceAtLeast(0L)
+    }
+    private fun percentile(buffer:LongArray,count:Long):Double? {
+        if(count==0L)return null
+        val n=minOf(count,buffer.size.toLong()).toInt()
+        val sorted=buffer.take(n).sorted()
+        val ix=(kotlin.math.ceil(.95*n).toInt()-1).coerceIn(0,n-1)
+        return sorted[ix]/1_000_000.0
+    }
+    fun snapshot():QueueSnapshot=synchronized(statsLock) {
+        QueueSnapshot(pending.get(),offered.get(),written.get(),lost.get(),
+            failed.size,percentile(waiting,waitTotal),
+            percentile(writing,writeTotal),maximum.get())
+    }
     private val failed=ConcurrentHashMap.newKeySet<String>()
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     private val consumer=scope.launch {
         val writers=linkedMapOf<String,BufferedWriter>()
         try {
             for(entry in queue) {
+                pending.decrementAndGet()
+                val begun=System.nanoTime()
                 val key=entry.file.absolutePath
-                if(key in failed)continue
+                if(key in failed) {
+                    lost.incrementAndGet() // observable failure, never silent
+                    continue
+                }
                 try {
                     val writer=writers.getOrPut(key) {
                         FileOutputStream(entry.file,true).bufferedWriter()
                     }
-                    // Buffered writer stays open, but flush each row to avoid
-                    // increasing the loss window compared with v1.7.
                     writer.append(entry.text).append('\n')
                     writer.flush()
+                    written.incrementAndGet()
                 } catch(e:Exception) {
+                    lost.incrementAndGet()
                     failed.add(key)
                     try { writers.remove(key)?.close() } catch(_:Exception) {}
                     try { onFailure(entry.file,e) } catch(_:Exception) {}
+                } finally {
+                    recordTiming(begun-entry.createdAtNs,System.nanoTime()-begun)
                 }
             }
         } finally {
@@ -63,8 +103,19 @@ internal class AsyncCsvWriter(
      * Failure after enqueue is reported through onFailure.
      */
     suspend fun append(file:File,line:String):Boolean {
-        if(file.absolutePath in failed)return false
-        queue.send(Entry(file,line))
+        if(file.absolutePath in failed) {
+            lost.incrementAndGet()
+            return false
+        }
+        val count=pending.incrementAndGet()
+        maximum.accumulateAndGet(count){a,b->maxOf(a,b)}
+        try {
+            queue.send(Entry(file,line,System.nanoTime()))
+            offered.incrementAndGet()
+        } catch(e:Exception) {
+            pending.decrementAndGet()
+            throw e
+        }
         return file.absolutePath !in failed
     }
 
