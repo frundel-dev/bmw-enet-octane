@@ -786,7 +786,7 @@ class EnetLoggerService : Service() {
                             fuelSessionId=fuelSessionId,
                             connectionEpoch=reconnects,
                             event="REFUEL_CONFIRMED",
-                            transport=transport,pollMode=effectiveMode))
+                            transport=transport,pollMode=pollModeActive))
                         lastRefuelNote="Топливная сессия #$fuelSessionId подтверждена; "+
                             "переходный период не гарантирует полного перемешивания."
                         connectionEvent("FUEL_SESSION_CONFIRMED",reconnects,
@@ -812,7 +812,7 @@ class EnetLoggerService : Service() {
                                     fuelSessionId=fuelSessionId,
                                     connectionEpoch=reconnects,
                                     event="REFUEL_PENDING",
-                                    transport=transport,pollMode=effectiveMode))
+                                    transport=transport,pollMode=pollModeActive))
                                 steadyTargetTracker.resetCandidate(forceNewSegment=true)
                                 captureActive=false;captureTailUntil=0L
                                 lastRefuelNote="Обнаружена возможная заправка: "+
