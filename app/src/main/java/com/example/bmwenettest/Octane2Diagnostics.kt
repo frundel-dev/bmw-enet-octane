@@ -92,11 +92,12 @@ internal object Octane2Lambda {
     fun controlStatus(data:ByteArray?):String? {
         if(data?.size!=2)return null
         return when(data[0].toInt() and 255) {
-            0 -> "OPEN_INSUFFICIENT_TEMP"
-            1 -> "CLOSED_LOOP"
-            2 -> "OPEN_LOAD_OR_DECEL"
-            4 -> "OPEN_SYSTEM_FAILURE"
-            8 -> "CLOSED_LOOP_O2_FAULT"
+            0 -> "ENGINE_OFF"
+            1 -> "OPEN_INSUFFICIENT_TEMP"
+            2 -> "CLOSED_LOOP"
+            4 -> "OPEN_LOAD_OR_DECEL"
+            8 -> "OPEN_SYSTEM_FAILURE"
+            16 -> "CLOSED_LOOP_O2_FAULT"
             else -> null
         }
     }
