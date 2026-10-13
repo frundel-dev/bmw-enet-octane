@@ -131,7 +131,18 @@ class EnetLoggerService : Service() {
     override fun onStartCommand(intent: Intent?, flags:Int, startId:Int):Int {
         when(intent?.action) {
             ACTION_STOP -> stopLogger()
-            else -> if(!running) startLogger()
+            else -> if(!running) {
+                // Guard the optimized coroutine Service independently from UI.
+                // Never poll/score anonymous fuel after first installation.
+                if(!RefuelSessionStore(this).hasCurrentFuel()) {
+                    sendBroadcast(Intent(ACTION_STATUS).setPackage(packageName)
+                        .putExtra(EXTRA_STATUS,
+                            "Выбери заправленное топливо до запуска диагностики"))
+                    stopSelfResult(startId)
+                    return START_NOT_STICKY
+                }
+                startLogger()
+            }
         }
         return START_STICKY
     }
@@ -963,8 +974,10 @@ class EnetLoggerService : Service() {
                     val foctanMs=SystemClock.elapsedRealtime()-foctanStarted
                     val postFastStarted=SystemClock.elapsedRealtime()
                     val fuelQuarantined=
+                        !refuelStore.hasCurrentFuel() ||
                         prefs.getInt("fuel_session_id",fuelSessionId)!=fuelSessionId ||
-                        !RefuelEligibility.mayAssessFuel(refuelStore.hasPending() || fuelDetector.pending,mixingKm)
+                        !RefuelEligibility.mayAssessFuel(
+                            refuelStore.hasPending() || fuelDetector.pending,mixingKm)
                     if(fuelQuarantined) {
                         captureActive=false;captureTailUntil=0L
                         steadyTargetTracker.resetCandidate()
@@ -1145,7 +1158,7 @@ class EnetLoggerService : Service() {
                     // AUTO logger, even without a fuel test or baseline mode.
                     // Uses already-read values only; no DME reads or writes.
                     val targetEligible=steadyAuto && trimComparable &&
-                        !refuelStore.hasPending() && !fuelDetector.pending && mixingKm<=0.0 &&
+                        !fuelQuarantined &&
                         speed!=null && speed>=15.0 &&
                         knockStatus!=1 && (superKnock==null || superKnock==0) &&
                         knockMean!=null && knockMean>0.0 && ignSpread!=null &&
@@ -1175,7 +1188,7 @@ class EnetLoggerService : Service() {
                     steadyTargetSnapshot=steadyTargetTracker.snapshot(
                         steadyTargetTracker.advice(r,m,targetEligible,warm))
                     if(steadyWindow && warm && knockMean!=null && knockMean>0.0 &&
-                        !refuelStore.hasPending() && !fuelDetector.pending && mixingKm<=0.0 &&
+                        !fuelQuarantined &&
                         r!=null && m!=null && l!=null && i!=null && coolant!=null) {
                         val coarseCell=OctaneCalibration.steadyCell(r,m)
                         val fineCell=OctaneCalibration.fineSteadyCell(r,m,l,i,coolant)
@@ -1232,7 +1245,7 @@ class EnetLoggerService : Service() {
                         prefs.getBoolean(GuidedFuelTest.PREF_ACTIVE,false) &&
                         prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)==fuelSessionId
                     if(autoMode && (baselineRecording || guidedRecording) &&
-                        !refuelStore.hasPending() && !fuelDetector.pending && mixingKm<=0.0 &&
+                        !fuelQuarantined &&
                         warm && trimComparable && speed!=null && speed>=15.0 &&
                         knockMean!=null && knockMean>0.0 && ignSpread!=null &&
                         knockStatus!=1 && (superKnock==null || superKnock==0) &&
@@ -1353,7 +1366,7 @@ class EnetLoggerService : Service() {
                         }
                     }
                     val b95=if(measurementWindow) baseline95(r,m) else null
-                    val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && !refuelStore.hasPending() && !fuelDetector.pending && mixingKm<=0.0 && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5))) knockMean/b95.v else null
+                    val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && !fuelQuarantined && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5))) knockMean/b95.v else null
                     if(autoMode && measurementWindow && ratio95!=null) lastQualified=now
                     if(captureActive && measurementWindow && ratio95!=null && (!autoMode || now-lastAutoAcceptedTime>=1200L)) {
                         if(autoMode) {
