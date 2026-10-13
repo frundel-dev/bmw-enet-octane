@@ -62,6 +62,12 @@ class MainActivity : Activity() {
     private lateinit var octane2LiveStatus:TextView
     private lateinit var octane2LambdaStatus:TextView
     private var pendingOctane2Export:File?=null
+    private val refuelStore by lazy { RefuelSessionStore(applicationContext) }
+    private lateinit var pendingRefuelBanner:TextView
+    private lateinit var pendingRefuelAction:Button
+    private var recentVehicleSpeed:Double?=null
+    private var recentSpeedAt=0L
+    private var presentedRefuelId=0L
     private lateinit var homeFuelTitle:TextView
     private lateinit var homeFuelMeta:TextView
     private lateinit var homeConnection:TextView
@@ -424,6 +430,7 @@ class MainActivity : Activity() {
         fuelCard.addView(homeFuelTitle)
         fuelCard.addView(homeFuelMeta)
         fuelCard.addView(action("НОВАЯ ЗАПРАВКА"){showNewFuelTestDialog()})
+        fuelCard.addView(action("ИЗМЕНИТЬ ТОПЛИВО"){editCurrentFuel()})
         addCard(home,fuelCard)
 
         val networkCard=card("СВЯЗЬ С DME И СБОР")
