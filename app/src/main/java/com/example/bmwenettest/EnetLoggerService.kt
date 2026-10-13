@@ -378,6 +378,7 @@ class EnetLoggerService : Service() {
         var fuelControlState:String?=null
         var fuelControlNext=0L
         var lastCycleComplete=0L
+        var lastRamRequestMs=0L
         // Owned by this polling thread, opened once per LOGGER start.
         // No second socket or extra DME requests.
         val observationJournal=try {
@@ -828,7 +829,9 @@ class EnetLoggerService : Service() {
                     // Never begin 0x23 while driving without a parked 0 km/h
                     // reference cross-check. All reads use the SAME TCP owner.
                     val ramStarted=SystemClock.elapsedRealtime()
-                    val ramReadAllowed=ramPolicy.canRead(
+                    val ramReadAllowed=(lastRamRequestMs==0L ||
+                        ramStarted-lastRamRequestMs>=300L) &&
+                        ramPolicy.canRead(
                         obdRpm,speed,if(optimizedSlow)
                             slowScheduler.fresh(0x0D,ramStarted)
                         else slowSensorAtMs>0L &&
@@ -836,6 +839,7 @@ class EnetLoggerService : Service() {
                     var ramRpm:Double?=null
                     var acceptedRam=false
                     if(ramReadAllowed && running) {
+                        lastRamRequestMs=ramStarted
                         try {
                             val request=RamMemoryProtocol.approvedVehicleRequest(
                                 RamMemoryProtocol.APPROVED_A2L,
@@ -1538,6 +1542,8 @@ class EnetLoggerService : Service() {
                 ))
                 if(outageFrom==null) outageFrom=SystemClock.elapsedRealtime()
                 // Do not combine samples on opposite sides of a network interruption.
+                ramPolicy.onReconnect()
+                lastRamRequestMs=0L
                 steadyTargetTracker.resetCandidate(forceNewSegment=true)
                 captureActive=false; captureTailUntil=0L; previousSampleTime=0L
                 previousRpm=null; previousMap=null; lastQualified=0L;lastSteadyObservation=0L
