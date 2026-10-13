@@ -47,6 +47,20 @@ internal class RefuelSessionStore private constructor(
         File(context.getExternalFilesDir(null)?:context.filesDir,
             "bmw_refuel_decisions_v2.csv"),true)
 
+    /**
+     * A session number alone is NOT proof that the user selected fuel.
+     * Preserve older confirmed tests, including the legacy "Другое" grade.
+     */
+    fun hasCurrentFuel():Boolean=hasCurrentFuelUnsafe()
+
+    private fun hasCurrentFuelUnsafe():Boolean {
+        val id=prefs.getLong(GuidedFuelTest.PREF_ID,0L)
+        val session=prefs.getInt("fuel_session_id",1)
+        return id>0L &&
+            prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)==session &&
+            prefs.getString(GuidedFuelTest.PREF_GRADE,null) in GuidedFuelTest.grades
+    }
+
     fun pending():Pending?=synchronized(lock) {
         val id=prefs.getLong(PREF_PENDING_ID,0L)
         if(id<=0L)return@synchronized null
@@ -72,6 +86,7 @@ internal class RefuelSessionStore private constructor(
     /** Stable detector event; guard against duplicate announcements / manual refuel. */
     fun detected(from:Double,to:Double,wall:Long):Pending?=synchronized(lock) {
         pending()?.let{return@synchronized it}
+        if(!hasCurrentFuelUnsafe())return@synchronized null
         if(!from.isFinite() || !to.isFinite() || to-from<12.0 ||
             from !in 0.0..100.0 || to !in 0.0..100.0)return@synchronized null
         val lastManual=prefs.getLong(PREF_LAST_MANUAL_AT,0L)
@@ -106,14 +121,19 @@ internal class RefuelSessionStore private constructor(
     fun confirm(grade:String,station:String,rating:String,
                 wall:Long=System.currentTimeMillis(),manual:Boolean=false):Confirmed?=
         synchronized(lock) {
-            if(grade !in GuidedFuelTest.grades)return@synchronized null
+            if(grade !in GuidedFuelTest.selectableGrades)return@synchronized null
             val pending=pending()
             if(!manual && pending==null)return@synchronized null
-            val oldSession=prefs.getInt("fuel_session_id",1)
-            if(pending!=null && pending.oldSession!=oldSession)return@synchronized null
+            val oldSession=prefs.getInt("fuel_session_id",1).coerceAtLeast(1)
+            val firstSelection=!hasCurrentFuelUnsafe()
+            // No detector-created refuel can precede selecting the original fuel.
+            if(pending!=null && (firstSelection || pending.oldSession!=oldSession))
+                return@synchronized null
             val id=pending?.id?:eventId(wall)
-            // Session number and test ID are independent of the fuel grade.
-            val newSession=oldSession+1
+            // Initial fuel selection attaches to existing session #1 (or to
+            // an older session number during migration) without MIXING.
+            // Only an actual subsequent refill advances the session.
+            val newSession=if(firstSelection)oldSession else oldSession+1
             val edit=prefs.edit()
                 .putInt("fuel_session_id",newSession)
                 .putLong(GuidedFuelTest.PREF_ID,id)
@@ -129,23 +149,38 @@ internal class RefuelSessionStore private constructor(
                 .putLong(PREF_META_TIME_PREFIX+id,wall)
                 .putString("measurement_mode","AUTO")
                 .putBoolean(BaselineLearning.PREF_ENABLED,false)
-                .putFloat("mixing_remaining_km",MIXING_DISTANCE_KM)
-                .putString(PREF_ACTIVE_STATE,"MIXING")
+                .putFloat("mixing_remaining_km",
+                    if(firstSelection)0f else MIXING_DISTANCE_KM)
+                .putString(PREF_ACTIVE_STATE,
+                    if(firstSelection)"COLLECTING" else "MIXING")
                 .putLong(PREF_LAST_EVENT_ID,id)
                 .putLong(PREF_LAST_CONFIRMED_AT,wall)
-                .putString(PREF_LAST_SOURCE,if(pending!=null)"AUTO" else "MANUAL")
+                .putString(PREF_LAST_SOURCE,when {
+                    firstSelection -> "INITIAL"
+                    pending!=null -> "AUTO"
+                    else -> "MANUAL"
+                })
                 .remove(PREF_PENDING_ID).remove(PREF_PENDING_TIME)
                 .remove(PREF_PENDING_FROM).remove(PREF_PENDING_TO)
                 .remove(PREF_PENDING_SESSION).remove(PREF_WAS_ACTIVE)
                 .remove(PREF_WAS_BASELINE)
-            if(pending==null) {
+            if(firstSelection) {
+                // The old cached PID 0x2F level may belong to an earlier
+                // installation/fill. Re-baseline the *detector cache* from
+                // fresh reads, without deleting any raw diagnostic records.
+                edit.remove("last_fuel_pct")
+            }
+            if(pending==null && !firstSelection) {
                 edit.putLong(PREF_LAST_MANUAL_AT,wall)
                 val fuel=prefs.getFloat("last_fuel_pct",Float.NaN)
                 if(fuel.isFinite())edit.putFloat(PREF_LAST_LEVEL,fuel)
             }
             if(!edit.commit())return@synchronized null
-            audit(id,wall,if(pending!=null)"AUTO" else "MANUAL",
-                "CONFIRMED",newSession,pending?.from,pending?.to)
+            audit(id,wall,when {
+                    firstSelection -> "INITIAL"
+                    pending!=null -> "AUTO"
+                    else -> "MANUAL"
+                },"CONFIRMED",newSession,pending?.from,pending?.to)
             Confirmed(id,newSession,pending!=null)
         }
 
