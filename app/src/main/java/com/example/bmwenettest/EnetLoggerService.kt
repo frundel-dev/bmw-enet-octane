@@ -18,6 +18,12 @@ class EnetLoggerService : Service() {
         const val ACTION_STOP = "enet.STOP"
         const val ACTION_STATUS = "enet.STATUS"
         const val ACTION_FAST_TELEMETRY = "enet.FAST_TELEMETRY"
+        const val ACTION_OCTANE2 = "enet.OCTANE2"
+        const val EXTRA_RAM_STATUS = "octane2_ram_status"
+        const val EXTRA_RAM_RPM = "octane2_ram_rpm"
+        const val EXTRA_OBD_RPM = "octane2_obd_rpm"
+        const val EXTRA_ACTUAL_LAMBDA = "octane2_actual_lambda"
+        const val EXTRA_LAMBDA_SOURCE = "octane2_lambda_source"
         const val EXTRA_STEADY_TARGET_INDEX = "steady_target_index"
         const val EXTRA_STEADY_HOLD_MS = "steady_hold_ms"
         const val EXTRA_STATUS = "status"
@@ -204,6 +210,16 @@ class EnetLoggerService : Service() {
         super.onDestroy()
     }
     /** Lightweight UI-only snapshot; no extra ECU reads or notification writes. */
+    private fun emitOctane2(obdRpm:Double?,ramRpm:Double?,
+                            state:String,actualLambda:Double?,lambdaPid:Int?) {
+        sendBroadcast(Intent(ACTION_OCTANE2).setPackage(packageName)
+            .putExtra(EXTRA_OBD_RPM,obdRpm?:Double.NaN)
+            .putExtra(EXTRA_RAM_RPM,ramRpm?:Double.NaN)
+            .putExtra(EXTRA_RAM_STATUS,state)
+            .putExtra(EXTRA_ACTUAL_LAMBDA,actualLambda?:Double.NaN)
+            .putExtra(EXTRA_LAMBDA_SOURCE,lambdaPid?:-1))
+    }
+
     private fun emitFastTelemetry(rpm:Double?,map:Double?,load:Double?,
                                   progress:SteadyTargets.Tracker.CaptureProgress) {
         val intent=Intent(ACTION_FAST_TELEMETRY).setPackage(packageName)
@@ -324,6 +340,44 @@ class EnetLoggerService : Service() {
         val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0
         // A new trip ID on each LOGGER start. Not equivalent to a separate day.
         val learningTripId=System.currentTimeMillis()
+        val ramPolicy=Octane2RamPolicy(
+            getSharedPreferences("bmw_native",MODE_PRIVATE)
+                .getBoolean("octane2_swfl_confirmed",false))
+        val compareWriter=try {
+            File(getExternalFilesDir(null)?:filesDir,
+                Octane2CycleCsv.file(learningTripId)).bufferedWriter().apply {
+                write("# experiment=OCTANE2;A2L=R4C9J797B;SWFL=00005D55-070.060.007;"+
+                    "RAM_RPM_EXPERIMENTAL=true;ron_validated=false\n")
+                write(Octane2CycleCsv.HEADER+"\n")
+            }
+        } catch(_:Exception) { null }
+        var comparisonWriteEnabled=compareWriter!=null
+        var compareRows=0
+        var lastCompareFlush=0L
+        fun saveComparison(row:Octane2Cycle) {
+            if(!comparisonWriteEnabled)return
+            try {
+                compareWriter!!.write(Octane2CycleCsv.encode(row)+"\n")
+                compareRows++
+                if(compareRows%8==0 || row.elapsedMs-lastCompareFlush>=3000L) {
+                    compareWriter.flush()
+                    lastCompareFlush=row.elapsedMs
+                }
+            }catch(_:Exception) {
+                comparisonWriteEnabled=false
+                connectionEvent("OCTANE2_COMPARE_FILE_ERROR",row.epoch,"FILE","",null,
+                    "CSV write failed; primary logger unaffected")
+            }
+        }
+        var actualLambda:Octane2Lambda.Sample?=null
+        var actualLambdaAt=0L
+        var lambdaChecked=false
+        var lambdaPid:Int?=null
+        var lambdaNextPoll=0L
+        var fuelControlSupported=false
+        var fuelControlState:String?=null
+        var fuelControlNext=0L
+        var lastCycleComplete=0L
         // Owned by this polling thread, opened once per LOGGER start.
         // No second socket or extra DME requests.
         val observationJournal=try {
@@ -598,6 +652,14 @@ class EnetLoggerService : Service() {
                 prefs.edit().putString("last_gateway_ip",gatewayIp)
                     .putString("last_gateway_transport",transport).apply()
                 sampleTimes.clear()
+                // Support masks and sensor timestamps are scoped to the TCP session.
+                lambdaChecked=false
+                lambdaPid=null
+                actualLambda=null
+                actualLambdaAt=0L
+                fuelControlNext=0L
+                fuelControlSupported=false
+                fuelControlState=null
                 val gap=outageFrom?.let { (SystemClock.elapsedRealtime()-it).coerceAtLeast(0L) } ?: 0L
                 connectionEvent(if(gap>0)"RECOVERED" else "CONNECTED",reconnects,connectionStage,
                     transport,gatewayIp,if(viaFastPath)"cached TCP" else "UDP discovery + TCP",gap)
@@ -626,11 +688,14 @@ class EnetLoggerService : Service() {
                             .firstOrNull { DiagnosticResponse.obd(it,id)!=null }
                     }
                     fun obd(p:ByteArray?,id:Int)=p?.let{DiagnosticResponse.obd(it,id)}
-                    val r=obd(pid(0x0C),0x0C)?.let{(((it[0].toInt()and 255)*256)+(it[1].toInt()and 255))/4.0}
+                    val rpmObdStarted=SystemClock.elapsedRealtime()
+                    val obdRpm=obd(pid(0x0C),0x0C)?.takeIf{it.size==2}
+                        ?.let{(((it[0].toInt()and 255)*256)+(it[1].toInt()and 255))/4.0}
+                    val obdRpmLatency=SystemClock.elapsedRealtime()-rpmObdStarted
                     val l=obd(pid(0x04),0x04)?.let{(it[0].toInt()and 255)*100.0/255.0}
                     val m=obd(pid(0x0B),0x0B)?.let{(it[0].toInt()and 255).toDouble()}
                     val obdMs=SystemClock.elapsedRealtime()-obdStarted
-                    if(r==null && l==null && m==null) {
+                    if(obdRpm==null && l==null && m==null) {
                         emptyPolls++
                         if(emptyPolls>=3) throw IOException("No ECU OBD reply for 3 consecutive polls")
                     } else emptyPolls=0
@@ -759,6 +824,81 @@ class EnetLoggerService : Service() {
                     }
                     val slowMs=SystemClock.elapsedRealtime()-slowStarted
                     val speed=slowSpeed; val i=slowIat; val a=slowIgn; val coolant=slowCoolant; val oil=slowOil; val throttle=slowThrottle; val stft1=slowStft; val ltft1=slowLtft; val lambdaEq=slowLambda
+                    // Firmware identity was checked manually in the settings.
+                    // Never begin 0x23 while driving without a parked 0 km/h
+                    // reference cross-check. All reads use the SAME TCP owner.
+                    val ramStarted=SystemClock.elapsedRealtime()
+                    val ramReadAllowed=ramPolicy.canRead(
+                        obdRpm,speed,if(optimizedSlow)
+                            slowScheduler.fresh(0x0D,ramStarted)
+                        else slowSensorAtMs>0L &&
+                            SampleFreshness.isFresh(ramStarted,slowSensorAtMs))
+                    var ramRpm:Double?=null
+                    var acceptedRam=false
+                    if(ramReadAllowed && running) {
+                        try {
+                            val request=RamMemoryProtocol.approvedVehicleRequest(
+                                RamMemoryProtocol.APPROVED_A2L,
+                                RamMemoryProtocol.RPM_SIGNAL)
+                                ?: throw IOException("RAM RPM not allowlisted")
+                            socket!!.getOutputStream().write(hsfz(request))
+                            socket!!.getOutputStream().flush()
+                            val replies=readFrames(socket!!.getInputStream())
+                                .mapNotNull(::payload)
+                            val reply=replies.singleOrNull()
+                                ?: throw IOException("RAM 0x23 ambiguous HSFZ reply")
+                            val data=RamMemoryProtocol.decodePositive(reply,2)
+                            if(data==null) {
+                                val nrc=RamMemoryProtocol.negativeCode(reply)
+                                if(nrc==null || nrc==0x78)
+                                    throw IOException("RAM 0x23 unexpected or pending reply")
+                                ramPolicy.disable("RAM NRC %02X".format(nrc))
+                            } else {
+                                ramRpm=RamMemoryProtocol.decodeNkwRpm(data)?.toDouble()
+                                acceptedRam=ramPolicy.accept(ramRpm,obdRpm)
+                            }
+                        }catch(e:Exception) {
+                            ramPolicy.disable("RAM transport/protocol fault")
+                            // Unknown/late response may desynchronize the socket:
+                            // never continue ordinary DID reads on this stream.
+                            throw IOException("RAM 0x23 uncertain; reconnect safely",e)
+                        }
+                    }
+                    val ramLatency=if(ramReadAllowed)
+                        SystemClock.elapsedRealtime()-ramStarted else null
+                    val r=if(acceptedRam)ramRpm else obdRpm
+                    val selectedRpmSource=if(acceptedRam)"RAM_NKW" else "OBD_01_0C"
+
+                    // Exact OBD capability masks: optional lambda/loop data
+                    // must never be synthesized from commanded PID 0x44.
+                    if(!lambdaChecked) {
+                        lambdaChecked=true
+                        val mask20=obd(pid(0x20),0x20)
+                        lambdaPid=when {
+                            Octane2Lambda.supported(mask20,0x34) -> 0x34
+                            Octane2Lambda.supported(mask20,0x24) -> 0x24
+                            else -> null
+                        }
+                        val mask00=obd(pid(0x00),0x00)
+                        fuelControlSupported=Octane2Lambda.supportedBase(mask00,0x03)
+                    }
+                    val lambdaNow=SystemClock.elapsedRealtime()
+                    if(lambdaPid!=null && lambdaNow>=lambdaNextPoll) {
+                        val id=lambdaPid!!
+                        actualLambda=Octane2Lambda.decode(id,obd(pid(id),id))
+                        actualLambdaAt=if(actualLambda!=null)
+                            SystemClock.elapsedRealtime() else 0L
+                        lambdaNextPoll=SystemClock.elapsedRealtime()+4000L
+                    }
+                    if(fuelControlSupported && lambdaNow>=fuelControlNext) {
+                        fuelControlState=Octane2Lambda.controlStatus(obd(pid(0x03),0x03))
+                        fuelControlNext=SystemClock.elapsedRealtime()+5000L
+                    }
+                    val freshActualLambda=actualLambda?.takeIf {
+                        actualLambdaAt>0L &&
+                            SampleFreshness.isFresh(SystemClock.elapsedRealtime(),
+                                actualLambdaAt,8000L)
+                    }
                     val combinedTrim=if(stft1!=null && ltft1!=null)
                         ((1.0+stft1/100.0)*(1.0+ltft1/100.0)-1.0)*100.0 else null
                     val fastDmeStarted=SystemClock.elapsedRealtime()
@@ -1196,6 +1336,31 @@ class EnetLoggerService : Service() {
                         else -> "A"
                     }
                     val benchmarkNow=SystemClock.elapsedRealtime()
+                    // Side-by-side 2.0/1.7 reading metrics, not a RON score.
+                    val cycleGap=if(lastCycleComplete>0L)
+                        (cycleStart-lastCycleComplete).coerceAtLeast(0L) else null
+                    lastCycleComplete=benchmarkNow
+                    val currentLambdaAge=if(freshActualLambda!=null)
+                        (benchmarkNow-actualLambdaAt).coerceAtLeast(0L) else null
+                    val commandedAge=if(lambdaEq==null)null else if(optimizedSlow)
+                        slowScheduler.ageMs(0x44,benchmarkNow) else
+                        slowSensorAtMs.takeIf{it>0L}?.let{benchmarkNow-it}
+                    saveComparison(Octane2Cycle(
+                        System.currentTimeMillis(),benchmarkNow-started,
+                        learningTripId,fuelSessionId,reconnects,effectiveMode,
+                        obdRpm,ramRpm,r,selectedRpmSource,ramPolicy.state.name,
+                        obdRpmLatency,ramLatency,
+                        if(ramReadAllowed)ramStarted-rpmObdStarted else null,
+                        benchmarkNow-cycleStart,cycleGap,m,l,speed,i,coolant,
+                        knockMean,ignSpread,
+                        freshActualLambda?.lambda,freshActualLambda?.sourcePid,
+                        currentLambdaAge,freshActualLambda?.auxiliary,
+                        lambdaEq,commandedAge,stft1,ltft1,fuelControlState,
+                        steadyTargetTracker.progress(now).targetIndex,
+                        steadyTargetTracker.progress(now).dwellMs
+                    ))
+                    emitOctane2(obdRpm,ramRpm,ramPolicy.state.name,
+                        freshActualLambda?.lambda,freshActualLambda?.sourcePid)
                     // Record all completed FAST cycles, regardless of CAPTURE,
                     // and preserve provenance and freshness for offline replay.
                     fun slowAge(value:Double?,did:Int):Long? {
@@ -1405,6 +1570,7 @@ class EnetLoggerService : Service() {
         }
         // Always flush the final buffered samples when polling ends normally.
         observationJournal?.close()
+        try{compareWriter?.flush();compareWriter?.close()}catch(_:Exception){}
         if(observationJournal?.failed==true && !journalFailureNoted)
             connectionEvent("OBSERVATION_JOURNAL_FAILED",reconnects,
                 "FILE",connectionTransport,null,"Journal close/flush failed")
