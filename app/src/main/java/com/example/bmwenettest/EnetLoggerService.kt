@@ -307,20 +307,17 @@ class EnetLoggerService : Service() {
         }
     }
 
-    private fun telemetryRow(elapsedMs:Long,event:String,transport:String,
+    private suspend fun telemetryRow(csvWriter:AsyncCsvWriter,
+                             elapsedMs:Long,event:String,transport:String,
                              rpm:Double?=null,load:Double?=null,map:Double?=null,
                              speed:Double?=null,coolant:Double?=null,fuelLevel:Double?=null,
                              fuelId:Int=0,run:Int=0,reconnects:Int=0,phase:String="—",
                              stft:Double?=null,ltft:Double?=null,ign:Double?=null) {
         val file=telemetryFile?:return
         fun number(v:Double?)=if(v!=null && v.isFinite()) String.format(java.util.Locale.US,"%.2f",v) else ""
-        try {
-            FileOutputStream(file,true).bufferedWriter().use { out ->
-                out.appendLine(listOf(System.currentTimeMillis(),elapsedMs,event,transport,
-                    number(rpm),number(load),number(map),number(speed),number(coolant),
-                    number(fuelLevel),fuelId,run,reconnects,phase,number(stft),number(ltft),number(ign)).joinToString(","))
-            }
-        } catch(_:Exception) { /* Telemetry file errors must not terminate ECU polling. */ }
+        csvWriter.append(file,listOf(System.currentTimeMillis(),elapsedMs,event,transport,
+            number(rpm),number(load),number(map),number(speed),number(coolant),
+            number(fuelLevel),fuelId,run,reconnects,phase,number(stft),number(ltft),number(ign)).joinToString(","))
     }
 
     private fun isNetworkPermissionDenied(error:Throwable):Boolean {
@@ -355,6 +352,11 @@ class EnetLoggerService : Service() {
 
     private suspend fun loop() {
         val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0
+        val csvWriter=AsyncCsvWriter { file,error ->
+            connectionEvent("ASYNC_CSV_WRITE_FAILED",reconnects,"FILE",
+                "ASYNC",null,"file=${file.name};error=${error.javaClass.simpleName}: ${error.message}")
+            emit("Ошибка записи CSV: ${file.name}. Данные в этом журнале неполные.")
+        }
         // A new trip ID on each LOGGER start. Not equivalent to a separate day.
         val learningTripId=System.currentTimeMillis()
         val ramPolicy=Octane2RamPolicy(
@@ -691,7 +693,7 @@ class EnetLoggerService : Service() {
                 connectionEvent(if(gap>0)"RECOVERED" else "CONNECTED",reconnects,connectionStage,
                     transport,gatewayIp,if(viaFastPath)"cached TCP" else "UDP discovery + TCP",gap)
                 outageFrom=null
-                telemetryRow(SystemClock.elapsedRealtime()-started,"CONNECTED",transport,
+                telemetryRow(csvWriter,SystemClock.elapsedRealtime()-started,"CONNECTED",transport,
                     fuelId=fuelSessionId,reconnects=reconnects)
                 emit("CONNECTED $transport $gatewayIp:6801 • reconnects $reconnects" +
                     if(gap>0)" • recovered in ${gap} ms" else "")
@@ -1406,19 +1408,19 @@ class EnetLoggerService : Service() {
                     // Heartbeat is written regardless of captureActive. Keep measurement
                     // CSV unchanged, but make short connection tests analyzable.
                     if(now-lastTelemetryTime>=2500L) {
-                        telemetryRow(t,if(captureActive)"CAPTURE" else "IDLE",transport,
+                        telemetryRow(csvWriter,t,if(captureActive)"CAPTURE" else "IDLE",transport,
                             r,l,m,speed,coolant,slowFuel,fuelSessionId,runId,reconnects,drivePhase,
                             stft1,ltft1,a)
                         lastTelemetryTime=now
                     }
-                    if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns,oil?:"",if(autoMode)"AUTO" else "TEST",coverageBins.size,speed?:"",slowFuel?:"",fuelSessionId,drivePhase,steadyPoints,accelPoints,steadyScore?:"",accelScore?:"",if(refuelStore.hasPending())1 else 0,"%.2f".format(java.util.Locale.US,mixingKm),steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,highRpmMean?:"",highRpmPoints,highRpmOver120,highRpmBaselineAvg?:"",acceptedAutoSegments.size,
+                    if(captureActive) csvWriter.append(logFile!!, (listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns,oil?:"",if(autoMode)"AUTO" else "TEST",coverageBins.size,speed?:"",slowFuel?:"",fuelSessionId,drivePhase,steadyPoints,accelPoints,steadyScore?:"",accelScore?:"",if(refuelStore.hasPending())1 else 0,"%.2f".format(java.util.Locale.US,mixingKm),steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,highRpmMean?:"",highRpmPoints,highRpmOver120,highRpmBaselineAvg?:"",acceptedAutoSegments.size,
                         steadySurveyPoints,steadySurveyCells.size,accelV08Score?:"",accelV08Points,
                         OctaneCalibration.VERSION,steadyRef?.knockMeanVms?:"",accelRef?.knockMeanVms?:"",
                         ltft1?:"",combinedTrim?:"",a?:"",lastFineCell,
                         steadyFineStats.cells(),steadyFineStats.repeatableCells(),
                         lastFineSummary.observations,lastFineSummary.segments,
                         lastFineSummary.medianVms?:"",lastFineSummary.dispersionPct?:"",
-                        "", "")).joinToString(","))}
+                        "", "")).joinToString(","))
                     samples++
                     // This broadcast is intentionally every completed FAST cycle.
                     // Dashboard's heavyweight status stays at every fourth cycle.
@@ -1489,8 +1491,7 @@ class EnetLoggerService : Service() {
                     if(benchmarkNow-lastBenchmarkMs>=3000L) {
                         lastBenchmarkMs=benchmarkNow
                         try {
-                            FileOutputStream(benchmarkFile!!,true).bufferedWriter().use { out ->
-                                out.appendLine(listOf(
+                            csvWriter.append(benchmarkFile!!,listOf(
                                     System.currentTimeMillis(),benchmarkNow-started,
                                     requestedPollMode,effectiveMode,
                                     String.format(java.util.Locale.US,"%.3f",hz),
@@ -1506,8 +1507,8 @@ class EnetLoggerService : Service() {
                                     monitorOk,monitorErrors,monitorLastDuration,
                                     monitorState,monitorLastId,transport,fallbackNote
                                 ).joinToString(","))
-                            }
-                        } catch(_:Exception) { /* Benchmark must not interrupt ECU polling */ }
+                        } catch(e:CancellationException) { throw e }
+                          catch(_:Exception) { /* Benchmark must not interrupt ECU polling */ }
                     }
                     if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v2.0 EXP • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
                         steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,
@@ -1640,7 +1641,7 @@ class EnetLoggerService : Service() {
                 slowOil=null; slowSpeed=null; slowFuel=null
                 connectionEvent("DISCONNECTED",reconnects,connectionStage,connectionTransport,connectionIp,
                     "${e.javaClass.simpleName}: ${e.message?:"no details"};${networkSnapshot()}")
-                telemetryRow(SystemClock.elapsedRealtime()-started,"DISCONNECTED",connectionTransport,
+                telemetryRow(csvWriter,SystemClock.elapsedRealtime()-started,"DISCONNECTED",connectionTransport,
                     fuelId=fuelSessionId,reconnects=reconnects,phase=connectionStage)
                 tone.startTone(ToneGenerator.TONE_SUP_ERROR,600)
                 emit("ENET reconnect #$reconnects [$connectionStage]: ${e.javaClass.simpleName}: ${e.message ?: "no details"}")
@@ -1670,6 +1671,7 @@ class EnetLoggerService : Service() {
         withContext(NonCancellable) {
         observationJournal?.close()
         try{compareWriter?.flush();compareWriter?.close()}catch(_:Exception){}
+        csvWriter.closeAndJoin()
         if(observationJournal?.failed==true && !journalFailureNoted)
             connectionEvent("OBSERVATION_JOURNAL_FAILED",reconnects,
                 "FILE",connectionTransport,null,"Journal close/flush failed")
