@@ -62,6 +62,13 @@ class MainActivity : Activity() {
     private lateinit var octane2LiveStatus:TextView
     private lateinit var octane2LambdaStatus:TextView
     private var pendingOctane2Export:File?=null
+    private val refuelStore by lazy { RefuelSessionStore(applicationContext) }
+    private lateinit var pendingRefuelBanner:TextView
+    private lateinit var pendingRefuelAction:Button
+    private var recentVehicleSpeed:Double?=null
+    private var recentSpeedAt=0L
+    private var stoppedSinceMs=0L
+    private var presentedRefuelId=0L
     private lateinit var homeFuelTitle:TextView
     private lateinit var homeFuelMeta:TextView
     private lateinit var homeConnection:TextView
@@ -132,7 +139,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v2.0 LAB"
+            text="v2.0.1 LAB"
             textSize=13f
             setTextColor(sky)
         })
@@ -174,6 +181,12 @@ class MainActivity : Activity() {
                     if(historyBusy) {
                         Toast.makeText(this@MainActivity,
                             "Сначала заверши чтение истории DME",Toast.LENGTH_LONG).show()
+                        return@setOnClickListener
+                    }
+                    // An initial session must have operator-confirmed fuel.
+                    // Do not start the optimized poll coroutine beforehand.
+                    if(!refuelStore.hasCurrentFuel()) {
+                        showNewFuelTestDialog(startAfterInitialSelection=true)
                         return@setOnClickListener
                     }
                     logging=true
@@ -424,6 +437,7 @@ class MainActivity : Activity() {
         fuelCard.addView(homeFuelTitle)
         fuelCard.addView(homeFuelMeta)
         fuelCard.addView(action("НОВАЯ ЗАПРАВКА"){showNewFuelTestDialog()})
+        fuelCard.addView(action("ИЗМЕНИТЬ ТОПЛИВО"){editCurrentFuel()})
         addCard(home,fuelCard)
 
         val networkCard=card("СВЯЗЬ С DME И СБОР")
@@ -432,6 +446,16 @@ class MainActivity : Activity() {
         networkCard.addView(homeConnection)
         networkCard.addView(homeCaptureState)
         addCard(home,networkCard)
+        val pendingCard=card("ВОЗМОЖНАЯ НОВАЯ ЗАПРАВКА")
+        pendingRefuelBanner=smallText("Ожидает подтверждения",13f,Color.rgb(255,194,102))
+        pendingCard.addView(pendingRefuelBanner)
+        pendingRefuelAction=action("ПОДТВЕРДИТЬ ЗАПРАВКУ") {
+            showPendingRefuelDialog()
+        }
+        pendingCard.addView(pendingRefuelAction)
+        addCard(home,pendingCard)
+        pendingCard.visibility=android.view.View.GONE
+        pendingRefuelBanner.tag=pendingCard
 
         // Measured coverage remains the canonical persisted SteadyTargets
         // sample/segment/trip counter; never infer it from UI timers.
@@ -459,6 +483,10 @@ class MainActivity : Activity() {
             13f,tertiary))
         refuelCard.addView(action("СОЗДАТЬ ЗАПРАВКУ"){showNewFuelTestDialog()})
         refuelCard.addView(action("ТЕКУЩАЯ ЗАПРАВКА"){showFuelTestOverview()})
+        refuelCard.addView(action("ИЗМЕНИТЬ ТОПЛИВО"){editCurrentFuel()})
+        refuelCard.addView(action("ПРОВЕРИТЬ ОБНАРУЖЕННУЮ ЗАПРАВКУ"){
+            showPendingRefuelDialog()
+        })
         refuelCard.addView(action("ИСТОРИЯ ЗАПРАВОК"){showGuidedFuelHistory()})
         addCard(refuels,refuelCard)
 
@@ -580,6 +608,15 @@ class MainActivity : Activity() {
                 }
                 if(intent?.action!=EnetLoggerService.ACTION_STATUS)return
                 val message=intent.getStringExtra(EnetLoggerService.EXTRA_STATUS)?:return
+                val speedFresh=intent.hasExtra(EnetLoggerService.EXTRA_SPEED)
+                if(speedFresh) {
+                    val speed=intent.getDoubleExtra(EnetLoggerService.EXTRA_SPEED,Double.NaN)
+                    recentVehicleSpeed=speed.takeIf{it.isFinite() && it>=0.0}
+                    recentSpeedAt=SystemClock.elapsedRealtime()
+                    if(recentVehicleSpeed==0.0) {
+                        if(stoppedSinceMs==0L)stoppedSinceMs=recentSpeedAt
+                    } else stoppedSinceMs=0L
+                }
                 val newTransport=intent.getStringExtra(EnetLoggerService.EXTRA_TRANSPORT)
                 if(!newTransport.isNullOrBlank())transportLabel=newTransport
                 lastPollHz=intent.takeIf{it.hasExtra(EnetLoggerService.EXTRA_HZ)}
@@ -615,6 +652,7 @@ class MainActivity : Activity() {
                     dashboard.render(intent)
                 }
                 renderHomeState()
+                if(refuelStore.hasPending())maybeOfferStationaryRefuel()
             }
         }
         val filter=IntentFilter(EnetLoggerService.ACTION_STATUS).apply {
@@ -679,11 +717,12 @@ class MainActivity : Activity() {
         if(!::homeFuelTitle.isInitialized)return
         val pref=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val id=pref.getLong(GuidedFuelTest.PREF_ID,0L)
-        val hasFuel=id>0L && pref.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)==
-            pref.getInt("fuel_session_id",1)
+        val hasFuel=refuelStore.hasCurrentFuel()
         val grade=pref.getString(GuidedFuelTest.PREF_GRADE,"Топливо")?:"Топливо"
         val station=pref.getString(GuidedFuelTest.PREF_STATION,"")?:""
         homeFuelTitle.text=if(hasFuel)grade else "Топливо не выбрано"
+        if(!logging)loggerControl?.text=if(hasFuel)"НАЧАТЬ СБОР"
+            else "ВЫБРАТЬ ТОПЛИВО И НАЧАТЬ"
         val date=if(id>0L)java.text.DateFormat.getDateInstance(
             java.text.DateFormat.MEDIUM).format(java.util.Date(id)) else "—"
         homeFuelMeta.text=if(hasFuel)
@@ -705,10 +744,28 @@ class MainActivity : Activity() {
         })
         val paused=hasFuel && !pref.getBoolean(GuidedFuelTest.PREF_ACTIVE,false)
             && !pref.getBoolean(GuidedFuelTest.PREF_DONE,false)
-        homeCaptureState.text=Octane2UiState.stateText(
-            logging,connection,hasFuel,firstTarget,secondTarget,paused)
+        homeCaptureState.text=if(refuelStore.hasPending())
+            "Ожидается подтверждение топлива • измерения для оценки исключены"
+            else if(pref.getFloat("mixing_remaining_km",0f)>0f)
+            "MIXING • переходный период, оценка приостановлена"
+            else Octane2UiState.stateText(
+                logging,connection,hasFuel,firstTarget,secondTarget,paused)
+        if(::pendingRefuelBanner.isInitialized) {
+            val pending=refuelStore.pending()
+            (pendingRefuelBanner.tag as? android.view.View)?.visibility=
+                if(pending!=null)android.view.View.VISIBLE else android.view.View.GONE
+            pendingRefuelBanner.text=if(pending==null)"" else
+                "Бак: ${pending.from?.toInt()?.toString()?:"?"}% → "+
+                "${pending.to?.toInt()?.toString()?:"?"}%\n"+
+                "Это лишь предполагаемая заправка. Необходимо выбрать бензин."
+            pendingRefuelAction.isEnabled=canConfirmRefuelNow()
+            pendingRefuelAction.text=if(canConfirmRefuelNow())
+                "УКАЗАТЬ ТОПЛИВО" else "ПОДТВЕРЖДЕНИЕ ПОСЛЕ ОСТАНОВКИ"
+        }
         val guide=Octane2UiState.guidance(firstTarget,secondTarget,
-            logging && connection==Octane2UiState.Connection.CONNECTED,paused)
+            logging && connection==Octane2UiState.Connection.CONNECTED,
+            paused || refuelStore.hasPending() ||
+                pref.getFloat("mixing_remaining_km",0f)>0f)
         homeNextMode.text=guide.heading+"\n"+guide.instructions
         fun stageText(target:Octane2UiState.Target)=when(target.stage) {
             Octane2UiState.Stage.NOT_STARTED -> "НЕ НАЧАТО"
@@ -764,6 +821,7 @@ class MainActivity : Activity() {
             }
             renderHomeState()
             refreshGuidedPanel()
+            if(refuelStore.hasPending())maybeOfferStationaryRefuel()
         }
     }
 
@@ -1175,75 +1233,232 @@ class MainActivity : Activity() {
         refreshGuidedPanel()
     }
 
-    private fun showNewFuelTestDialog() {
-        if(EnetLoggerService.isLoggerActive || logging) {
-            Toast.makeText(this,"Заверши текущий LOGGER перед началом новой заправки",Toast.LENGTH_LONG).show()
+    private fun canConfirmRefuelNow():Boolean {
+        if(!EnetLoggerService.isLoggerActive)return true
+        return recentVehicleSpeed==0.0 &&
+            SystemClock.elapsedRealtime()-recentSpeedAt in 0L..4000L
+    }
+
+    private fun maybeOfferStationaryRefuel() {
+        val pending=refuelStore.pending()?:return
+        // Without live DME speed, never infer the car is stationary:
+        // keep a persistent banner and wait for a deliberate user action.
+        if(!EnetLoggerService.isLoggerActive || !canConfirmRefuelNow() ||
+            presentedRefuelId==pending.id || isFinishing || isDestroyed ||
+            stoppedSinceMs<=0L ||
+            SystemClock.elapsedRealtime()-stoppedSinceMs<15000L)
+            return
+        presentedRefuelId=pending.id
+        main.post {
+            if(!isFinishing && !isDestroyed &&
+                refuelStore.pending()?.id==pending.id && canConfirmRefuelNow())
+                showPendingRefuelDialog()
+        }
+    }
+
+    private fun showPendingRefuelDialog() {
+        val pending=refuelStore.pending()
+        if(pending==null) {
+            Toast.makeText(this,"Ожидающих заправок нет",Toast.LENGTH_SHORT).show()
+            renderHomeState()
             return
         }
-        val options=GuidedFuelTest.grades
+        if(!canConfirmRefuelNow()) {
+            Toast.makeText(this,"Подтверждение доступно только после остановки",
+                Toast.LENGTH_LONG).show()
+            return
+        }
+        showRefuelEditor(pending)
+    }
+
+    private fun showNewFuelTestDialog(startAfterInitialSelection:Boolean=false) {
+        if(!canConfirmRefuelNow()) {
+            Toast.makeText(this,"Создай заправку после остановки автомобиля",
+                Toast.LENGTH_LONG).show()
+            return
+        }
+        // Manual and automatic creation always call the same state transition.
+        showRefuelEditor(refuelStore.pending(),manual=true,
+            startAfterInitialSelection=startAfterInitialSelection)
+    }
+
+    private fun showRefuelEditor(
+        pending:RefuelSessionStore.Pending?,manual:Boolean=false,
+        startAfterInitialSelection:Boolean=false
+    ) {
+        if(!canConfirmRefuelNow())return
+        val grades=GuidedFuelTest.selectableGrades
         val parent=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
-            setPadding(24,12,24,0)
+            setPadding(24,12,24,4)
         }
-        val label=TextView(this).apply {
-            text="Заявленная марка топлива (не лабораторный RON)"
-            textSize=14f
+        if(pending!=null)parent.addView(TextView(this).apply {
+            text="Бак до: ${pending.from?.let{"%.0f%%".format(java.util.Locale.US,it)}?:"—"}"+
+                "   •   после: ${pending.to?.let{"%.0f%%".format(java.util.Locale.US,it)}?:"—"}\n"+
+                "Уровень топлива — косвенное предположение. Марку бензина выбирает пользователь."
+            textSize=13f
+        })
+        parent.addView(TextView(this).apply{
+            text="Заявленная марка бензина";textSize=13f
+        })
+        val grade=Spinner(this).apply {
+            adapter=ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,grades)
+            setSelection(grades.indexOf("АИ-95").coerceAtLeast(0))
         }
-        parent.addView(label)
-        val grade=Spinner(this)
-        grade.adapter=ArrayAdapter(this,android.R.layout.simple_spinner_dropdown_item,options)
-        grade.setSelection(options.indexOf("АИ-95"))
         parent.addView(grade)
         val station=EditText(this).apply {
-            hint="АЗС или заметка (необязательно)"
+            hint="АЗС или примечание (необязательно)"
             setSingleLine(true)
             setTextSize(14f)
         }
         parent.addView(station)
-        val subjectiveLabel=TextView(this).apply {
-            text="Личная оценка после заправки (не влияет на алгоритм)"
-            textSize=13f;setPadding(0,12,0,0)
-        }
-        parent.addView(subjectiveLabel)
-        val subjective=Spinner(this).apply {
+        parent.addView(TextView(this).apply{
+            text="Субъективная оценка (не влияет на диагностику)"
+            textSize=12f
+        })
+        val options=listOf("Без оценки","Понравилось","Нейтрально","Не понравилось")
+        val rating=Spinner(this).apply {
             adapter=ArrayAdapter(this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
-                listOf("Без оценки","Понравилось","Нейтрально","Не понравилось"))
+                android.R.layout.simple_spinner_dropdown_item,options)
         }
-        parent.addView(subjective)
-        AlertDialog.Builder(this)
-            .setTitle("Новая заправка")
-            .setMessage("Будет создан независимый тест топлива. Прошивка MG Flasher ST1; "+
-                "заявленная марка не доказывает качество. Если бензин недавно залит, "+
-                "дождись окончания перемешивания.")
+        parent.addView(rating)
+        val firstSelection=!refuelStore.hasCurrentFuel() && pending==null
+        val dialog=AlertDialog.Builder(this)
+            .setTitle(when {
+                pending!=null -> "Обнаружена новая заправка"
+                firstSelection -> "Укажите текущее топливо"
+                else -> "Новая заправка"
+            })
             .setView(parent)
-            .setNegativeButton("Отмена",null)
-            .setPositiveButton("Начать тест") { _,_->
-                val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
-                val id=System.currentTimeMillis()
-                prefs.edit()
-                    .putLong(GuidedFuelTest.PREF_ID,id)
-                    .putBoolean(GuidedFuelTest.PREF_ACTIVE,true)
-                    .putBoolean(GuidedFuelTest.PREF_DONE,false)
-                    .putInt(GuidedFuelTest.PREF_FUEL_SESSION,
-                        prefs.getInt("fuel_session_id",1))
-                    .putString(GuidedFuelTest.PREF_GRADE,options[grade.selectedItemPosition])
-                    .putString(GuidedFuelTest.PREF_STATION,station.text.toString().take(100))
-                    .putString("octane2_refuel_rating_"+id,
-                        subjective.selectedItem.toString())
-                    .putString("measurement_mode","AUTO")
-                    .putBoolean(BaselineLearning.PREF_ENABLED,false)
-                    .commit()
+            .setMessage(if(firstSelection)
+                "Первый выбор создаёт исходную сессию №1. "+
+                    "Это не новая заправка: MIXING не назначается. "+
+                    "Укажите бензин, который уже находится в баке."
+                else "После подтверждения создаётся отдельная сессия. "+
+                    "Переходный период смешивания исключён из оценок; "+
+                    "5 км — эвристика, не доказательство полного перемешивания.")
+            .setPositiveButton("Подтвердить и начать анализ",null)
+            .setNegativeButton(if(pending!=null)"Заправки не было" else "Отмена",null)
+            .setNeutralButton("Позже",null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                if(!canConfirmRefuelNow()) {
+                    Toast.makeText(this,"Сначала останови автомобиль",Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                val confirmed=refuelStore.confirm(
+                    grades[grade.selectedItemPosition],station.text.toString(),
+                    options[rating.selectedItemPosition],
+                    manual=manual || pending==null)
+                if(confirmed==null) {
+                    Toast.makeText(this,"Не удалось сохранить заправку. Попробуй ещё раз.",
+                        Toast.LENGTH_LONG).show()
+                    return@setOnClickListener
+                }
+                dialog.dismiss()
+                presentedRefuelId=confirmed.id
                 guidedSnapshot=null
                 updateTargetStatus(intArrayOf(0,0,0,0,0),intArrayOf(0,0,0,0,0),
-                    "Новая заправка • ждём пригодные диагностические измерения")
+                    "Новое топливо • MIXING • ожидаем пригодные измерения")
                 refreshGuidedPanel()
                 selectTab(0)
                 renderHomeState()
-                Toast.makeText(this@MainActivity,
-                    "Заправка сохранена. Запусти сбор кнопкой «НАЧАТЬ СБОР».",
+                Toast.makeText(this,if(firstSelection)
+                    "Топливо сохранено. Исходная сессия готова к сбору."
+                    else "Заправка подтверждена. Анализ продолжится без второго "+
+                        "соединения; переходные измерения исключаются.",
                     Toast.LENGTH_LONG).show()
-            }.show()
+                if(firstSelection && startAfterInitialSelection) {
+                    main.post {
+                        if(!isFinishing && !isDestroyed &&
+                            !EnetLoggerService.isLoggerActive &&
+                            refuelStore.hasCurrentFuel())loggerControl?.performClick()
+                    }
+                }
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
+                if(pending!=null) {
+                    val rejected=refuelStore.reject(pending.id)
+                    if(!rejected) {
+                        Toast.makeText(this,"Событие уже изменилось",Toast.LENGTH_SHORT).show()
+                        return@setOnClickListener
+                    }
+                    renderHomeState()
+                }
+                dialog.dismiss()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun editCurrentFuel() {
+        val id=getSharedPreferences("bmw_native",MODE_PRIVATE)
+            .getLong(GuidedFuelTest.PREF_ID,0L)
+        if(id<=0L) {
+            Toast.makeText(this,"Сначала создай заправку",Toast.LENGTH_SHORT).show()
+            return
+        }
+        editFuelMetadata(id)
+    }
+
+    private fun editFuelMetadata(id:Long) {
+        if(!canConfirmRefuelNow()) {
+            Toast.makeText(this,"Редактирование после остановки",Toast.LENGTH_LONG).show()
+            return
+        }
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        val gradeValue=prefs.getString(RefuelSessionStore.PREF_META_GRADE_PREFIX+id,
+            if(prefs.getLong(GuidedFuelTest.PREF_ID,0L)==id)
+                prefs.getString(GuidedFuelTest.PREF_GRADE,"АИ-95") else "АИ-95")
+            ?:"АИ-95"
+        // Preserve the exact stored legacy grade during metadata edits.
+        val options=(GuidedFuelTest.selectableGrades+
+            listOf(gradeValue).filter{
+                it in GuidedFuelTest.grades && it !in GuidedFuelTest.selectableGrades
+            }).distinct()
+        val stationValue=prefs.getString(RefuelSessionStore.PREF_META_STATION_PREFIX+id,
+            if(prefs.getLong(GuidedFuelTest.PREF_ID,0L)==id)
+                prefs.getString(GuidedFuelTest.PREF_STATION,"") else "")?:""
+        val parent=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL;setPadding(24,16,24,6)
+        }
+        parent.addView(TextView(this).apply {
+            text="Меняются только метаданные. ID, CSV и прогресс сохраняются."
+        })
+        val grade=Spinner(this).apply {
+            adapter=ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,options)
+            setSelection(options.indexOf(gradeValue).coerceAtLeast(0))
+        }
+        parent.addView(grade)
+        val station=EditText(this).apply {
+            hint="АЗС / примечание";setSingleLine(true);setText(stationValue)
+        }
+        parent.addView(station)
+        val ratings=listOf("Без оценки","Понравилось","Нейтрально","Не понравилось")
+        val rating=Spinner(this).apply {
+            adapter=ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,ratings)
+            val old=prefs.getString(RefuelSessionStore.PREF_RATING_PREFIX+id,"Без оценки")
+            setSelection(ratings.indexOf(old).coerceAtLeast(0))
+        }
+        parent.addView(rating)
+        val dialog=AlertDialog.Builder(this).setTitle("Изменить топливо")
+            .setView(parent).setNegativeButton("Отмена",null)
+            .setPositiveButton("Сохранить",null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val success=refuelStore.editFuel(id,
+                    options[grade.selectedItemPosition],station.text.toString(),
+                    ratings[rating.selectedItemPosition])
+                if(success) {
+                    dialog.dismiss();refreshGuidedPanel();renderHomeState()
+                } else Toast.makeText(this,"Не удалось сохранить",Toast.LENGTH_SHORT).show()
+            }
+        }
+        dialog.show()
     }
 
     private fun readGuided(id:Long,fuelSession:Int):GuidedFuelTest.Coverage {
@@ -1454,45 +1669,71 @@ class MainActivity : Activity() {
     }
 
     private fun showGuidedFuelHistory() {
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val dir=getExternalFilesDir(null)?:filesDir
-        val files=dir.listFiles()?.filter {
-            it.isFile && it.name.startsWith("bmw_fuel_test_v1731_") &&
-                it.name.endsWith(".csv")
-        }?.sortedByDescending{it.lastModified()}?.take(30).orEmpty()
-        if(files.isEmpty()) {
+        val legacyIds=dir.listFiles()?.mapNotNull { f ->
+            if(f.isFile && f.name.startsWith("bmw_fuel_test_v1731_") &&
+                f.name.endsWith(".csv"))
+                f.name.removePrefix("bmw_fuel_test_v1731_")
+                    .removeSuffix(".csv").toLongOrNull()
+            else null
+        }.orEmpty()
+        val confirmedIds=prefs.all.keys.mapNotNull { key ->
+            if(key.startsWith(RefuelSessionStore.PREF_META_GRADE_PREFIX))
+                key.removePrefix(RefuelSessionStore.PREF_META_GRADE_PREFIX).toLongOrNull()
+            else null
+        }
+        val currentId=prefs.getLong(GuidedFuelTest.PREF_ID,0L)
+        val ids=(legacyIds+confirmedIds+listOf(currentId).filter{it>0L})
+            .distinct().sortedDescending().take(50)
+        if(ids.isEmpty()) {
             AlertDialog.Builder(this).setTitle("История заправок")
-                .setMessage("Пока нет записанных тестов.")
+                .setMessage("Подтверждённых заправок пока нет.")
                 .setPositiveButton("OK",null).show()
             return
         }
         executor.execute {
-            val summaries=files.map { file ->
-                val rows=try {
-                    val meta=file.useLines{it.firstOrNull()}?:""
-                    val dataset=file.name.removePrefix("bmw_fuel_test_v1731_")
-                        .removeSuffix(".csv").toLongOrNull()?:0L
-                    val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
-                    val current=dataset==prefs.getLong(GuidedFuelTest.PREF_ID,-1)
-                    val fuel=if(current)prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)
-                        else Regex("fuel_session=(\\d+)").find(meta)?.groupValues?.get(1)?.toIntOrNull()?:-1
-                    val coverage=readGuided(dataset,fuel).snapshot()
-                    val grade=Regex("grade=([^;]+)").find(meta)?.groupValues?.get(1)?:"Топливо"
-                    val rating=prefs.getString("octane2_refuel_rating_"+dataset,"")?:""
-                    "$grade • ${coverage.progress}% • ${coverage.steadyReady}/2 STEADY · ${coverage.accelReady}/3 ACCEL"+
-                        if(rating.isNotBlank() && rating!="Без оценки")" • $rating" else ""
-                }catch(_:Exception){file.name}
-                rows
+            val summaries=ids.map { id ->
+                try {
+                    val file=File(dir,GuidedFuelTest.filename(id))
+                    val metadata=if(file.isFile)file.useLines{it.firstOrNull()}?:"" else ""
+                    val current=id==prefs.getLong(GuidedFuelTest.PREF_ID,-1L)
+                    val oldSession=Regex("fuel_session=(\\d+)")
+                        .find(metadata)?.groupValues?.get(1)?.toIntOrNull()?:-1
+                    val fuelSession=prefs.getInt(
+                        RefuelSessionStore.PREF_META_SESSION_PREFIX+id,
+                        if(current)prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)
+                        else oldSession)
+                    val historicalGrade=Regex("grade=([^;]+)")
+                        .find(metadata)?.groupValues?.get(1)?:"Топливо"
+                    val grade=prefs.getString(RefuelSessionStore.PREF_META_GRADE_PREFIX+id,
+                        if(current)prefs.getString(GuidedFuelTest.PREF_GRADE,historicalGrade)
+                            else historicalGrade) ?:historicalGrade
+                    val station=prefs.getString(RefuelSessionStore.PREF_META_STATION_PREFIX+id,
+                        if(current)prefs.getString(GuidedFuelTest.PREF_STATION,"") else "")?:""
+                    val rating=prefs.getString(RefuelSessionStore.PREF_RATING_PREFIX+id,"")?:""
+                    val progress=if(file.isFile && fuelSession>0)
+                        readGuided(id,fuelSession).snapshot().progress else 0
+                    val date=java.text.SimpleDateFormat("dd.MM.yyyy",
+                        java.util.Locale.getDefault()).format(java.util.Date(id))
+                    "$date • $grade"+
+                        (if(station.isNotBlank())" • $station" else "")+
+                        " • $progress%"+
+                        (if(rating.isNotBlank() && rating!="Без оценки")" • $rating" else "")
+                }catch(_:Exception){"Заправка #$id • данные сохранены"}
             }
             runOnUiThread {
                 if(isFinishing || isDestroyed)return@runOnUiThread
-                AlertDialog.Builder(this)
-                    .setTitle("История тестов топлива")
+                AlertDialog.Builder(this).setTitle("История заправок")
                     .setItems(summaries.toTypedArray()) { _,index ->
                         AlertDialog.Builder(this)
-                            .setTitle("Сохранённый тест")
-                            .setMessage("${summaries[index]}\nФайл: ${files[index].name}\n"+
-                                "Архивный CSV сохраняется без изменения Fuel Score.")
-                            .setPositiveButton("OK",null).show()
+                            .setTitle("Заправка • данные сохранены")
+                            .setMessage(summaries[index]+"\nID: ${ids[index]}\n"+
+                                "Изменение метаданных не меняет диагностические CSV.")
+                            .setPositiveButton("Изменить топливо") { _,_ ->
+                                editFuelMetadata(ids[index])
+                            }
+                            .setNegativeButton("Закрыть",null).show()
                     }
                     .setNegativeButton("Закрыть",null).show()
             }
@@ -1889,11 +2130,9 @@ class MainActivity : Activity() {
                             val fields=refuelEvents[which].split(",")
                             val builder=AlertDialog.Builder(this).setTitle("Возможная заправка")
                                 .setMessage(eventLabels[which]+"\n\nОпределено по изменению уровня топлива. Сегменты уже разделены для безопасности расчётов.")
-                            if(fields.getOrNull(4)=="PENDING" || fields.size<5) {
-                                builder.setPositiveButton("Подтвердить") { _,_ -> markRefuelEvent(fields[1],"CONFIRMED") }
-                                    .setNegativeButton("Не было") { _,_ -> markRefuelEvent(fields[1],"REJECTED") }
-                                    .setNeutralButton("Позже",null)
-                            } else builder.setPositiveButton("OK",null)
+                            // v1.7 already changed the session before confirmation.
+                            // Never repeat that destructive legacy action from v2 UI.
+                            builder.setPositiveButton("Закрыть",null)
                             builder.show()
                         } else {
                             val fileIndex=which-eventLabels.size
@@ -1907,21 +2146,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun markRefuelEvent(id:String,decision:String) {
-        val file=File(getExternalFilesDir(null)?:filesDir,"bmw_fuel_events.csv")
-        if(!file.isFile)return
-        val lines=file.readLines().toMutableList()
-        val index=lines.indexOfLast { it.split(",").getOrNull(1)==id }
-        if(index<0)return
-        lines[index]=lines[index].split(",").take(4).joinToString(",")+"," + decision
-        file.writeText(lines.joinToString("\n",postfix="\n"))
-        if(decision=="REJECTED") {
-            getSharedPreferences("bmw_native",MODE_PRIVATE).edit()
-                .putInt("refuel_rejected_id",id.toIntOrNull()?:-1).apply()
-        }
-        Toast.makeText(this,if(decision=="CONFIRMED")"Заправка подтверждена" else "Ложное событие отмечено; история не удалена",Toast.LENGTH_LONG).show()
-    }
-
+    // Legacy bmw_fuel_events.csv is a read-only archive. All new
+    // confirmations are durable RefuelSessionStore transitions.
     override fun onDestroy() {
         main.removeCallbacks(fastStaleClear)
         guidedUiRefresh?.let { main.removeCallbacks(it) }

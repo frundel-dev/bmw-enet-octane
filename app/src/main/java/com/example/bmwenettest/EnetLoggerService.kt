@@ -11,6 +11,16 @@ import java.io.*
 import java.net.*
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 class EnetLoggerService : Service() {
     companion object {
@@ -93,7 +103,10 @@ class EnetLoggerService : Service() {
         @Volatile var isLoggerActive:Boolean = false
             private set
     }
-    private val executor = Executors.newSingleThreadExecutor()
+    // One coroutine owns the primary TCP socket; never run overlapping UDS reads.
+    private val pollingDispatcher=Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+    private val pollingScope=CoroutineScope(SupervisorJob()+pollingDispatcher)
+    private var pollingJob:Job?=null
     @Volatile private var running = false
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -118,7 +131,18 @@ class EnetLoggerService : Service() {
     override fun onStartCommand(intent: Intent?, flags:Int, startId:Int):Int {
         when(intent?.action) {
             ACTION_STOP -> stopLogger()
-            else -> if(!running) startLogger()
+            else -> if(!running) {
+                // Guard the optimized coroutine Service independently from UI.
+                // Never poll/score anonymous fuel after first installation.
+                if(!RefuelSessionStore(this).hasCurrentFuel()) {
+                    sendBroadcast(Intent(ACTION_STATUS).setPackage(packageName)
+                        .putExtra(EXTRA_STATUS,
+                            "Выбери заправленное топливо до запуска диагностики"))
+                    stopSelfResult(startId)
+                    return START_NOT_STICKY
+                }
+                startLogger()
+            }
         }
         return START_STICKY
     }
@@ -163,7 +187,17 @@ class EnetLoggerService : Service() {
                 "fast_sample_age_ms,rpm,load_pct,map_kpa_abs,speed_kmh,"+
                 "fast_hz,knock_valid,ignition_valid,note\n")
         }
-        executor.execute { loop() }
+        pollingJob=pollingScope.launch { loop() }.also { job ->
+            // Completion runs only after loop() has drained all queued CSV
+            // writes. Also handles STOP before the coroutine gets scheduled.
+            job.invokeOnCompletion {
+                if(!running) {
+                    isLoggerActive=false
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+            }
+        }
     }
     private fun createSteadySurveyFile(fuelId:Int):File {
         val dir=getExternalFilesDir(null)?:filesDir
@@ -197,13 +231,17 @@ class EnetLoggerService : Service() {
         running=false
         androidNetworkMonitor?.stop(); androidNetworkMonitor=null
         try{socket?.close()}catch(_:Exception){}
-        isLoggerActive=false
-        stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
+        pollingJob?.cancel()
+        // Do not stop the Service before the CSV Channel finishes draining.
+        // loop() releases the foreground service only after all writers close.
     }
     override fun onDestroy() {
         androidNetworkMonitor?.stop(); androidNetworkMonitor=null
         running=false;try{socket?.close()}catch(_:Exception){}
         isLoggerActive=false
+        pollingJob?.cancel()
+        pollingJob?.invokeOnCompletion { pollingDispatcher.close() }
+            ?:pollingDispatcher.close()
         if(wakeLock?.isHeld==true) wakeLock?.release()
         if(wifiLock?.isHeld==true) wifiLock?.release()
         tone.release()
@@ -290,20 +328,17 @@ class EnetLoggerService : Service() {
         }
     }
 
-    private fun telemetryRow(elapsedMs:Long,event:String,transport:String,
+    private suspend fun telemetryRow(csvWriter:AsyncCsvWriter,
+                             elapsedMs:Long,event:String,transport:String,
                              rpm:Double?=null,load:Double?=null,map:Double?=null,
                              speed:Double?=null,coolant:Double?=null,fuelLevel:Double?=null,
                              fuelId:Int=0,run:Int=0,reconnects:Int=0,phase:String="—",
                              stft:Double?=null,ltft:Double?=null,ign:Double?=null) {
         val file=telemetryFile?:return
         fun number(v:Double?)=if(v!=null && v.isFinite()) String.format(java.util.Locale.US,"%.2f",v) else ""
-        try {
-            FileOutputStream(file,true).bufferedWriter().use { out ->
-                out.appendLine(listOf(System.currentTimeMillis(),elapsedMs,event,transport,
-                    number(rpm),number(load),number(map),number(speed),number(coolant),
-                    number(fuelLevel),fuelId,run,reconnects,phase,number(stft),number(ltft),number(ign)).joinToString(","))
-            }
-        } catch(_:Exception) { /* Telemetry file errors must not terminate ECU polling. */ }
+        csvWriter.append(file,listOf(System.currentTimeMillis(),elapsedMs,event,transport,
+            number(rpm),number(load),number(map),number(speed),number(coolant),
+            number(fuelLevel),fuelId,run,reconnects,phase,number(stft),number(ltft),number(ign)).joinToString(","))
     }
 
     private fun isNetworkPermissionDenied(error:Throwable):Boolean {
@@ -336,8 +371,14 @@ class EnetLoggerService : Service() {
                else estimate.coerceAtMost(94)
     }
 
-    private fun loop() {
+    private suspend fun loop() {
         val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0
+        val ramFrameReader=HsfzReusableReader()
+        val csvWriter=AsyncCsvWriter(onFailure={ file,error ->
+            connectionEvent("ASYNC_CSV_WRITE_FAILED",reconnects,"FILE",
+                "ASYNC",null,"file=${file.name};error=${error.javaClass.simpleName}: ${error.message}")
+            emit("Ошибка записи CSV: ${file.name}. Данные в этом журнале неполные.")
+        })
         // A new trip ID on each LOGGER start. Not equivalent to a separate day.
         val learningTripId=System.currentTimeMillis()
         val ramPolicy=Octane2RamPolicy(
@@ -445,6 +486,7 @@ class EnetLoggerService : Service() {
         val recentPollFailures=java.util.ArrayDeque<Long>()
         var experimentalRollback=false
         val fuelDetector=FuelRefillDetector(prefs.getFloat("last_fuel_pct",Float.NaN).toDouble())
+        val refuelStore=RefuelSessionStore(this)
         var fuelSessionId=prefs.getInt("fuel_session_id",1)
         val targetDir=getExternalFilesDir(null)?:filesDir
         fun loadSteadyTargets(session:Int):SteadyTargets.Tracker {
@@ -534,6 +576,7 @@ class EnetLoggerService : Service() {
                 kind,host,"mode="+pollModeActive+";"+reason)
         }
 
+        try {
         while(running) {
             try {
                 connectionStage="NETWORK"; connectionTransport=""; connectionIp=null
@@ -597,6 +640,7 @@ class EnetLoggerService : Service() {
                         try {
                             val quick=network.socketFactory.createSocket()
                             try {
+                                quick.tcpNoDelay=true
                                 quick.soTimeout=1800
                                 quick.connect(InetSocketAddress(rememberedIp,6801),1300)
                                 socket=quick; activeNet=network; transport=kind; gatewayIp=rememberedIp
@@ -634,6 +678,7 @@ class EnetLoggerService : Service() {
                     var candidateSocket:Socket?=null
                     try {
                         candidateSocket=network.socketFactory.createSocket()
+                        candidateSocket.tcpNoDelay=true
                         candidateSocket.soTimeout=1800
                         candidateSocket.connect(InetSocketAddress(found.ip,6801),2000)
                         socket=candidateSocket; activeNet=network; transport=kind; gatewayIp=found.ip
@@ -670,7 +715,7 @@ class EnetLoggerService : Service() {
                 connectionEvent(if(gap>0)"RECOVERED" else "CONNECTED",reconnects,connectionStage,
                     transport,gatewayIp,if(viaFastPath)"cached TCP" else "UDP discovery + TCP",gap)
                 outageFrom=null
-                telemetryRow(SystemClock.elapsedRealtime()-started,"CONNECTED",transport,
+                telemetryRow(csvWriter,SystemClock.elapsedRealtime()-started,"CONNECTED",transport,
                     fuelId=fuelSessionId,reconnects=reconnects)
                 emit("CONNECTED $transport $gatewayIp:6801 • reconnects $reconnects" +
                     if(gap>0)" • recovered in ${gap} ms" else "")
@@ -750,34 +795,17 @@ class EnetLoggerService : Service() {
                         slowSensorAtMs=SystemClock.elapsedRealtime()
                         lastSlow=now
                     }
-                    // Tank level is a slow optional OBD parameter. No value means unsupported/unavailable.
-                    if(now-lastFuelPoll>=15000L) {
-                        slowFuel=obd(pid(0x2F),0x2F)?.firstOrNull()?.let {
-                            (it.toInt() and 255)*100.0/255.0
-                        }
-                        lastFuelPoll=now
-                        if(slowFuel!=null) fuelSupported=true
-                        val tankUpdate=fuelDetector.observe(slowFuel,now)
-                        fuelDetector.stableLevel?.let { prefs.edit().putFloat("last_fuel_pct",it.toFloat()).apply() }
-                        tankUpdate.refill?.let { refill ->
-                            fuelSessionId++
-                            steadyTargetTracker=loadSteadyTargets(fuelSessionId)
-                            lastAcknowledgedTargetSegment=0
-                            steadyTargetSnapshot=steadyTargetTracker.snapshot("Заправка сменилась: ждём окончания смешивания топлива")
-                            if(prefs.getBoolean(GuidedFuelTest.PREF_ACTIVE,false)) {
-                                prefs.edit().putBoolean(GuidedFuelTest.PREF_ACTIVE,false).apply()
-                                emit("Тест топлива приостановлен: возможная новая заправка. Не смешивай два бензина в одной оценке.")
-                            }
-                            // Prevent an unverified refill/fuel change silently
-                            // contaminating an existing experimental baseline.
-                            if(prefs.getBoolean(BaselineLearning.PREF_ENABLED,false)) {
-                                prefs.edit().putBoolean(BaselineLearning.PREF_ENABLED,false).apply()
-                                emit("Обучение приостановлено: обнаружена возможная заправка. Создай новый набор после проверки топлива.")
-                            }
-                            mixingKm=5.0 // Heuristic minimum driving distance to allow partial mixing.
-                            prefs.edit().putInt("fuel_session_id",fuelSessionId).putFloat("mixing_remaining_km",mixingKm.toFloat()).apply()
-                            val events=File(getExternalFilesDir(null)?:filesDir,"bmw_fuel_events.csv")
-                            events.appendText("${System.currentTimeMillis()},$fuelSessionId,${"%.1f".format(java.util.Locale.US,refill.fromPercent)},${"%.1f".format(java.util.Locale.US,refill.toPercent)},PENDING\n")
+                    // Adopt user-confirmed session on the one diagnostic thread.
+                    // Never issue a second DME connection or merge different fills.
+                    val newConfirmedId=prefs.getInt("fuel_session_id",fuelSessionId)
+                    if(newConfirmedId!=fuelSessionId) {
+                        fuelSessionId=newConfirmedId
+                        mixingKm=prefs.getFloat("mixing_remaining_km",
+                            RefuelSessionStore.MIXING_DISTANCE_KM).toDouble()
+                        steadyTargetTracker=loadSteadyTargets(fuelSessionId)
+                        lastAcknowledgedTargetSegment=0
+                        steadyTargetSnapshot=steadyTargetTracker.snapshot(
+                            "Новая заправка подтверждена: MIXING (эвристический карантин)")
                             logFile=createLogFile(fuelSessionId)
                             steadySurveyFile=createSteadySurveyFile(fuelSessionId)
                             dmeProbeResults.clear()
@@ -795,21 +823,64 @@ class EnetLoggerService : Service() {
                             accelV08Sum=0.0;accelV08Weight=0.0;accelV08Points=0
                             highRpmRatioSum=0.0; highRpmPoints=0; highRpmOver120=0; highRpmBaselineSum=0
                             lastAutoAcceptedTime=0L; lastQualified=0L; previousSampleTime=0L; previousRpm=null; previousMap=null
-                            lastRefuelNote="Возможная заправка: ${"%.0f".format(refill.fromPercent)}% → ${"%.0f".format(refill.toPercent)}% • сессия #$fuelSessionId"
-                            emit(lastRefuelNote)
+                        recordObservation(DriveObservation(
+                            wallTimeMs=System.currentTimeMillis(),
+                            elapsedMs=now-started,
+                            tripId=learningTripId,
+                            fuelSessionId=fuelSessionId,
+                            connectionEpoch=reconnects,
+                            event="REFUEL_CONFIRMED",
+                            transport=transport,pollMode=pollModeActive))
+                        lastRefuelNote="Топливная сессия #$fuelSessionId подтверждена; "+
+                            "переходный период не гарантирует полного перемешивания."
+                        connectionEvent("FUEL_SESSION_CONFIRMED",reconnects,
+                            "FUEL",transport,null,"session=$fuelSessionId;heuristic_mixing=$mixingKm")
+                        emit(lastRefuelNote)
+                    }
+                    // Tank level is a slow optional OBD parameter. No value means unsupported/unavailable.
+                    if(now-lastFuelPoll>=15000L) {
+                        slowFuel=obd(pid(0x2F),0x2F)?.firstOrNull()?.let {
+                            (it.toInt() and 255)*100.0/255.0
+                        }
+                        lastFuelPoll=now
+                        if(slowFuel!=null) fuelSupported=true
+                        val tankUpdate=fuelDetector.observe(slowFuel,now)
+                        fuelDetector.stableLevel?.let { prefs.edit().putFloat("last_fuel_pct",it.toFloat()).apply() }
+                        tankUpdate.refill?.let { refill ->
+                            if(refuelStore.detected(refill.fromPercent,
+                                    refill.toPercent,System.currentTimeMillis())!=null) {
+                                recordObservation(DriveObservation(
+                                    wallTimeMs=System.currentTimeMillis(),
+                                    elapsedMs=now-started,
+                                    tripId=learningTripId,
+                                    fuelSessionId=fuelSessionId,
+                                    connectionEpoch=reconnects,
+                                    event="REFUEL_PENDING",
+                                    transport=transport,pollMode=pollModeActive))
+                                steadyTargetTracker.resetCandidate(forceNewSegment=true)
+                                captureActive=false;captureTailUntil=0L
+                                lastRefuelNote="Обнаружена возможная заправка: "+
+                                    "${"%.0f".format(refill.fromPercent)}% → "+
+                                    "${"%.0f".format(refill.toPercent)}% • ожидает подтверждения"
+                                emit(lastRefuelNote)
+                            }
                         }
                     }
-                    if(lastDistanceSampleTime>0L && now-lastDistanceSampleTime in 1L..10000L && mixingKm>0.0 && slowSpeed!=null) {
-                        val traveled=(slowSpeed!!*(now-lastDistanceSampleTime)/3600000.0).coerceAtLeast(0.0)
+                    val speedForMixing=slowSpeed?.takeIf {
+                        if(optimizedSlow)slowScheduler.fresh(0x0D,now)
+                        else slowSensorAtMs>0L &&
+                            SampleFreshness.isFresh(now,slowSensorAtMs)
+                    }
+                    if(lastDistanceSampleTime>0L && now-lastDistanceSampleTime in 1L..10000L &&
+                        mixingKm>0.0 && speedForMixing!=null &&
+                        prefs.getInt("fuel_session_id",fuelSessionId)==fuelSessionId) {
+                        val traveled=(speedForMixing*(now-lastDistanceSampleTime)/3600000.0).coerceAtLeast(0.0)
                         mixingKm=(mixingKm-traveled).coerceAtLeast(0.0)
-                        prefs.edit().putFloat("mixing_remaining_km",mixingKm.toFloat()).apply()
+                        prefs.edit().putFloat("mixing_remaining_km",mixingKm.toFloat())
+                            .putString(RefuelSessionStore.PREF_ACTIVE_STATE,
+                                if(mixingKm>0.0)"MIXING" else "COLLECTING").apply()
                     }
                     lastDistanceSampleTime=now
-                    if(prefs.getInt("refuel_rejected_id",-1)==fuelSessionId) {
-                        mixingKm=0.0
-                        prefs.edit().putFloat("mixing_remaining_km",0f).remove("refuel_rejected_id").apply()
-                        lastRefuelNote="Событие заправки #$fuelSessionId отклонено. Файлы замеров сохранены раздельно."
-                    }
                     val freshnessNow=SystemClock.elapsedRealtime()
                     if(optimizedSlow) {
                         if(!slowScheduler.fresh(0x0D,freshnessNow))slowSpeed=null
@@ -902,11 +973,22 @@ class EnetLoggerService : Service() {
                     }
                     val foctanMs=SystemClock.elapsedRealtime()-foctanStarted
                     val postFastStarted=SystemClock.elapsedRealtime()
-                    val testWindow = r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
+                    val fuelQuarantined=
+                        !refuelStore.hasCurrentFuel() ||
+                        prefs.getInt("fuel_session_id",fuelSessionId)!=fuelSessionId ||
+                        !RefuelEligibility.mayAssessFuel(
+                            refuelStore.hasPending() || fuelDetector.pending,mixingKm)
+                    if(fuelQuarantined) {
+                        captureActive=false;captureTailUntil=0L
+                        steadyTargetTracker.resetCandidate()
+                    }
+                    val testWindow = !fuelQuarantined &&
+                        r!=null && l!=null && m!=null && r>=2000.0 && l>=70.0 && m>=140.0
                     // v1.7.32 measurement assistant: keep polling continuously, persist only measurement segments.
                     if(((autoMode && r!=null && l!=null && m!=null && r>=1300.0 && r<=4500.0 &&
                         l>=15.0 && m>=88.0 && m<=250.0 && (speed==null || speed>=15.0)) ||
-                        (!autoMode && r!=null && r>=1800.0)) && !captureActive) {
+                        (!autoMode && r!=null && r>=1800.0)) &&
+                        !fuelQuarantined && !captureActive) {
                         captureActive=true; runId++; armed2000=false; signaled4500=false; runStart=now;
                         if(autoMode)lastQualified=now; runStartRpm=r; runMaxRpm=r; runMaxLoad=l?:0.0; runMaxMap=m?:0.0; runSamples=0; lastSummary=""; runWeightedRatio=0.0; runWeight=0.0; runValidPoints=0; runHighPoints=0; runKnockEvents=0; runSuperEvents=0; lastRunScore=null; lastRunQuality=0
                         if(!autoMode) tone.startTone(ToneGenerator.TONE_PROP_BEEP,120)
@@ -970,19 +1052,17 @@ class EnetLoggerService : Service() {
                                 ?: throw IOException("RAM RPM not allowlisted")
                             socket!!.getOutputStream().write(hsfz(request))
                             socket!!.getOutputStream().flush()
-                            val replies=readFrames(socket!!.getInputStream())
-                                .mapNotNull(::payload)
-                            val reply=replies.singleOrNull()
-                                ?: throw IOException("RAM 0x23 ambiguous HSFZ reply")
-                            val data=RamMemoryProtocol.decodePositive(reply,2)
-                            if(data==null) {
-                                val nrc=RamMemoryProtocol.negativeCode(reply)
-                                if(nrc==null || nrc==0x78)
-                                    throw IOException("RAM 0x23 unexpected or pending reply")
-                                ramPolicy.disable("RAM NRC %02X".format(nrc))
-                            } else {
-                                ramRpm=RamMemoryProtocol.decodeNkwRpm(data)?.toDouble()
+                            val ramLength=ramFrameReader.readDiagnostic(
+                                socket!!.getInputStream())
+                                ?: throw IOException("RAM 0x23 missing HSFZ reply")
+                            if(ramFrameReader.isRamPositiveRpm()) {
+                                ramRpm=ramFrameReader.rpm()?.toDouble()
                                 acceptedRam=ramPolicy.accept(ramRpm,obdRpm)
+                            } else {
+                                val nrc=ramFrameReader.ramNegativeCode()
+                                if(nrc==null || nrc==0x78)
+                                    throw IOException("RAM 0x23 unexpected or pending reply (length=$ramLength)")
+                                ramPolicy.disable("RAM NRC %02X".format(nrc))
                             }
                         }catch(e:Exception) {
                             ramPolicy.disable("RAM transport/protocol fault")
@@ -1039,7 +1119,9 @@ class EnetLoggerService : Service() {
 
                     if(testWindow && knockMean!=null && ignSpread!=null) validOctaneSamples++
                     val confidence=(validOctaneSamples*2).coerceAtMost(100)
-                    val measurementWindow=r!=null && l!=null && m!=null && r>=2000.0 && r<=4500.0 && l>=55.0 && m>=130.0
+                    val measurementWindow=!fuelQuarantined &&
+                        r!=null && l!=null && m!=null && r>=2000.0 &&
+                        r<=4500.0 && l>=55.0 && m>=130.0
                     val dt=(now-previousSampleTime).coerceAtLeast(1L)/1000.0
                     val rpmRate=if(r!=null && previousRpm!=null && previousSampleTime>0L && dt<=5.0) (r-previousRpm!!)/dt else null
                     val mapRate=if(m!=null && previousMap!=null && previousSampleTime>0L && dt<=5.0) (m-previousMap!!)/dt else null
@@ -1049,7 +1131,8 @@ class EnetLoggerService : Service() {
                         m!=null && m>=150.0 && (throttle==null || throttle>=25.0)
                     // STEADY v0.8 observes ordinary urban/cruise load independently
                     // from the old high-load RPM x MAP baseline (which is unchanged).
-                    val steadyWindow=autoMode && r!=null && l!=null && m!=null &&
+                    val steadyWindow=autoMode && !fuelQuarantined &&
+                        r!=null && l!=null && m!=null &&
                         r>=1300.0 && r<4500.0 && l in 15.0..68.0 && m in 88.0..150.0 &&
                         (speed==null || speed>=15.0)
                     val steadyAuto=steadyWindow && warm && rpmRate!=null && mapRate!=null &&
@@ -1075,7 +1158,7 @@ class EnetLoggerService : Service() {
                     // AUTO logger, even without a fuel test or baseline mode.
                     // Uses already-read values only; no DME reads or writes.
                     val targetEligible=steadyAuto && trimComparable &&
-                        !fuelDetector.pending && mixingKm<=0.0 &&
+                        !fuelQuarantined &&
                         speed!=null && speed>=15.0 &&
                         knockStatus!=1 && (superKnock==null || superKnock==0) &&
                         knockMean!=null && knockMean>0.0 && ignSpread!=null &&
@@ -1105,7 +1188,7 @@ class EnetLoggerService : Service() {
                     steadyTargetSnapshot=steadyTargetTracker.snapshot(
                         steadyTargetTracker.advice(r,m,targetEligible,warm))
                     if(steadyWindow && warm && knockMean!=null && knockMean>0.0 &&
-                        !fuelDetector.pending && mixingKm<=0.0 &&
+                        !fuelQuarantined &&
                         r!=null && m!=null && l!=null && i!=null && coolant!=null) {
                         val coarseCell=OctaneCalibration.steadyCell(r,m)
                         val fineCell=OctaneCalibration.fineSteadyCell(r,m,l,i,coolant)
@@ -1162,7 +1245,7 @@ class EnetLoggerService : Service() {
                         prefs.getBoolean(GuidedFuelTest.PREF_ACTIVE,false) &&
                         prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)==fuelSessionId
                     if(autoMode && (baselineRecording || guidedRecording) &&
-                        !fuelDetector.pending && mixingKm<=0.0 &&
+                        !fuelQuarantined &&
                         warm && trimComparable && speed!=null && speed>=15.0 &&
                         knockMean!=null && knockMean>0.0 && ignSpread!=null &&
                         knockStatus!=1 && (superKnock==null || superKnock==0) &&
@@ -1283,7 +1366,7 @@ class EnetLoggerService : Service() {
                         }
                     }
                     val b95=if(measurementWindow) baseline95(r,m) else null
-                    val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && !fuelDetector.pending && mixingKm<=0.0 && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5))) knockMean/b95.v else null
+                    val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && !fuelQuarantined && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5))) knockMean/b95.v else null
                     if(autoMode && measurementWindow && ratio95!=null) lastQualified=now
                     if(captureActive && measurementWindow && ratio95!=null && (!autoMode || now-lastAutoAcceptedTime>=1200L)) {
                         if(autoMode) {
@@ -1343,23 +1426,23 @@ class EnetLoggerService : Service() {
                         OctaneCalibration.experimentalScore(accelV08Sum/accelV08Weight) else null
                     val highRpmMean=if(highRpmPoints>0) highRpmRatioSum/highRpmPoints else null
                     val highRpmBaselineAvg=if(highRpmPoints>0) highRpmBaselineSum.toDouble()/highRpmPoints else null
-                    val resultState=when { mixingKm>0.0 -> "MIXING"; fuelDetector.pending -> "REFUEL CHECK"; sessionConfidence<60 -> "COLLECTING"; sessionScore==null -> "COLLECTING"; sessionScore>=95.0 -> "NORMAL"; sessionScore>=92.0 -> "BORDERLINE"; else -> "BELOW BASELINE" }
+                    val resultState=when { (refuelStore.hasPending() || fuelDetector.pending) -> "REFUEL CHECK"; mixingKm>0.0 -> "MIXING"; sessionConfidence<60 -> "COLLECTING"; sessionScore==null -> "COLLECTING"; sessionScore>=95.0 -> "NORMAL"; sessionScore>=92.0 -> "BORDERLINE"; else -> "BELOW BASELINE" }
                     // Heartbeat is written regardless of captureActive. Keep measurement
                     // CSV unchanged, but make short connection tests analyzable.
                     if(now-lastTelemetryTime>=2500L) {
-                        telemetryRow(t,if(captureActive)"CAPTURE" else "IDLE",transport,
+                        telemetryRow(csvWriter,t,if(captureActive)"CAPTURE" else "IDLE",transport,
                             r,l,m,speed,coolant,slowFuel,fuelSessionId,runId,reconnects,drivePhase,
                             stft1,ltft1,a)
                         lastTelemetryTime=now
                     }
-                    if(captureActive) FileOutputStream(logFile!!,true).bufferedWriter().use{w-> w.appendLine((listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns,oil?:"",if(autoMode)"AUTO" else "TEST",coverageBins.size,speed?:"",slowFuel?:"",fuelSessionId,drivePhase,steadyPoints,accelPoints,steadyScore?:"",accelScore?:"",if(fuelDetector.pending)1 else 0,"%.2f".format(java.util.Locale.US,mixingKm),steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,highRpmMean?:"",highRpmPoints,highRpmOver120,highRpmBaselineAvg?:"",acceptedAutoSegments.size,
+                    if(captureActive) csvWriter.append(logFile!!, (listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns,oil?:"",if(autoMode)"AUTO" else "TEST",coverageBins.size,speed?:"",slowFuel?:"",fuelSessionId,drivePhase,steadyPoints,accelPoints,steadyScore?:"",accelScore?:"",if(refuelStore.hasPending())1 else 0,"%.2f".format(java.util.Locale.US,mixingKm),steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,highRpmMean?:"",highRpmPoints,highRpmOver120,highRpmBaselineAvg?:"",acceptedAutoSegments.size,
                         steadySurveyPoints,steadySurveyCells.size,accelV08Score?:"",accelV08Points,
                         OctaneCalibration.VERSION,steadyRef?.knockMeanVms?:"",accelRef?.knockMeanVms?:"",
                         ltft1?:"",combinedTrim?:"",a?:"",lastFineCell,
                         steadyFineStats.cells(),steadyFineStats.repeatableCells(),
                         lastFineSummary.observations,lastFineSummary.segments,
                         lastFineSummary.medianVms?:"",lastFineSummary.dispersionPct?:"",
-                        "", "")).joinToString(","))}
+                        "", "")).joinToString(","))
                     samples++
                     // This broadcast is intentionally every completed FAST cycle.
                     // Dashboard's heavyweight status stays at every fourth cycle.
@@ -1430,8 +1513,7 @@ class EnetLoggerService : Service() {
                     if(benchmarkNow-lastBenchmarkMs>=3000L) {
                         lastBenchmarkMs=benchmarkNow
                         try {
-                            FileOutputStream(benchmarkFile!!,true).bufferedWriter().use { out ->
-                                out.appendLine(listOf(
+                            csvWriter.append(benchmarkFile!!,listOf(
                                     System.currentTimeMillis(),benchmarkNow-started,
                                     requestedPollMode,effectiveMode,
                                     String.format(java.util.Locale.US,"%.3f",hz),
@@ -1447,8 +1529,8 @@ class EnetLoggerService : Service() {
                                     monitorOk,monitorErrors,monitorLastDuration,
                                     monitorState,monitorLastId,transport,fallbackNote
                                 ).joinToString(","))
-                            }
-                        } catch(_:Exception) { /* Benchmark must not interrupt ECU polling */ }
+                        } catch(e:CancellationException) { throw e }
+                          catch(_:Exception) { /* Benchmark must not interrupt ECU polling */ }
                     }
                     if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v2.0 EXP • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
                         steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,
@@ -1541,6 +1623,7 @@ class EnetLoggerService : Service() {
                     }
                 }
             } catch(e:Exception) {
+                if(e is CancellationException)throw e
                 if(!running) break
                 val failureAt=SystemClock.elapsedRealtime()
                 recentPollFailures.addLast(failureAt)
@@ -1580,7 +1663,7 @@ class EnetLoggerService : Service() {
                 slowOil=null; slowSpeed=null; slowFuel=null
                 connectionEvent("DISCONNECTED",reconnects,connectionStage,connectionTransport,connectionIp,
                     "${e.javaClass.simpleName}: ${e.message?:"no details"};${networkSnapshot()}")
-                telemetryRow(SystemClock.elapsedRealtime()-started,"DISCONNECTED",connectionTransport,
+                telemetryRow(csvWriter,SystemClock.elapsedRealtime()-started,"DISCONNECTED",connectionTransport,
                     fuelId=fuelSessionId,reconnects=reconnects,phase=connectionStage)
                 tone.startTone(ToneGenerator.TONE_SUP_ERROR,600)
                 emit("ENET reconnect #$reconnects [$connectionStage]: ${e.javaClass.simpleName}: ${e.message ?: "no details"}")
@@ -1590,7 +1673,7 @@ class EnetLoggerService : Service() {
                 if(vxscanWifiBlocked) {
                     val deadline=SystemClock.elapsedRealtime()+1200L
                     while(running && vxscanWifiBlocked && SystemClock.elapsedRealtime()<deadline) {
-                        SystemClock.sleep(30L)
+                        delay(30L)
                     }
                 }
                 val retryMs=when(consecutiveFailures) {
@@ -1602,15 +1685,20 @@ class EnetLoggerService : Service() {
                 }
                 connectionEvent("RETRY",reconnects,"BACKOFF",connectionTransport,connectionIp,
                     "delay_ms=$retryMs;wifi_blocked=$vxscanWifiBlocked;failures=$consecutiveFailures")
-                if(running) SystemClock.sleep(retryMs)
+                if(running) delay(retryMs)
             }
         }
-        // Always flush the final buffered samples when polling ends normally.
+        } finally {
+        // Drain/flush even when the Service is cancelled during a reconnect.
+        withContext(NonCancellable) {
         observationJournal?.close()
         try{compareWriter?.flush();compareWriter?.close()}catch(_:Exception){}
+        csvWriter.closeAndJoin()
         if(observationJournal?.failed==true && !journalFailureNoted)
             connectionEvent("OBSERVATION_JOURNAL_FAILED",reconnects,
                 "FILE",connectionTransport,null,"Journal close/flush failed")
+        }
+        }
     }
     // Octane Engine v0.2: empirical AI-95 baseline from validated v1.7.2 + independent v1.7.3 AI-95 runs.
     // RPM x MAP bins: median knock_mean_vms and number of baseline samples.

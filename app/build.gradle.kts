@@ -16,8 +16,8 @@ android {
         applicationId = "com.example.bmwenettest.octane2"
         minSdk = 26
         targetSdk = 35
-        versionCode = 200
-        versionName = "2.0.0-experimental"
+        versionCode = 203
+        versionName = "2.0.1-experimental"
     }
     testOptions {
         unitTests.isIncludeAndroidResources = false
@@ -25,6 +25,7 @@ android {
 }
 
 dependencies {
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     testImplementation("junit:junit:4.13.2")
 }
 
