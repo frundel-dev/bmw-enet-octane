@@ -391,8 +391,8 @@ class EnetLoggerService : Service() {
             "bmw_highspeed_benchmark_v1_${learningTripId}.csv")
         val highSpeedFileAvailable=try {
             highSpeedFile.writeText("# highspeed_schema=1;ecu_timestamp=unknown;"+
-                "response_change_does_not_prove_ecu_update=true\\n"+
-                HighSpeedBenchmark.HEADER+"\\n")
+                "response_change_does_not_prove_ecu_update=true\n"+
+                HighSpeedBenchmark.HEADER+"\n")
             true
         }catch(_:Exception){false}
         var lastHighSpeedExport=0L
