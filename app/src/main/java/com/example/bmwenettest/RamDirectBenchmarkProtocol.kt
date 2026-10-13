@@ -26,7 +26,8 @@ internal object RamDirectBenchmarkProtocol {
         Source.DIRECT_RAM -> {
             val req=RamMemoryProtocol.approvedVehicleRequest(
                 RamMemoryProtocol.APPROVED_A2L,RamMemoryProtocol.RPM_SIGNAL)
-            check(req?.contentEquals(byteArrayOf(0x23,0x14,0x60,0,0x3B,0x64,2))==true) {
+                ?: error("Verified RAM location unavailable")
+            check(req.contentEquals(byteArrayOf(0x23,0x14,0x60,0,0x3B,0x64,2))) {
                 "Verified RPM RAM request not available"
             }
             req
