@@ -29,7 +29,7 @@ class HighSpeedMetricsTest {
         assertEquals(9L,after.requests)
         assertEquals(8L,after.successful)
         assertEquals(1L,after.errors)
-        assertEquals(1.0,after.firstByteP95Ms?.let{if(it>0)1.0 else 0.0},0.0) // real recorded latency
+        assertEquals(8.0,after.firstByteP95Ms!!,0.001) // failed request cannot fake a latency
     }
 
     @Test fun unchangedResponseDoesNotMeanStaleEcu() {
@@ -61,7 +61,7 @@ class HighSpeedMetricsTest {
         val stats=HighSpeedMetrics(4)
         for(i in 1..10)stats.record("RPM",i.toLong()*100,
             HighSpeedMetrics.Request(0,0,i.toLong()*1_000_000,0,0,true,i))
-        assertEquals(7.0,stats.snapshot().single().firstByteMedianMs!!,0.001)
+        assertEquals(8.0,stats.snapshot().single().firstByteMedianMs!!,0.001)
         assertEquals(10.0,stats.snapshot().single().firstByteMaxMs!!,0.001)
     }
 }
