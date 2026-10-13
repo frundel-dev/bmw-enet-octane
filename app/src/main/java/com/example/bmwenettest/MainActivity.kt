@@ -549,13 +549,39 @@ class MainActivity : Activity() {
         }
         AlertDialog.Builder(this).setTitle("Выбери CSV для экспорта")
             .setItems(files.take(40).map{it.name}.toTypedArray()) { _,index ->
-                pendingOctane2Export=files[index]
-                @Suppress("DEPRECATION")
-                startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type="text/csv"
-                    putExtra(Intent.EXTRA_TITLE,files[index].name)
-                },902)
+                val chosen=files[index]
+                AlertDialog.Builder(this)
+                    .setTitle(chosen.name)
+                    .setItems(arrayOf("Отчёт 1.7 ↔ 2.0 (если формат 2.0)",
+                        "Экспорт CSV")) { _,action ->
+                        if(action==0) {
+                            if(!chosen.name.startsWith("bmw_octane2_comparison_v1_")) {
+                                AlertDialog.Builder(this).setMessage(
+                                    "Для парного отчёта необходим CSV сравнения OCTANE 2.0.")
+                                    .setPositiveButton("OK",null).show()
+                            }else executor.execute {
+                                val text=try {
+                                    chosen.useLines { lines ->
+                                        Octane2ComparisonReport.analyze(lines).russianReport()
+                                    }
+                                }catch(e:Exception){"Ошибка CSV: ${e.message}"}
+                                main.post {
+                                    if(!isFinishing && !isDestroyed)
+                                        AlertDialog.Builder(this)
+                                            .setTitle("RAM ↔ OBD • одна поездка")
+                                            .setMessage(text).setPositiveButton("Закрыть",null).show()
+                                }
+                            }
+                        }else {
+                            pendingOctane2Export=chosen
+                            @Suppress("DEPRECATION")
+                            startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                addCategory(Intent.CATEGORY_OPENABLE)
+                                type="text/csv"
+                                putExtra(Intent.EXTRA_TITLE,chosen.name)
+                            },902)
+                        }
+                    }.show()
             }.setNegativeButton("Отмена",null).show()
     }
 
