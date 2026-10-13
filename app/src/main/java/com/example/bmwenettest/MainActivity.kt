@@ -78,6 +78,8 @@ class MainActivity : Activity() {
     private lateinit var homeTargetBState:TextView
     private lateinit var analysisSummary:TextView
     private lateinit var diagnosticSummary:TextView
+    private lateinit var highSpeedStatus:TextView
+    private var highSpeedLastUpdateAt=0L
     private lateinit var navButtons:List<TextView>
     private lateinit var tabPages:List<android.view.View>
     private var selectedTab=0
@@ -514,6 +516,12 @@ class MainActivity : Activity() {
         diagnosticCard.addView(octane2LiveStatus)
         diagnosticCard.addView(octane2LambdaStatus)
         addCard(diagnostics,diagnosticCard)
+        val highSpeedCard=card("HIGH-SPEED ENGINE • EXPERIMENTAL")
+        highSpeedStatus=smallText("Ожидаю профилирование DME • нет измерений",12f,tertiary)
+        highSpeedCard.addView(highSpeedStatus)
+        highSpeedCard.addView(action("ПРОФИЛЬ HIGH SPEED"){showHighSpeedProfileDialog()})
+        highSpeedCard.addView(action("HIGH-SPEED BENCHMARK CSV"){showHighSpeedBenchmark()})
+        addCard(diagnostics,highSpeedCard)
         diagnostics.addView(dashboard)
 
         val settings=section()
@@ -523,6 +531,7 @@ class MainActivity : Activity() {
             12f,tertiary))
         settingsCard.addView(action("RAM / SWFL • ПРОФИЛЬ"){showOctane2RamProfile()})
         settingsCard.addView(action("РЕЖИМ ОПРОСА DME"){showPollingModeDialog()})
+        settingsCard.addView(action("HIGH-SPEED ПРОФИЛЬ"){showHighSpeedProfileDialog()})
         settingsCard.addView(action("OFFLINE REPLAY"){showObservationReplay()})
         settingsCard.addView(action("ДОПОЛНИТЕЛЬНО • ДИАГНОСТИКА / ЭКСПОРТ"){
             showAdditionalMenu()
@@ -606,6 +615,15 @@ class MainActivity : Activity() {
                     renderHomeState()
                     return
                 }
+                if(intent?.action==EnetLoggerService.ACTION_HIGH_SPEED_STATUS) {
+                    if(::highSpeedStatus.isInitialized) {
+                        highSpeedStatus.text=intent.getStringExtra(
+                            EnetLoggerService.EXTRA_HIGH_SPEED_STATUS)
+                            ?: "Нет измерений"
+                        highSpeedLastUpdateAt=SystemClock.elapsedRealtime()
+                    }
+                    return
+                }
                 if(intent?.action!=EnetLoggerService.ACTION_STATUS)return
                 val message=intent.getStringExtra(EnetLoggerService.EXTRA_STATUS)?:return
                 val speedFresh=intent.hasExtra(EnetLoggerService.EXTRA_SPEED)
@@ -658,6 +676,7 @@ class MainActivity : Activity() {
         val filter=IntentFilter(EnetLoggerService.ACTION_STATUS).apply {
             addAction(EnetLoggerService.ACTION_OCTANE2)
             addAction(EnetLoggerService.ACTION_FAST_TELEMETRY)
+            addAction(EnetLoggerService.ACTION_HIGH_SPEED_STATUS)
         }
         if(Build.VERSION.SDK_INT>=33) {
             registerReceiver(statusReceiver,filter,RECEIVER_NOT_EXPORTED)
@@ -1997,6 +2016,62 @@ class MainActivity : Activity() {
                         else -> "Резервный режим "+mode+" • переключение без перезапуска"
                     },Toast.LENGTH_LONG).show()
             }.setNegativeButton("Отмена",null).show()
+    }
+
+    private fun showHighSpeedProfileDialog() {
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        val profiles=HighSpeedProfilePolicy.Profile.entries
+        val current=HighSpeedProfilePolicy.resolve(
+            prefs.getString(HighSpeedProfilePolicy.PREF_PROFILE,null))
+        val labels=arrayOf(
+            "LEGACY — прежний планировщик, контрольная диагностика",
+            "HIGH_SPEED_CORE — FAST приоритет, ограничение SLOW до 1 запроса",
+            "HIGH_SPEED_EXTENDED — FAST + полная прежняя SLOW-полоса")
+        AlertDialog.Builder(this).setTitle("High-Speed Engine • эксперимент")
+            .setSingleChoiceItems(labels,profiles.indexOf(current)) { dialog,index ->
+                val chosen=profiles[index]
+                prefs.edit().putString(HighSpeedProfilePolicy.PREF_PROFILE,chosen.name)
+                    .apply()
+                // The polling coroutine applies changes between transactions
+                // and breaks the current partial STEADY/ACCEL segment.
+                dialog.dismiss()
+                Toast.makeText(this,
+                    "Выбран ${chosen.name}. Частота 20–50 Гц не подтверждена.",
+                    Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("Отмена",null).show()
+    }
+
+    private fun showHighSpeedBenchmark() {
+        val directory=getExternalFilesDir(null)?:filesDir
+        val file=directory.listFiles()?.filter { it.isFile &&
+            it.name.startsWith("bmw_highspeed_benchmark_v1_") &&
+            it.name.endsWith(".csv") }?.maxByOrNull{it.lastModified()}
+        if(file==null) {
+            AlertDialog.Builder(this).setTitle("High-Speed Benchmark")
+                .setMessage("Нет данных. Включи LOGGER для сбора измерений.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        executor.execute {
+            val report=try {
+                file.useLines { lines ->
+                    val offline=HighSpeedBenchmark.analyze(lines)
+                    "${file.name}\\n\n"+
+                        "Строк: ${offline.rows}, валидных: ${offline.validRows}"+
+                        ", повреждённых: ${offline.incompleteRows}\\n"+
+                        "Топливные сессии: ${offline.sessions}\\n"+
+                        "Профили: ${offline.modes}\\n"+
+                        "Каналы: ${offline.channels.joinToString()}\\n\\n"+
+                        "Истинный ECU sampling rate без ECU timestamp неизвестен."
+                }
+            }catch(e:Exception){"Не удалось проверить CSV: ${e.message}"}
+            runOnUiThread {
+                if(isFinishing || isDestroyed)return@runOnUiThread
+                AlertDialog.Builder(this).setTitle("High-Speed Benchmark • offline")
+                    .setMessage(report).setPositiveButton("OK",null).show()
+            }
+        }
     }
 
     private fun showPollingPerformance() {
