@@ -636,7 +636,10 @@ class MainActivity : Activity() {
                     lines.forEach { SteadyTargets.parse(it)?.let(old::add) }
                 }
             }catch(_:Exception){}
-            val snap=SteadyTargets.Tracker(session,old).snapshot()
+            val scoped=Octane2UiState.recordsForCurrentRefuel(old,session,
+                prefs.getLong(GuidedFuelTest.PREF_ID,0L),
+                prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1))
+            val snap=SteadyTargets.Tracker(session,scoped).snapshot()
             runOnUiThread {
                 if(!isFinishing && !isDestroyed)
                     updateTargetStatus(intArrayOf(snap.first.points,snap.first.segments,
@@ -1221,6 +1224,8 @@ class MainActivity : Activity() {
                     .putBoolean(BaselineLearning.PREF_ENABLED,false)
                     .commit()
                 guidedSnapshot=null
+                updateTargetStatus(intArrayOf(0,0,0,0,0),intArrayOf(0,0,0,0,0),
+                    "Новая заправка • ждём пригодные диагностические измерения")
                 refreshGuidedPanel()
                 selectTab(0)
                 renderHomeState()
