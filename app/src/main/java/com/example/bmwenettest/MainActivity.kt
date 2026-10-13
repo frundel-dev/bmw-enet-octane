@@ -439,6 +439,16 @@ class MainActivity : Activity() {
         networkCard.addView(homeConnection)
         networkCard.addView(homeCaptureState)
         addCard(home,networkCard)
+        val pendingCard=card("ВОЗМОЖНАЯ НОВАЯ ЗАПРАВКА")
+        pendingRefuelBanner=smallText("Ожидает подтверждения",13f,Color.rgb(255,194,102))
+        pendingCard.addView(pendingRefuelBanner)
+        pendingRefuelAction=action("ПОДТВЕРДИТЬ ЗАПРАВКУ") {
+            showPendingRefuelDialog()
+        }
+        pendingCard.addView(pendingRefuelAction)
+        addCard(home,pendingCard)
+        pendingCard.visibility=android.view.View.GONE
+        pendingRefuelBanner.tag=pendingCard
 
         // Measured coverage remains the canonical persisted SteadyTargets
         // sample/segment/trip counter; never infer it from UI timers.
@@ -466,6 +476,10 @@ class MainActivity : Activity() {
             13f,tertiary))
         refuelCard.addView(action("СОЗДАТЬ ЗАПРАВКУ"){showNewFuelTestDialog()})
         refuelCard.addView(action("ТЕКУЩАЯ ЗАПРАВКА"){showFuelTestOverview()})
+        refuelCard.addView(action("ИЗМЕНИТЬ ТОПЛИВО"){editCurrentFuel()})
+        refuelCard.addView(action("ПРОВЕРИТЬ ОБНАРУЖЕННУЮ ЗАПРАВКУ"){
+            showPendingRefuelDialog()
+        })
         refuelCard.addView(action("ИСТОРИЯ ЗАПРАВОК"){showGuidedFuelHistory()})
         addCard(refuels,refuelCard)
 
@@ -587,6 +601,12 @@ class MainActivity : Activity() {
                 }
                 if(intent?.action!=EnetLoggerService.ACTION_STATUS)return
                 val message=intent.getStringExtra(EnetLoggerService.EXTRA_STATUS)?:return
+                val speedFresh=intent.hasExtra(EnetLoggerService.EXTRA_SPEED)
+                if(speedFresh) {
+                    val speed=intent.getDoubleExtra(EnetLoggerService.EXTRA_SPEED,Double.NaN)
+                    recentVehicleSpeed=speed.takeIf{it.isFinite() && it>=0.0}
+                    recentSpeedAt=SystemClock.elapsedRealtime()
+                }
                 val newTransport=intent.getStringExtra(EnetLoggerService.EXTRA_TRANSPORT)
                 if(!newTransport.isNullOrBlank())transportLabel=newTransport
                 lastPollHz=intent.takeIf{it.hasExtra(EnetLoggerService.EXTRA_HZ)}
@@ -622,6 +642,7 @@ class MainActivity : Activity() {
                     dashboard.render(intent)
                 }
                 renderHomeState()
+                if(refuelStore.hasPending())maybeOfferStationaryRefuel()
             }
         }
         val filter=IntentFilter(EnetLoggerService.ACTION_STATUS).apply {
@@ -712,10 +733,28 @@ class MainActivity : Activity() {
         })
         val paused=hasFuel && !pref.getBoolean(GuidedFuelTest.PREF_ACTIVE,false)
             && !pref.getBoolean(GuidedFuelTest.PREF_DONE,false)
-        homeCaptureState.text=Octane2UiState.stateText(
-            logging,connection,hasFuel,firstTarget,secondTarget,paused)
+        homeCaptureState.text=if(refuelStore.hasPending())
+            "Ожидается подтверждение топлива • измерения для оценки исключены"
+            else if(pref.getFloat("mixing_remaining_km",0f)>0f)
+            "MIXING • переходный период, оценка приостановлена"
+            else Octane2UiState.stateText(
+                logging,connection,hasFuel,firstTarget,secondTarget,paused)
+        if(::pendingRefuelBanner.isInitialized) {
+            val pending=refuelStore.pending()
+            (pendingRefuelBanner.tag as? android.view.View)?.visibility=
+                if(pending!=null)android.view.View.VISIBLE else android.view.View.GONE
+            pendingRefuelBanner.text=if(pending==null)"" else
+                "Бак: ${pending.from?.toInt()?.toString()?:"?"}% → "+
+                "${pending.to?.toInt()?.toString()?:"?"}%\n"+
+                "Это лишь предполагаемая заправка. Необходимо выбрать бензин."
+            pendingRefuelAction.isEnabled=canConfirmRefuelNow()
+            pendingRefuelAction.text=if(canConfirmRefuelNow())
+                "УКАЗАТЬ ТОПЛИВО" else "ПОДТВЕРЖДЕНИЕ ПОСЛЕ ОСТАНОВКИ"
+        }
         val guide=Octane2UiState.guidance(firstTarget,secondTarget,
-            logging && connection==Octane2UiState.Connection.CONNECTED,paused)
+            logging && connection==Octane2UiState.Connection.CONNECTED,
+            paused || refuelStore.hasPending() ||
+                pref.getFloat("mixing_remaining_km",0f)>0f)
         homeNextMode.text=guide.heading+"\n"+guide.instructions
         fun stageText(target:Octane2UiState.Target)=when(target.stage) {
             Octane2UiState.Stage.NOT_STARTED -> "НЕ НАЧАТО"
@@ -771,6 +810,7 @@ class MainActivity : Activity() {
             }
             renderHomeState()
             refreshGuidedPanel()
+            if(refuelStore.hasPending())maybeOfferStationaryRefuel()
         }
     }
 
