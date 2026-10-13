@@ -779,6 +779,14 @@ class EnetLoggerService : Service() {
                             accelV08Sum=0.0;accelV08Weight=0.0;accelV08Points=0
                             highRpmRatioSum=0.0; highRpmPoints=0; highRpmOver120=0; highRpmBaselineSum=0
                             lastAutoAcceptedTime=0L; lastQualified=0L; previousSampleTime=0L; previousRpm=null; previousMap=null
+                        recordObservation(DriveObservation(
+                            wallTimeMs=System.currentTimeMillis(),
+                            elapsedMs=now-started,
+                            tripId=learningTripId,
+                            fuelSessionId=fuelSessionId,
+                            connectionEpoch=reconnects,
+                            event="REFUEL_CONFIRMED",
+                            transport=transport,pollMode=effectiveMode))
                         lastRefuelNote="Топливная сессия #$fuelSessionId подтверждена; "+
                             "переходный период не гарантирует полного перемешивания."
                         connectionEvent("FUEL_SESSION_CONFIRMED",reconnects,
@@ -797,6 +805,14 @@ class EnetLoggerService : Service() {
                         tankUpdate.refill?.let { refill ->
                             if(refuelStore.detected(refill.fromPercent,
                                     refill.toPercent,System.currentTimeMillis())!=null) {
+                                recordObservation(DriveObservation(
+                                    wallTimeMs=System.currentTimeMillis(),
+                                    elapsedMs=now-started,
+                                    tripId=learningTripId,
+                                    fuelSessionId=fuelSessionId,
+                                    connectionEpoch=reconnects,
+                                    event="REFUEL_PENDING",
+                                    transport=transport,pollMode=effectiveMode))
                                 steadyTargetTracker.resetCandidate(forceNewSegment=true)
                                 captureActive=false;captureTailUntil=0L
                                 lastRefuelNote="Обнаружена возможная заправка: "+
@@ -806,7 +822,9 @@ class EnetLoggerService : Service() {
                             }
                         }
                     }
-                    if(lastDistanceSampleTime>0L && now-lastDistanceSampleTime in 1L..10000L && mixingKm>0.0 && slowSpeed!=null) {
+                    if(lastDistanceSampleTime>0L && now-lastDistanceSampleTime in 1L..10000L &&
+                        mixingKm>0.0 && slowSpeed!=null &&
+                        prefs.getInt("fuel_session_id",fuelSessionId)==fuelSessionId) {
                         val traveled=(slowSpeed!!*(now-lastDistanceSampleTime)/3600000.0).coerceAtLeast(0.0)
                         mixingKm=(mixingKm-traveled).coerceAtLeast(0.0)
                         prefs.edit().putFloat("mixing_remaining_km",mixingKm.toFloat())
@@ -906,8 +924,9 @@ class EnetLoggerService : Service() {
                     }
                     val foctanMs=SystemClock.elapsedRealtime()-foctanStarted
                     val postFastStarted=SystemClock.elapsedRealtime()
-                    val fuelQuarantined=!RefuelEligibility.mayAssessFuel(
-                        refuelStore.hasPending(),mixingKm)
+                    val fuelQuarantined=
+                        prefs.getInt("fuel_session_id",fuelSessionId)!=fuelSessionId ||
+                        !RefuelEligibility.mayAssessFuel(refuelStore.hasPending(),mixingKm)
                     if(fuelQuarantined) {
                         captureActive=false;captureTailUntil=0L
                         steadyTargetTracker.resetCandidate()
