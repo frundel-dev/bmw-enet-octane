@@ -7,15 +7,15 @@ class RamSuiteProtocolTest {
     private val p=RamSuiteProtocol
 
     @Test fun strictlyOrderedProgression() {
-        val all=p.Stage.entries
+        val all=RamSuiteProtocol.Stage.entries
         assertEquals(listOf(7,8,9,10,11,12),all.map { it.number })
-        assertTrue(p.allowed(p.Stage.SIGNAL,emptySet()))
+        assertTrue(p.allowed(RamSuiteProtocol.Stage.SIGNAL,emptySet()))
         for(stage in all.drop(1))
             assertFalse(p.allowed(stage,emptySet()))
-        assertEquals(p.Stage.SIGNAL,p.nextStage(emptySet()))
-        assertTrue(p.allowed(p.Stage.RPM_DYNAMICS,setOf(7)))
-        assertFalse(p.allowed(p.Stage.SEQUENTIAL,setOf(7)))
-        assertEquals(p.Stage.SEQUENTIAL,p.nextStage(setOf(7,8)))
+        assertEquals(RamSuiteProtocol.Stage.SIGNAL,p.nextStage(emptySet()))
+        assertTrue(p.allowed(RamSuiteProtocol.Stage.RPM_DYNAMICS,setOf(7)))
+        assertFalse(p.allowed(RamSuiteProtocol.Stage.SEQUENTIAL,setOf(7)))
+        assertEquals(RamSuiteProtocol.Stage.SEQUENTIAL,p.nextStage(setOf(7,8)))
         assertEquals(null,p.nextStage((7..12).toSet()))
     }
 
@@ -63,12 +63,12 @@ class RamSuiteProtocolTest {
     }
 
     @Test fun boundedStageCountsAndTiming() {
-        assertEquals(4,p.count(p.Stage.SIGNAL))
-        assertEquals(8,p.count(p.Stage.RPM_DYNAMICS))
-        assertEquals(6,p.count(p.Stage.SEQUENTIAL))
-        assertEquals(2,p.count(p.Stage.RECONNECT))
-        assertEquals(12,p.count(p.Stage.REPEATABILITY))
-        assertEquals(90,p.count(p.Stage.SOAK))
+        assertEquals(4,p.count(RamSuiteProtocol.Stage.SIGNAL))
+        assertEquals(8,p.count(RamSuiteProtocol.Stage.RPM_DYNAMICS))
+        assertEquals(6,p.count(RamSuiteProtocol.Stage.SEQUENTIAL))
+        assertEquals(2,p.count(RamSuiteProtocol.Stage.RECONNECT))
+        assertEquals(12,p.count(RamSuiteProtocol.Stage.REPEATABILITY))
+        assertEquals(90,p.count(RamSuiteProtocol.Stage.SOAK))
         assertEquals(300L,p.PACE_MS)
         assertNull(p.gapMs(100L,90L))
         assertEquals(200L,p.gapMs(100L,300L))
