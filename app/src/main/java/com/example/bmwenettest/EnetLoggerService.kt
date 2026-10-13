@@ -29,6 +29,8 @@ class EnetLoggerService : Service() {
         const val ACTION_STATUS = "enet.STATUS"
         const val ACTION_FAST_TELEMETRY = "enet.FAST_TELEMETRY"
         const val ACTION_OCTANE2 = "enet.OCTANE2"
+        const val ACTION_HIGH_SPEED_STATUS="enet.HIGH_SPEED_STATUS"
+        const val EXTRA_HIGH_SPEED_STATUS="high_speed_status"
         const val EXTRA_RAM_STATUS = "octane2_ram_status"
         const val EXTRA_RAM_RPM = "octane2_ram_rpm"
         const val EXTRA_OBD_RPM = "octane2_obd_rpm"
@@ -120,6 +122,8 @@ class EnetLoggerService : Service() {
     private val connectionLogLock = Any()
     private var socket: Socket? = null
     private var logFile: File? = null
+    // Accessed only by the one primary DME polling coroutine.
+    private var highSpeedMetrics:HighSpeedMetrics?=null
     private val tone by lazy { ToneGenerator(AudioManager.STREAM_MUSIC, 85) }
 
     override fun onBind(intent: Intent?) = null
@@ -374,6 +378,8 @@ class EnetLoggerService : Service() {
     private suspend fun loop() {
         val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0
         val ramFrameReader=HsfzReusableReader()
+        val highspeed=HighSpeedMetrics()
+        highSpeedMetrics=highspeed
         val csvWriter=AsyncCsvWriter(onFailure={ file,error ->
             connectionEvent("ASYNC_CSV_WRITE_FAILED",reconnects,"FILE",
                 "ASYNC",null,"file=${file.name};error=${error.javaClass.simpleName}: ${error.message}")
@@ -381,6 +387,15 @@ class EnetLoggerService : Service() {
         })
         // A new trip ID on each LOGGER start. Not equivalent to a separate day.
         val learningTripId=System.currentTimeMillis()
+        val highSpeedFile=File(getExternalFilesDir(null)?:filesDir,
+            "bmw_highspeed_benchmark_v1_${learningTripId}.csv")
+        val highSpeedFileAvailable=try {
+            highSpeedFile.writeText("# highspeed_schema=1;ecu_timestamp=unknown;"+
+                "response_change_does_not_prove_ecu_update=true\n"+
+                HighSpeedBenchmark.HEADER+"\n")
+            true
+        }catch(_:Exception){false}
+        var lastHighSpeedExport=0L
         val ramPolicy=Octane2RamPolicy(
             getSharedPreferences("bmw_native",MODE_PRIVATE)
                 .getBoolean("octane2_swfl_confirmed",false))
@@ -457,6 +472,11 @@ class EnetLoggerService : Service() {
         var slowSuperKnock:Int?=null; var slowOil:Double?=null; var slowSpeed:Double?=null; var slowFuel:Double?=null; var lastFuelPoll=0L; var lastSlow=0L; var lastFoctan=0L
         var slowSensorAtMs=0L
         val slowScheduler=SlowPollScheduler()
+        var highSpeedProfile=HighSpeedProfilePolicy.resolve(
+            getSharedPreferences("bmw_native",MODE_PRIVATE)
+                .getString(HighSpeedProfilePolicy.PREF_PROFILE,null))
+        var highSpeedCycle=0L
+        var previousHighSpeedCycleMs=0L
         val monitorPolicy=DmeMonitorPolicy().apply { reset(started) }
         var monitorOk=0
         var monitorErrors=0
@@ -564,6 +584,8 @@ class EnetLoggerService : Service() {
             slowOil=null; slowSpeed=null; slowFuel=null
             lastBenchmarkMs=0L
             sampleTimes.clear()
+            highspeed.reset()
+            previousHighSpeedCycleMs=0L
             // Do not merge one ACCEL/STEADY segment across poll topologies.
             steadyTargetTracker.resetCandidate(forceNewSegment=true)
             captureActive=false
@@ -730,14 +752,30 @@ class EnetLoggerService : Service() {
                         activatePollingMode(newRequest,activeNet!!,gatewayIp!!,
                             transport,"user changed poll mode without restart")
                     }
+                    // Profile changes are applied only between completed UDS
+                    // cycles, never during an outstanding DME transaction.
+                    val selectedHighSpeed=HighSpeedProfilePolicy.resolve(
+                        prefs.getString(HighSpeedProfilePolicy.PREF_PROFILE,null))
+                    if(selectedHighSpeed!=highSpeedProfile) {
+                        highSpeedProfile=selectedHighSpeed
+                        slowScheduler.reset()
+                        highspeed.reset()
+                        steadyTargetTracker.resetCandidate(forceNewSegment=true)
+                        captureActive=false;captureTailUntil=0L
+                        previousSampleTime=0L;previousRpm=null;previousMap=null
+                        connectionEvent("HIGH_SPEED_PROFILE",reconnects,"PROFILE",
+                            transport,gatewayIp,"profile=${highSpeedProfile.name}")
+                    }
                     val cycleStart=SystemClock.elapsedRealtime()
+                    highSpeedCycle++
                     var slowRequestCount=0
                     val obdStarted=SystemClock.elapsedRealtime()
-                    fun pid(id:Int):ByteArray? {
-                        val q=hsfz(byteArrayOf(0x01,id.toByte())); socket!!.getOutputStream().write(q); socket!!.getOutputStream().flush()
-                        return readFrames(socket!!.getInputStream()).mapNotNull{payload(it)}
-                            .firstOrNull { DiagnosticResponse.obd(it,id)!=null }
-                    }
+                    fun pid(id:Int):ByteArray? =
+                        measuredDiagnostic("OBD_%02X".format(java.util.Locale.US,id), {
+                            hsfz(byteArrayOf(0x01,id.toByte()))
+                        }) { replies ->
+                            replies.firstOrNull { DiagnosticResponse.obd(it,id)!=null }
+                        }
                     fun obd(p:ByteArray?,id:Int)=p?.let{DiagnosticResponse.obd(it,id)}
                     val rpmObdStarted=SystemClock.elapsedRealtime()
                     val obdRpm=obd(pid(0x0C),0x0C)?.takeIf{it.size==2}
@@ -756,7 +794,13 @@ class EnetLoggerService : Service() {
                     if(optimizedSlow) {
                         // B/B+ stay single-threaded on one socket. Optional
                         // SLOW reads are spread over FAST cycles (max 2 each).
-                        for(slowId in slowScheduler.due(SystemClock.elapsedRealtime(),2)) {
+                        val budget=HighSpeedProfilePolicy.optionalBudget(
+                            highSpeedProfile,highSpeedCycle,previousHighSpeedCycleMs,
+                            consecutiveFailures>0)
+                        val due=if(budget>0)
+                            slowScheduler.due(SystemClock.elapsedRealtime(),budget)
+                            else emptyList()
+                        for(slowId in due) {
                             val data=if(slowId==0x5728)udsData(0x5728)
                                 else obd(pid(slowId),slowId)
                             slowRequestCount++
@@ -800,6 +844,7 @@ class EnetLoggerService : Service() {
                     val newConfirmedId=prefs.getInt("fuel_session_id",fuelSessionId)
                     if(newConfirmedId!=fuelSessionId) {
                         fuelSessionId=newConfirmedId
+                        highspeed.reset() // never compare different fuel sessions
                         mixingKm=prefs.getFloat("mixing_remaining_km",
                             RefuelSessionStore.MIXING_DISTANCE_KM).toDouble()
                         steadyTargetTracker=loadSteadyTargets(fuelSessionId)
@@ -1045,16 +1090,27 @@ class EnetLoggerService : Service() {
                     var acceptedRam=false
                     if(ramReadAllowed && running) {
                         lastRamRequestMs=ramStarted
+                        val ramT0=System.nanoTime()
+                        var ramPrepared=ramT0
+                        var ramSent=ramT0
+                        var ramFirst:Long?=null
+                        var ramReceived=ramT0
+                        var ramDecoded=ramT0
                         try {
                             val request=RamMemoryProtocol.approvedVehicleRequest(
                                 RamMemoryProtocol.APPROVED_A2L,
                                 RamMemoryProtocol.RPM_SIGNAL)
                                 ?: throw IOException("RAM RPM not allowlisted")
-                            socket!!.getOutputStream().write(hsfz(request))
+                            val packet=hsfz(request)
+                            ramPrepared=System.nanoTime()
+                            socket!!.getOutputStream().write(packet)
                             socket!!.getOutputStream().flush()
+                            ramSent=System.nanoTime()
                             val ramLength=ramFrameReader.readDiagnostic(
-                                socket!!.getInputStream())
+                                FirstByteMeasuredStream(socket!!.getInputStream(),
+                                    {time->if(ramFirst==null)ramFirst=time}))
                                 ?: throw IOException("RAM 0x23 missing HSFZ reply")
+                            ramReceived=System.nanoTime()
                             if(ramFrameReader.isRamPositiveRpm()) {
                                 ramRpm=ramFrameReader.rpm()?.toDouble()
                                 acceptedRam=ramPolicy.accept(ramRpm,obdRpm)
@@ -1064,11 +1120,24 @@ class EnetLoggerService : Service() {
                                     throw IOException("RAM 0x23 unexpected or pending reply (length=$ramLength)")
                                 ramPolicy.disable("RAM NRC %02X".format(nrc))
                             }
+                            ramDecoded=System.nanoTime()
                         }catch(e:Exception) {
                             ramPolicy.disable("RAM transport/protocol fault")
                             // Unknown/late response may desynchronize the socket:
                             // never continue ordinary DID reads on this stream.
                             throw IOException("RAM 0x23 uncertain; reconnect safely",e)
+                        } finally {
+                            // The approved RAM channel uses the same single
+                            // socket owner and re-usable HSFZ body buffer.
+                            val last=System.nanoTime()
+                            highspeed.record("RAM_23",ramT0,HighSpeedMetrics.Request(
+                                (ramPrepared-ramT0).coerceAtLeast(0),
+                                (ramSent-ramPrepared).coerceAtLeast(0),
+                                ramFirst?.let{(it-ramSent).coerceAtLeast(0)},
+                                ramFirst?.let{((if(ramReceived>=it)ramReceived else last)-it)
+                                    .coerceAtLeast(0)},
+                                (ramDecoded-ramReceived).coerceAtLeast(0),
+                                acceptedRam,ramRpm?.toInt()))
                         }
                     }
                     val ramLatency=if(ramReadAllowed)
@@ -1509,6 +1578,7 @@ class EnetLoggerService : Service() {
                     ))
                     val postFastMs=benchmarkNow-postFastStarted
                     val cycleMs=benchmarkNow-cycleStart
+                    previousHighSpeedCycleMs=cycleMs
                     val fallbackNote=lastBatchFallback.replace(",",";")
                     if(benchmarkNow-lastBenchmarkMs>=3000L) {
                         lastBenchmarkMs=benchmarkNow
@@ -1531,6 +1601,41 @@ class EnetLoggerService : Service() {
                                 ).joinToString(","))
                         } catch(e:CancellationException) { throw e }
                           catch(_:Exception) { /* Benchmark must not interrupt ECU polling */ }
+                    }
+                    if(highSpeedFileAvailable &&
+                        benchmarkNow-lastHighSpeedExport>=5000L) {
+                        lastHighSpeedExport=benchmarkNow
+                        val writerSnapshot=csvWriter.snapshot()
+                        val summaries=highspeed.snapshot()
+                        for(item in summaries) {
+                            csvWriter.append(highSpeedFile,HighSpeedBenchmark.encode(
+                                HighSpeedBenchmark.Sample(
+                                    System.currentTimeMillis(),learningTripId,
+                                    fuelSessionId,reconnects,
+                                    highSpeedProfile.name,effectiveMode,item,
+                                    writerSnapshot,cycleMs,hz,
+                                    listOf(kz1,kz2,kz3,kz4).count{it!=null},
+                                    listOf(iz1,iz2,iz3,iz4).count{it!=null}
+                                )))
+                        }
+                        val core=summaries.filter{it.channel in listOf(
+                            "OBD_0C","OBD_04","OBD_0B","DID_BATCH_8",
+                            "DID_BATCH_4","DID_4A37","DID_4A49")}
+                        val errors=core.sumOf{it.errors}
+                        val minCompleteness=core.minOfOrNull{it.completeness}
+                        val summary="Профиль ${highSpeedProfile.name} • "+
+                            "${"%.1f".format(java.util.Locale.US,hz)} цикла/с"+
+                            " • каналов ${summaries.size}"+
+                            " • p95 OBD RPM ${core.firstOrNull{it.channel=="OBD_0C"}
+                                ?.firstByteP95Ms?.toString()?:"—"} мс"+
+                            " • полнота ключевых ${minCompleteness?.let{
+                                "%.0f".format(java.util.Locale.US,it*100)
+                            }?:"—"}%"+
+                            " • ошибок ${errors}"+
+                            " • CSV очередь ${writerSnapshot.depth}"+
+                            " / потерь ${writerSnapshot.lost}"
+                        sendBroadcast(Intent(ACTION_HIGH_SPEED_STATUS).setPackage(packageName)
+                            .putExtra(EXTRA_HIGH_SPEED_STATUS,summary))
                     }
                     if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v2.0 EXP • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
                         steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,
@@ -1689,6 +1794,7 @@ class EnetLoggerService : Service() {
             }
         }
         } finally {
+        highSpeedMetrics=null
         // Drain/flush even when the Service is cancelled during a reconnect.
         withContext(NonCancellable) {
         observationJournal?.close()
@@ -1757,33 +1863,72 @@ class EnetLoggerService : Service() {
         }
     }
 
-    private fun udsMixedBatch():Map<Int,ByteArray>? {
-        val s=socket ?: return null
-        s.getOutputStream().write(hsfz(MixedDidBatch.request()))
-        s.getOutputStream().flush()
-        return readFrames(s.getInputStream()).mapNotNull { payload(it) }
-            .firstNotNullOfOrNull { MixedDidBatch.parse(it) }
-    }
-
-    private fun udsBatch(dids:List<Int>,dataBytes:Int):Map<Int,ByteArray>? {
-        val s=socket ?: return null
-        val message=hsfz(DmeBatchParser.request(dids))
-        s.getOutputStream().write(message)
-        s.getOutputStream().flush()
-        val payloads=readFrames(s.getInputStream()).mapNotNull { payload(it) }
-        return payloads.firstNotNullOfOrNull { p ->
-            DmeBatchParser.parse(p,dids,dataBytes)
+    /**
+     * Timings use Android monotonic time. Keep strictly one unfinished
+     * transaction on the single socket; the wrapper does not read ahead.
+     * Null/negative/malformed responses are never marked successful.
+     */
+    private fun <T> measuredDiagnostic(
+        channel:String,build:()->ByteArray,decode:(List<ByteArray>)->T?
+    ):T? {
+        val s=socket?:return null
+        val start=System.nanoTime()
+        var builtAt=start
+        var sentAt=start
+        var firstAt:Long?=null
+        var receivedAt=start
+        var decodedAt=start
+        var valid=false
+        var fingerprint:Int?=null
+        try {
+            val bytes=build()
+            builtAt=System.nanoTime()
+            s.getOutputStream().write(bytes)
+            s.getOutputStream().flush()
+            sentAt=System.nanoTime()
+            val received=readFrames(FirstByteMeasuredStream(
+                s.getInputStream(),{t->if(firstAt==null)firstAt=t}))
+            receivedAt=System.nanoTime()
+            val payloads=received.mapNotNull(::payload)
+            val result=decode(payloads)
+            decodedAt=System.nanoTime()
+            valid=result!=null
+            if(valid)fingerprint=payloads.fold(1){a,b->31*a+b.contentHashCode()}
+            return result
+        } finally {
+            val end=System.nanoTime()
+            // Instrumentation must never suppress the original read/parse
+            // exception, including HSFZ timeout and truncated responses.
+            try {
+                highSpeedMetrics?.record(channel,start,HighSpeedMetrics.Request(
+                    (builtAt-start).coerceAtLeast(0L),
+                    (sentAt-builtAt).coerceAtLeast(0L),
+                    firstAt?.let{(it-sentAt).coerceAtLeast(0L)},
+                    firstAt?.let{((if(receivedAt>=it)receivedAt else end)-it)
+                        .coerceAtLeast(0L)},
+                    (decodedAt-receivedAt).coerceAtLeast(0L),valid,fingerprint))
+            }catch(_:Exception){}
         }
     }
 
-    private fun udsData(did:Int):ByteArray? {
-        val s=socket ?: return null
-        val hi=((did ushr 8) and 255).toByte(); val lo=(did and 255).toByte()
-        val q=hsfz(byteArrayOf(0x22,hi,lo))
-        s.getOutputStream().write(q); s.getOutputStream().flush()
-        return readFrames(s.getInputStream()).mapNotNull{payload(it)}
-            .firstNotNullOfOrNull { DiagnosticResponse.uds(it,did) }
-    }
+    private fun udsMixedBatch():Map<Int,ByteArray>? =
+        measuredDiagnostic("DID_BATCH_8", { hsfz(MixedDidBatch.request()) }) {
+            replies->replies.firstNotNullOfOrNull { MixedDidBatch.parse(it) }
+        }
+
+    private fun udsBatch(dids:List<Int>,dataBytes:Int):Map<Int,ByteArray>? =
+        measuredDiagnostic("DID_BATCH_${dids.size}", {
+            hsfz(DmeBatchParser.request(dids))
+        }) { replies ->
+            replies.firstNotNullOfOrNull { DmeBatchParser.parse(it,dids,dataBytes) }
+        }
+
+    private fun udsData(did:Int):ByteArray? =
+        measuredDiagnostic("DID_%04X".format(java.util.Locale.US,did), {
+            hsfz(byteArrayOf(0x22,(did ushr 8).toByte(),did.toByte()))
+        }) { replies ->
+            replies.firstNotNullOfOrNull { DiagnosticResponse.uds(it,did) }
+        }
     data class D(val ip:String)
     private fun discover(n:Network,bs:List<String>):D? {
         val s=DatagramSocket(null)
