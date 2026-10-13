@@ -597,6 +597,7 @@ class EnetLoggerService : Service() {
                         connectionStage="FAST_TCP"
                         try {
                             val quick=network.socketFactory.createSocket()
+                            quick.tcpNoDelay=true
                             try {
                                 quick.soTimeout=1800
                                 quick.connect(InetSocketAddress(rememberedIp,6801),1300)
@@ -635,6 +636,7 @@ class EnetLoggerService : Service() {
                     var candidateSocket:Socket?=null
                     try {
                         candidateSocket=network.socketFactory.createSocket()
+                        candidateSocket.tcpNoDelay=true
                         candidateSocket.soTimeout=1800
                         candidateSocket.connect(InetSocketAddress(found.ip,6801),2000)
                         socket=candidateSocket; activeNet=network; transport=kind; gatewayIp=found.ip
