@@ -537,6 +537,7 @@ class MainActivity : Activity() {
                         ?: "LOCKED"
                     val ram=intent.getDoubleExtra(EnetLoggerService.EXTRA_RAM_RPM,Double.NaN)
                     val obd=intent.getDoubleExtra(EnetLoggerService.EXTRA_OBD_RPM,Double.NaN)
+                    lastRamState=state
                     octane2LiveStatus.text=if(ram.isFinite() && obd.isFinite())
                         "RAM $state • RAM ${ram.toInt()} / OBD ${obd.toInt()} об/мин"
                         else "RAM: $state • OBD сохранён как контроль"
@@ -544,25 +545,52 @@ class MainActivity : Activity() {
                         EnetLoggerService.EXTRA_ACTUAL_LAMBDA,Double.NaN)
                     val pid=intent.getIntExtra(
                         EnetLoggerService.EXTRA_LAMBDA_SOURCE,-1)
+                    lastActualLambda=lambda.takeIf{it.isFinite()}
                     octane2LambdaStatus.text=if(lambda.isFinite())
                         "Фактическая λ = ${"%.3f".format(java.util.Locale.US,lambda)} • PID 0x${pid.toString(16)}"
                         else "Фактическая λ недоступна • заданная смесь не заменяет датчик"
+                    renderHomeState()
                     return
                 }
                 if(intent?.action==EnetLoggerService.ACTION_FAST_TELEMETRY) {
                     val r=intent.getDoubleExtra(EnetLoggerService.EXTRA_RPM,Double.NaN)
                     val m=intent.getDoubleExtra(EnetLoggerService.EXTRA_MAP,Double.NaN)
                     val l=intent.getDoubleExtra(EnetLoggerService.EXTRA_LOAD,Double.NaN)
+                    if(logging && (r.isFinite() || m.isFinite()))
+                        connection=Octane2UiState.Connection.CONNECTED
+                    lastFastReceivedAt=SystemClock.elapsedRealtime()
+                    latestRpm=r.takeIf{it.isFinite()}
+                    latestMap=m.takeIf{it.isFinite()}
                     showFastTelemetry(r.takeIf{it.isFinite()},m.takeIf{it.isFinite()},
                         l.takeIf{it.isFinite()},
                         intent.getIntExtra(EnetLoggerService.EXTRA_STEADY_TARGET_INDEX,-1),
                         intent.getLongExtra(EnetLoggerService.EXTRA_STEADY_HOLD_MS,0L))
                     main.removeCallbacks(fastStaleClear)
                     main.postDelayed(fastStaleClear,2500L)
+                    renderHomeState()
                     return
                 }
                 if(intent?.action!=EnetLoggerService.ACTION_STATUS)return
                 val message=intent.getStringExtra(EnetLoggerService.EXTRA_STATUS)?:return
+                val newTransport=intent.getStringExtra(EnetLoggerService.EXTRA_TRANSPORT)
+                if(!newTransport.isNullOrBlank())transportLabel=newTransport
+                lastPollHz=intent.takeIf{it.hasExtra(EnetLoggerService.EXTRA_HZ)}
+                    ?.getDoubleExtra(EnetLoggerService.EXTRA_HZ,Double.NaN)
+                    ?.takeIf{it.isFinite()}
+                    ?:lastPollHz
+                if(intent.hasExtra(EnetLoggerService.EXTRA_RECONNECTS))
+                    lastReconnectCount=intent.getIntExtra(EnetLoggerService.EXTRA_RECONNECTS,0)
+                when {
+                    message.startsWith("ENET reconnect",true) ->
+                        connection=Octane2UiState.Connection.RECONNECTING
+                    message.startsWith("CONNECTED ",true) ->
+                        connection=Octane2UiState.Connection.CONNECTED
+                    message.startsWith("DISCOVERY ",true) ||
+                    message.startsWith("GATEWAY ",true) ->
+                        connection=Octane2UiState.Connection.CONNECTING
+                    message.contains("No usable physical",true) ->
+                        connection=Octane2UiState.Connection.ERROR
+                }
                 if(intent.hasExtra(EnetLoggerService.EXTRA_RPM))
                     liveLearningRpm=intent.getDoubleExtra(EnetLoggerService.EXTRA_RPM,0.0)
                 if(intent.hasExtra(EnetLoggerService.EXTRA_LOAD))
@@ -578,6 +606,7 @@ class MainActivity : Activity() {
                 } else {
                     dashboard.render(intent)
                 }
+                renderHomeState()
             }
         }
         val filter=IntentFilter(EnetLoggerService.ACTION_STATUS).apply {
@@ -1078,7 +1107,10 @@ class MainActivity : Activity() {
         liveCue.text=cue.description
         liveCue.setTextColor(accent)
         liveHold.progress=cue.holdPct
+        latestRpm=rpm
+        latestMap=map
         dashboard.updateFastReadings(rpm,map,load)
+        renderHomeState()
     }
 
     private fun updateTargetStatus(a:IntArray?,b:IntArray?,hint:String?) {
@@ -1091,6 +1123,9 @@ class MainActivity : Activity() {
         targetProgressOne.progress=a[4].coerceIn(0,100)
         targetProgressTwo.progress=b[4].coerceIn(0,100)
         targetHint.text=hint?:"Ожидаю устойчивые RPM и MAP"
+        firstTarget=Octane2UiState.target(a)
+        secondTarget=Octane2UiState.target(b)
+        renderHomeState()
     }
 
     private fun showFuelTestOverview() {
