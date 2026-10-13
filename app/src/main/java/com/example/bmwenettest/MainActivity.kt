@@ -339,7 +339,8 @@ class MainActivity : Activity() {
             "Обучение эталона • RPM × нагрузка", "Режим замеров AUTO / TEST",
             "История тестов топлива", "RAM LAB 1 • проверка DME",
             "RAM LAB 2 • тест пакетного опроса",
-            "RAM LAB 3 • RAM 0x23 (офлайн)")
+            "RAM LAB 3 • RAM 0x23 (офлайн)",
+            "RAM LAB 4 • одно чтение RAM RPM")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -371,6 +372,7 @@ class MainActivity : Activity() {
                     13 -> showRamReadiness()
                     14 -> showRamBatchBenchmark()
                     15 -> showRamMemoryOffline()
+                    16 -> showRamLiveSingleRead()
                 }
             }
             .setNegativeButton("Закрыть",null)
@@ -444,6 +446,84 @@ class MainActivity : Activity() {
     }
 
 
+
+
+    private fun showRamLiveSingleRead() {
+        if(historyBusy || logging || EnetLoggerService.isLoggerActive) {
+            AlertDialog.Builder(this).setTitle("RAM LAB 4 • LOGGER STOP")
+                .setMessage("Останови LOGGER и другие диагностические программы. "+
+                    "Нельзя одновременно подключать два приложения к VXSCAN/DME.")
+                .setPositiveButton("Понятно",null).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("RAM LAB 4 • одно чтение памяти")
+            .setMessage("Эксперимент только на стоянке, селектор P, "+
+                "двигатель на ровном холостом ходу. Закрой MG Flasher "+
+                "и все другие диагностические приложения.\n\n"+
+                "ПОДТВЕРДИ, что программное обеспечение DME НЕ изменилось после "+
+                "проверки в MG Flasher:\n"+
+                "A2L: R4C9J797B\n"+
+                "SWFL: 00005D55-070.060.007\n\n"+
+                "Будет проверена скорость 0 км/ч по OBD, считаны RPM, "+
+                "отправлен ОДИН запрос UDS 0x23 на 2 байта Nkw из "+
+                "опубликованной A2L и повторно считаны OBD RPM. "+
+                "При отрицательном ответе или ошибке связи операция "+
+                "прекратится БЕЗ повторных запросов.\n\n"+
+                "Возможен отказ DME даже с FEMTO/custom code. "+
+                "Никаких 0x2C, 0x10, 0x27, кодирования, прошивки.")
+            .setNegativeButton("Отмена",null)
+            .setPositiveButton("ПО совпадает • Начать") { _,_ ->
+                if(!historyBusy && !logging && !EnetLoggerService.isLoggerActive)
+                    startRamLiveSingleRead()
+            }.show()
+    }
+
+    private fun startRamLiveSingleRead() {
+        historyBusy=true
+        historyCancel=false
+        val dialog=AlertDialog.Builder(this)
+            .setTitle("RAM LAB 4 • однократный RAM 0x23")
+            .setMessage("Подключение к DME…")
+            .setNegativeButton("Отменить") { _,_ -> historyCancel=true }
+            .create()
+        dialog.setCancelable(false)
+        dialog.show()
+        executor.execute {
+            try {
+                val result=DmeHistoryReader(applicationContext).collectRamSingleRpm(
+                    { historyCancel || Thread.currentThread().isInterrupted },
+                    { message -> main.post {
+                        if(!isFinishing && !isDestroyed && dialog.isShowing)
+                            dialog.setMessage(message)
+                    } }
+                )
+                main.post {
+                    if(!isFinishing && !isDestroyed) {
+                        if(dialog.isShowing)dialog.dismiss()
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle(if(result.successful)"RAM LAB 4 • RPM совпал"
+                                      else "RAM LAB 4 • неполный/отрицательный результат")
+                            .setMessage(result.summary+"\n\nCSV: "+result.file.absolutePath)
+                            .setPositiveButton("Сохранить CSV") { _,_ -> exportRamReport(result.file) }
+                            .setNegativeButton("Закрыть",null).show()
+                    }
+                }
+            }catch(e:Exception) {
+                main.post {
+                    if(!isFinishing && !isDestroyed) {
+                        if(dialog.isShowing)dialog.dismiss()
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("RAM LAB 4 • ошибка")
+                            .setMessage(e.javaClass.simpleName+": "+(e.message ?: "unknown"))
+                            .setPositiveButton("Закрыть",null).show()
+                    }
+                }
+            }finally {
+                historyBusy=false
+            }
+        }
+    }
 
     private fun showRamMemoryOffline() {
         AlertDialog.Builder(this)

@@ -158,6 +158,121 @@ internal class DmeHistoryReader(private val context:Context) {
      * identifiers; it cannot detect arbitrary RAM access or configure a DDDI.
      * A partial CSV is preserved if transport fails or the user cancels.
      */
+
+    /**
+     * RAM LAB 4: parked-only SINGLE live memory read at immutable RPM address
+     * tied to screenshot-confirmed SWFL/A2L. Caller must independently confirm
+     * the ECU's software identity; F18x UDS identification was rejected.
+     * On this socket: OBD speed, OBD RPM, one UDS 0x23, OBD RPM comparison.
+     * Never sends session changes, security access or dynamic DID commands.
+     */
+    fun collectRamSingleRpm(cancel:()->Boolean,progress:(String)->Unit):Outcome {
+        verifyAllowed(cancel)
+        val dir=context.getExternalFilesDir(null) ?: context.filesDir
+        val file=File(dir,"bmw_ram_live_v4_${System.currentTimeMillis()}.csv")
+        var successful=false
+        var problem:String?=null
+        var acceptedRpm:Int?=null
+        var firstRpm:Double?=null
+        var lastRpm:Double?=null
+        var host=""
+        var transport=""
+        file.bufferedWriter().use { writer ->
+            writer.appendLine("wall_time_ms,stage,status,elapsed_ms,request_hex,response_hex,decoded,transport,peer,profile")
+            fun record(stage:String,status:String,elapsed:Long,request:ByteArray,response:ByteArray,
+                       decoded:Any="") {
+                writer.appendLine(DmeHistoryProtocol.csv(
+                    System.currentTimeMillis(),stage,status,elapsed,
+                    DmeHistoryProtocol.hex(request),DmeHistoryProtocol.hex(response),
+                    decoded,transport,host,
+                    RamMemoryProtocol.APPROVED_A2L+"/"+RamMemoryProtocol.APPROVED_SWFL))
+                writer.flush()
+            }
+            try {
+                val ramRequest=RamMemoryProtocol.approvedVehicleRequest(
+                    RamMemoryProtocol.APPROVED_A2L,RamMemoryProtocol.RPM_SIGNAL)
+                    ?: throw IOException("No approved exact DME RAM location")
+                if(!ramRequest.contentEquals(
+                        byteArrayOf(0x23,0x14,0x60,0x00,0x3B,0x64,0x02)))
+                    throw IOException("RAM LAB4 fixed request invariant violated")
+                progress("RAM LAB 4: подключение к DME, только на стоянке…")
+                val (target,socket)=connect(cancel)
+                host=target.host
+                transport=target.transport
+                socket.use { conn ->
+                    fun readObd(id:Int,stage:String):ByteArray {
+                        verifyAllowed(cancel)
+                        val request=byteArrayOf(0x01,id.toByte())
+                        val start=SystemClock.elapsedRealtime()
+                        val reply=transact(conn,request,
+                            { DiagnosticResponse.obd(it,id)!=null },cancel)
+                        val elapsed=SystemClock.elapsedRealtime()-start
+                        val values=if(reply.status=="OK")
+                            DiagnosticResponse.obd(reply.payload,id) else null
+                        record(stage,reply.status,elapsed,request,reply.payload,
+                            values?.let(DmeHistoryProtocol::hex) ?: "")
+                        if(values==null)throw IOException(
+                            "OBD PID %02X unavailable: %s".format(id,reply.status))
+                        return values
+                    }
+                    progress("RAM LAB 4: подтверждение нулевой скорости…")
+                    val speed=readObd(0x0D,"SPEED_BEFORE")
+                    if(!RamMemoryProtocol.vehicleStationary(speed))
+                        throw IOException("RAM read refused: vehicle speed is not zero")
+                    progress("RAM LAB 4: эталон RPM по OBD…")
+                    val rpmBytes=readObd(0x0C,"OBD_RPM_BEFORE")
+                    if(rpmBytes.size!=2)throw IOException("Invalid OBD RPM size")
+                    firstRpm=(((rpmBytes[0].toInt() and 255) shl 8) or
+                        (rpmBytes[1].toInt() and 255))/4.0
+                    if(!RamMemoryProtocol.parkedIdleRpm(firstRpm!!))
+                        throw IOException("RAM test requires steady parked idle (450–1800 RPM)")
+                    verifyAllowed(cancel)
+                    progress("RAM LAB 4: единственное чтение RAM Nkw, 2 байта…")
+                    val start=SystemClock.elapsedRealtime()
+                    val reply=transact(conn,ramRequest,
+                        { RamMemoryProtocol.decodePositive(it,2)!=null },cancel)
+                    val elapsed=SystemClock.elapsedRealtime()-start
+                    val bytes=if(reply.status=="OK")
+                        RamMemoryProtocol.decodePositive(reply.payload,2) else null
+                    acceptedRpm=bytes?.let(RamMemoryProtocol::decodeNkwRpm)
+                    record("RAM_NKW",reply.status,elapsed,ramRequest,reply.payload,
+                        acceptedRpm ?: "NOT_VALIDATED")
+                    if(reply.status!="OK")
+                        throw IOException("RAM 0x23 refused by ECU: ${reply.status}; no retry")
+                    if(acceptedRpm==null)
+                        throw IOException("RAM Nkw positive response but decoded RPM is invalid")
+                    progress("RAM LAB 4: сопоставление с обычным OBD RPM…")
+                    val afterBytes=readObd(0x0C,"OBD_RPM_AFTER")
+                    if(afterBytes.size!=2)throw IOException("Invalid comparison RPM size")
+                    lastRpm=(((afterBytes[0].toInt() and 255) shl 8) or
+                        (afterBytes[1].toInt() and 255))/4.0
+                    successful=RamMemoryProtocol.matchesObdRpm(
+                        firstRpm!!,lastRpm!!,acceptedRpm!!) 
+                    record("CROSS_CHECK",if(successful)"MATCH" else "MISMATCH",
+                        0L,byteArrayOf(),byteArrayOf(),
+                        "obd_before=${firstRpm} ram=${acceptedRpm} obd_after=${lastRpm}")
+                }
+            }catch(e:Exception) {
+                problem="${e.javaClass.simpleName}: ${e.message ?: "unknown"}"
+                writer.appendLine(DmeHistoryProtocol.csv(
+                    System.currentTimeMillis(),"STOP","ERROR","", "","",
+                    problem ?: "unknown",transport,host,
+                    RamMemoryProtocol.APPROVED_A2L+"/"+RamMemoryProtocol.APPROVED_SWFL))
+                writer.flush()
+            }
+        }
+        val summary=when {
+            successful -> "RAM LAB 4: единичный RAM 0x23 подтвердил Nkw=${acceptedRpm} RPM; "+
+                "OBD до/после=${firstRpm}/${lastRpm}. Только чтение, 0x2C не проверен."
+            problem!=null -> "RAM LAB 4 остановлен: ${problem}. "+
+                "Повтор RAM-запроса не выполнялся; смотри CSV."
+            else -> "RAM LAB 4: ответ получен, но RPM не совпал с OBD. "+
+                "Nkw=${acceptedRpm}; OBD=${firstRpm}/${lastRpm}. Результат НЕ подтверждён."
+        }
+        progress(summary)
+        return Outcome(file,summary,successful)
+    }
+
     fun collectRamReadiness(cancel:()->Boolean,progress:(String)->Unit):Outcome {
         verifyAllowed(cancel)
         val dir=context.getExternalFilesDir(null) ?: context.filesDir

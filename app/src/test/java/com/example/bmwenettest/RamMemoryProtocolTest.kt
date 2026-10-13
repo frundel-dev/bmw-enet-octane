@@ -51,11 +51,42 @@ class RamMemoryProtocolTest {
         }
     }
 
-    @Test fun vehicleRequestIsDisabledUntilVerifiedSoftwareProfileExists() {
-        assertFalse(codec.liveProfileAvailable())
-        assertNull(codec.approvedVehicleRequest("SYNTHETIC","RPM"))
+    @Test fun onlyExactFirmwareMatchedRpmLocationMayBeRequested() {
+        assertTrue(codec.liveProfileAvailable())
+        val expected=byteArrayOf(0x23,0x14,0x60,0,0x3B,0x64,0x02)
+        assertArrayEquals(expected,codec.approvedVehicleRequest(
+            codec.APPROVED_A2L,codec.RPM_SIGNAL))
+        assertEquals("00005D55-070.060.007",codec.APPROVED_SWFL)
+        assertNull(codec.approvedVehicleRequest("SYNTHETIC",codec.RPM_SIGNAL))
         assertNull(codec.approvedVehicleRequest("","RPM"))
         assertNull(codec.approvedVehicleRequest("known DID 4A37","RPM"))
+        assertNull(codec.approvedVehicleRequest(codec.APPROVED_A2L,"Knock"))
+    }
+
+    @Test fun littleEndianSignedNkwDecoderRejectsOutOfRange() {
+        assertEquals(750,codec.decodeNkwRpm(byteArrayOf(0xEE.toByte(),0x02)))
+        assertEquals(0,codec.decodeNkwRpm(byteArrayOf(0,0)))
+        assertNull(codec.decodeNkwRpm(byteArrayOf(0xFF.toByte(),0xFF.toByte())))
+        assertNull(codec.decodeNkwRpm(byteArrayOf(0xFF.toByte())))
+    }
+
+    @Test fun liveOneShotRequiresSpeedZeroAndPlausibleIdle() {
+        assertTrue(codec.vehicleStationary(byteArrayOf(0)))
+        assertFalse(codec.vehicleStationary(byteArrayOf(1)))
+        assertFalse(codec.vehicleStationary(byteArrayOf()))
+        assertFalse(codec.vehicleStationary(byteArrayOf(0,0)))
+        assertTrue(codec.parkedIdleRpm(750.0))
+        assertFalse(codec.parkedIdleRpm(0.0))
+        assertFalse(codec.parkedIdleRpm(2500.0))
+        assertFalse(codec.parkedIdleRpm(Double.NaN))
+    }
+
+    @Test fun liveReadMustMatchObdBeforeAndAfter() {
+        assertTrue(codec.matchesObdRpm(720.0,725.0,724))
+        assertFalse(codec.matchesObdRpm(720.0,725.0,400))
+        assertFalse(codec.matchesObdRpm(720.0,900.0,850))
+        assertFalse(codec.matchesObdRpm(720.0,725.0,-10))
+        assertFalse(codec.matchesObdRpm(Double.NaN,725.0,724))
     }
 
     @Test fun offlineFixtureProducesValidResponseWithoutAccessingTransport() {
