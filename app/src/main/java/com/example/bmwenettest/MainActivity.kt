@@ -2057,12 +2057,12 @@ class MainActivity : Activity() {
             val report=try {
                 file.useLines { lines ->
                     val offline=HighSpeedBenchmark.analyze(lines)
-                    "${file.name}\\n\n"+
+                    "${file.name}\n\n"+
                         "Строк: ${offline.rows}, валидных: ${offline.validRows}"+
-                        ", повреждённых: ${offline.incompleteRows}\\n"+
-                        "Топливные сессии: ${offline.sessions}\\n"+
-                        "Профили: ${offline.modes}\\n"+
-                        "Каналы: ${offline.channels.joinToString()}\\n\\n"+
+                        ", повреждённых: ${offline.incompleteRows}\n"+
+                        "Топливные сессии: ${offline.sessions}\n"+
+                        "Профили: ${offline.modes}\n"+
+                        "Каналы: ${offline.channels.joinToString()}\n\n"+
                         "Истинный ECU sampling rate без ECU timestamp неизвестен."
                 }
             }catch(e:Exception){"Не удалось проверить CSV: ${e.message}"}
