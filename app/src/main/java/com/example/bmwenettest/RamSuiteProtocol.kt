@@ -27,7 +27,8 @@ internal object RamSuiteProtocol {
 
     /** Only allow immediately following the previously completed stage. */
     fun allowed(stage:Stage,completed:Set<Int>):Boolean =
-        stage==Stage.SIGNAL || (stage.number-1) in completed
+        stage==Stage.SIGNAL ||
+            (Stage.SIGNAL.number until stage.number).all { it in completed }
 
     fun nextStage(completed:Set<Int>):Stage? =
         Stage.entries.firstOrNull { it.number !in completed &&
