@@ -59,6 +59,9 @@ class MainActivity : Activity() {
     private lateinit var liveRpmValue:TextView
     private lateinit var liveCue:TextView
     private lateinit var liveHold:ProgressBar
+    private lateinit var octane2LiveStatus:TextView
+    private lateinit var octane2LambdaStatus:TextView
+    private var pendingOctane2Export:File?=null
     private val fastStaleClear=Runnable {
         showFastTelemetry(null,null,null,-1,0L)
     }
@@ -91,13 +94,13 @@ class MainActivity : Activity() {
             rightMargin=dp(8)
         })
         heading.addView(TextView(this).apply {
-            text="BMW  OCTANE"
+            text="BMW OCTANE 2.0"
             textSize=22f
             setTextColor(Color.WHITE)
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.34"
+            text="v2.0 LAB"
             textSize=13f
             setTextColor(sky)
         })
@@ -234,6 +237,18 @@ class MainActivity : Activity() {
         quickPanel.addView(liveHold,LinearLayout.LayoutParams(-1,dp(5)).apply {
             topMargin=dp(5)
         })
+        octane2LiveStatus=TextView(this).apply {
+            text="RAM RPM: заблокирован до подтверждения SWFL • резерв OBD"
+            textSize=11f;setTextColor(sky)
+            setPadding(0,dp(6),0,0)
+        }
+        quickPanel.addView(octane2LiveStatus)
+        octane2LambdaStatus=TextView(this).apply {
+            text="Фактическая λ: нет подтверждённых данных"
+            textSize=11f;setTextColor(muted)
+            setPadding(0,dp(3),0,0)
+        }
+        quickPanel.addView(octane2LambdaStatus)
         root.addView(quickPanel,LinearLayout.LayoutParams(-1,-2).apply {
             topMargin=dp(6);bottomMargin=dp(3)
         })
@@ -338,6 +353,23 @@ class MainActivity : Activity() {
         setContentView(root)
         statusReceiver=object:BroadcastReceiver() {
             override fun onReceive(context:Context?,intent:Intent?) {
+                if(intent?.action==EnetLoggerService.ACTION_OCTANE2) {
+                    val state=intent.getStringExtra(EnetLoggerService.EXTRA_RAM_STATUS)
+                        ?: "LOCKED"
+                    val ram=intent.getDoubleExtra(EnetLoggerService.EXTRA_RAM_RPM,Double.NaN)
+                    val obd=intent.getDoubleExtra(EnetLoggerService.EXTRA_OBD_RPM,Double.NaN)
+                    octane2LiveStatus.text=if(ram.isFinite() && obd.isFinite())
+                        "RAM $state • RAM ${ram.toInt()} / OBD ${obd.toInt()} об/мин"
+                        else "RAM: $state • OBD сохранён как контроль"
+                    val lambda=intent.getDoubleExtra(
+                        EnetLoggerService.EXTRA_ACTUAL_LAMBDA,Double.NaN)
+                    val pid=intent.getIntExtra(
+                        EnetLoggerService.EXTRA_LAMBDA_SOURCE,-1)
+                    octane2LambdaStatus.text=if(lambda.isFinite())
+                        "Фактическая λ = ${"%.3f".format(java.util.Locale.US,lambda)} • PID 0x${pid.toString(16)}"
+                        else "Фактическая λ недоступна • заданная смесь не заменяет датчик"
+                    return
+                }
                 if(intent?.action==EnetLoggerService.ACTION_FAST_TELEMETRY) {
                     val r=intent.getDoubleExtra(EnetLoggerService.EXTRA_RPM,Double.NaN)
                     val m=intent.getDoubleExtra(EnetLoggerService.EXTRA_MAP,Double.NaN)
@@ -370,6 +402,7 @@ class MainActivity : Activity() {
             }
         }
         val filter=IntentFilter(EnetLoggerService.ACTION_STATUS).apply {
+            addAction(EnetLoggerService.ACTION_OCTANE2)
             addAction(EnetLoggerService.ACTION_FAST_TELEMETRY)
         }
         if(Build.VERSION.SDK_INT>=33) {
@@ -423,7 +456,8 @@ class MainActivity : Activity() {
             "Считать историю и адаптации DME (LOGGER STOP)",
             "Сохранённые снимки истории DME", "Фоновый DME Monitor • журнал",
             "Обучение эталона • RPM × нагрузка", "Режим замеров AUTO / TEST",
-            "История тестов топлива", "Offline replay • наблюдения")
+            "История тестов топлива", "Offline replay • наблюдения",
+            "BMW OCTANE 2.0 • RAM/SWFL", "BMW OCTANE 2.0 • экспорт сравнения")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -453,6 +487,8 @@ class MainActivity : Activity() {
                     }
                     12 -> showGuidedFuelHistory()
                     13 -> showObservationReplay()
+                    14 -> showOctane2RamProfile()
+                    15 -> showOctane2ComparisonFiles()
                 }
             }
             .setNegativeButton("Закрыть",null)
@@ -463,6 +499,66 @@ class MainActivity : Activity() {
      * Deterministic replay of our own versioned per-FAST-cycle observations.
      * Never connects to DME and never changes Fuel Score or calibration.
      */
+    private fun showOctane2RamProfile() {
+        if(logging || EnetLoggerService.isLoggerActive) {
+            AlertDialog.Builder(this).setTitle("Сначала останови LOGGER")
+                .setMessage("Настройка RAM применяется только при следующем старте LOGGER.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        AlertDialog.Builder(this)
+            .setTitle("RAM 0x23 • проверенный RPM Nkw")
+            .setMessage("РАЗРЕШЕНО ТОЛЬКО при точном совпадении автомобиля с RAM LAB:\n"+
+                "A2L R4C9J797B_5d55-070_060_007\n"+
+                "SWFL 00005D55-070.060.007\n"+
+                "MG1CS201 • Nkw 0x60003B64 (2 байта).\n\n"+
+                "Идентификатор ПО автоматически не подтверждён. "+
+                "После подтверждения сначала требуется 0 км/ч и проверка OBD RPM. "+
+                "При отказе ECU RAM выключится, останется OBD. "+
+                "Не включай после перепрошивки без повторной проверки.")
+            .setPositiveButton("Подтверждаю точное совпадение") { _,_ ->
+                prefs.edit().putBoolean("octane2_swfl_confirmed",true).apply()
+                Toast.makeText(this,"RAM будет разрешён после проверки на холостом ходу",Toast.LENGTH_LONG).show()
+            }
+            .setNeutralButton("Отключить RAM") { _,_ ->
+                prefs.edit().putBoolean("octane2_swfl_confirmed",false).apply()
+                Toast.makeText(this,"Останется диагностический OBD режим",Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Отмена",null).show()
+    }
+
+    private fun showOctane2ComparisonFiles() {
+        if(logging || EnetLoggerService.isLoggerActive) {
+            AlertDialog.Builder(this).setTitle("Экспорт после STOP LOGGER")
+                .setMessage("Останови LOGGER для завершения и сброса буфера CSV.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        val dir=getExternalFilesDir(null)?:filesDir
+        val files=dir.listFiles()?.filter{it.isFile &&
+            (it.name.startsWith("bmw_octane2_comparison_v1_") ||
+                it.name.startsWith("bmw_observations_v1_") ||
+                it.name.startsWith("bmw_steady_targets_v1732_")) &&
+            it.extension=="csv"}?.sortedByDescending{it.lastModified()}?:emptyList()
+        if(files.isEmpty()) {
+            AlertDialog.Builder(this).setTitle("Нет CSV сравнения")
+                .setMessage("Запусти и останови LOGGER, затем повтори.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        AlertDialog.Builder(this).setTitle("Выбери CSV для экспорта")
+            .setItems(files.take(40).map{it.name}.toTypedArray()) { _,index ->
+                pendingOctane2Export=files[index]
+                @Suppress("DEPRECATION")
+                startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type="text/csv"
+                    putExtra(Intent.EXTRA_TITLE,files[index].name)
+                },902)
+            }.setNegativeButton("Отмена",null).show()
+    }
+
     private fun showObservationReplay() {
         if(logging || EnetLoggerService.isLoggerActive) {
             AlertDialog.Builder(this).setTitle("Offline replay")
@@ -1460,6 +1556,27 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode:Int, resultCode:Int, data:Intent?) {
         super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode==902) {
+            val source=pendingOctane2Export
+            pendingOctane2Export=null
+            val dest=data?.data
+            if(resultCode==RESULT_OK && source!=null && dest!=null &&
+                source.isFile) {
+                executor.execute {
+                    val result=try {
+                        contentResolver.openOutputStream(dest)?.use{out ->
+                            source.inputStream().use{input->input.copyTo(out)}
+                        } ?: throw IllegalStateException("Export stream unavailable")
+                        "CSV экспортирован: ${source.name}"
+                    }catch(e:Exception){"Ошибка экспорта: ${e.message}"}
+                    runOnUiThread {
+                        if(!isFinishing && !isDestroyed)
+                            Toast.makeText(this,result,Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+            return
+        }
         if(requestCode!=901 || resultCode!=RESULT_OK) return
         val uri=data?.data ?: return
         try {
