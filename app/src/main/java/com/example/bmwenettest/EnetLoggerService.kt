@@ -18,6 +18,12 @@ class EnetLoggerService : Service() {
         const val ACTION_STOP = "enet.STOP"
         const val ACTION_STATUS = "enet.STATUS"
         const val ACTION_FAST_TELEMETRY = "enet.FAST_TELEMETRY"
+        const val ACTION_OCTANE2 = "enet.OCTANE2"
+        const val EXTRA_RAM_STATUS = "octane2_ram_status"
+        const val EXTRA_RAM_RPM = "octane2_ram_rpm"
+        const val EXTRA_OBD_RPM = "octane2_obd_rpm"
+        const val EXTRA_ACTUAL_LAMBDA = "octane2_actual_lambda"
+        const val EXTRA_LAMBDA_SOURCE = "octane2_lambda_source"
         const val EXTRA_STEADY_TARGET_INDEX = "steady_target_index"
         const val EXTRA_STEADY_HOLD_MS = "steady_hold_ms"
         const val EXTRA_STATUS = "status"
@@ -117,7 +123,7 @@ class EnetLoggerService : Service() {
         return START_STICKY
     }
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
-        .setContentTitle("BMW ENET Logger v1.7.34").setContentText(text)
+        .setContentTitle("BMW OCTANE 2.0 LAB").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
 
     private fun startLogger() {
@@ -179,7 +185,7 @@ class EnetLoggerService : Service() {
         val profile=prefs.getString("prg_profile","DME8FF_R_EMBEDDED") ?: "DME8FF_R_EMBEDDED"
         val prgName=prefs.getString("prg_name","") ?: ""
         val prgSha=prefs.getString("prg_sha256","") ?: ""
-        file.writeText("# app=v1.7.34,fuel_session_id=$fuelId,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz,ecu_fuel_factor,ecu_ron_equiv,knock_mean_vms,ign_spread_deg,octane_confidence_pct,run_id,reconnects,measurement_window,high_confidence_window,baseline95_knock_vms,baseline95_samples,knock_ratio95,run_fuel_score,run_quality_pct,run_valid_points,session_fuel_score,session_confidence_pct,session_valid_runs,oil_temp_c,measurement_mode,coverage_cells,speed_kmh,fuel_level_pct,fuel_session_id,driving_phase,steady_points,accel_points,steady_score,accel_score,refuel_pending,mixing_km,steady_confidence_pct,accel_confidence_pct,steady_segments,accel_segments,high_rpm_ratio95_mean,high_rpm_points,high_rpm_over120_count,high_rpm_baseline_support_avg,auto_phase_segments,steady_survey_points,steady_survey_cells,accel_v08_score,accel_v08_points,calibration_model,steady_reference_vms,accel_reference_vms,"+
+        file.writeText("# app=v2.0-experiment,fuel_session_id=$fuelId,embedded_profile=DME8FF_R,prg_profile=$profile,prg_name=$prgName,prg_sha256=$prgSha,transport=AUTO_ETHERNET_WIFI\ntime_ms,rpm,load_pct,map_kpa_abs,iat_c,ign_advance_deg,coolant_c,throttle_pct,stft1_pct,lambda_eq,knock_status,superknock,knock_z1_vms,knock_z2_vms,knock_z3_vms,knock_z4_vms,ign_z1_deg,ign_z2_deg,ign_z3_deg,ign_z4_deg," + (0..19).joinToString(","){ "foctan_$it" } + ",test_window,transport,sample_hz,ecu_fuel_factor,ecu_ron_equiv,knock_mean_vms,ign_spread_deg,octane_confidence_pct,run_id,reconnects,measurement_window,high_confidence_window,baseline95_knock_vms,baseline95_samples,knock_ratio95,run_fuel_score,run_quality_pct,run_valid_points,session_fuel_score,session_confidence_pct,session_valid_runs,oil_temp_c,measurement_mode,coverage_cells,speed_kmh,fuel_level_pct,fuel_session_id,driving_phase,steady_points,accel_points,steady_score,accel_score,refuel_pending,mixing_km,steady_confidence_pct,accel_confidence_pct,steady_segments,accel_segments,high_rpm_ratio95_mean,high_rpm_points,high_rpm_over120_count,high_rpm_baseline_support_avg,auto_phase_segments,steady_survey_points,steady_survey_cells,accel_v08_score,accel_v08_points,calibration_model,steady_reference_vms,accel_reference_vms,"+
             "ltft1_pct,combined_trim_pct,ign_advance_deg,"+
             "steady_fine_cell,steady_fine_cells,steady_repeatable_cells,"+
             "steady_cell_samples,steady_cell_segments,steady_cell_median_vms,steady_cell_mad_pct,"+
@@ -204,6 +210,16 @@ class EnetLoggerService : Service() {
         super.onDestroy()
     }
     /** Lightweight UI-only snapshot; no extra ECU reads or notification writes. */
+    private fun emitOctane2(obdRpm:Double?,ramRpm:Double?,
+                            state:String,actualLambda:Double?,lambdaPid:Int?) {
+        sendBroadcast(Intent(ACTION_OCTANE2).setPackage(packageName)
+            .putExtra(EXTRA_OBD_RPM,obdRpm?:Double.NaN)
+            .putExtra(EXTRA_RAM_RPM,ramRpm?:Double.NaN)
+            .putExtra(EXTRA_RAM_STATUS,state)
+            .putExtra(EXTRA_ACTUAL_LAMBDA,actualLambda?:Double.NaN)
+            .putExtra(EXTRA_LAMBDA_SOURCE,lambdaPid?:-1))
+    }
+
     private fun emitFastTelemetry(rpm:Double?,map:Double?,load:Double?,
                                   progress:SteadyTargets.Tracker.CaptureProgress) {
         val intent=Intent(ACTION_FAST_TELEMETRY).setPackage(packageName)
@@ -324,6 +340,46 @@ class EnetLoggerService : Service() {
         val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0
         // A new trip ID on each LOGGER start. Not equivalent to a separate day.
         val learningTripId=System.currentTimeMillis()
+        val ramPolicy=Octane2RamPolicy(
+            getSharedPreferences("bmw_native",MODE_PRIVATE)
+                .getBoolean("octane2_swfl_confirmed",false))
+        val compareWriter=try {
+            File(getExternalFilesDir(null)?:filesDir,
+                Octane2CycleCsv.file(learningTripId)).bufferedWriter().apply {
+                write("# experiment=OCTANE2;A2L=R4C9J797B;SWFL=00005D55-070.060.007;"+
+                    "RAM_RPM_EXPERIMENTAL=true;ron_validated=false\n")
+                write(Octane2CycleCsv.HEADER+"\n")
+            }
+        } catch(_:Exception) { null }
+        var comparisonWriteEnabled=compareWriter!=null
+        var compareRows=0
+        var lastCompareFlush=0L
+        fun saveComparison(row:Octane2Cycle) {
+            if(!comparisonWriteEnabled)return
+            try {
+                compareWriter!!.write(Octane2CycleCsv.encode(row)+"\n")
+                compareRows++
+                if(compareRows%8==0 || row.elapsedMs-lastCompareFlush>=3000L) {
+                    compareWriter.flush()
+                    lastCompareFlush=row.elapsedMs
+                }
+            }catch(_:Exception) {
+                comparisonWriteEnabled=false
+                connectionEvent("OCTANE2_COMPARE_FILE_ERROR",row.epoch,"FILE","",null,
+                    "CSV write failed; primary logger unaffected")
+            }
+        }
+        var actualLambda:Octane2Lambda.Sample?=null
+        var actualLambdaAt=0L
+        var lambdaChecked=false
+        var lambdaPid:Int?=null
+        var lambdaBackupPid:Int?=null
+        var lambdaNextPoll=0L
+        var fuelControlSupported=false
+        var fuelControlState:String?=null
+        var fuelControlNext=0L
+        var lastCycleComplete=0L
+        var lastRamRequestMs=0L
         // Owned by this polling thread, opened once per LOGGER start.
         // No second socket or extra DME requests.
         val observationJournal=try {
@@ -403,7 +459,10 @@ class EnetLoggerService : Service() {
                     }
                 }
             } catch(_:Exception) { /* A damaged file must never break DME polling. */ }
-            return SteadyTargets.Tracker(session,past)
+            return SteadyTargets.Tracker(session,
+                Octane2UiState.recordsForCurrentRefuel(past,session,
+                    prefs.getLong(GuidedFuelTest.PREF_ID,0L),
+                    prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)))
         }
         var steadyTargetTracker=loadSteadyTargets(fuelSessionId)
         var lastAcknowledgedTargetSegment=0
@@ -598,6 +657,15 @@ class EnetLoggerService : Service() {
                 prefs.edit().putString("last_gateway_ip",gatewayIp)
                     .putString("last_gateway_transport",transport).apply()
                 sampleTimes.clear()
+                // Support masks and sensor timestamps are scoped to the TCP session.
+                lambdaChecked=false
+                lambdaPid=null
+                lambdaBackupPid=null
+                actualLambda=null
+                actualLambdaAt=0L
+                fuelControlNext=0L
+                fuelControlSupported=false
+                fuelControlState=null
                 val gap=outageFrom?.let { (SystemClock.elapsedRealtime()-it).coerceAtLeast(0L) } ?: 0L
                 connectionEvent(if(gap>0)"RECOVERED" else "CONNECTED",reconnects,connectionStage,
                     transport,gatewayIp,if(viaFastPath)"cached TCP" else "UDP discovery + TCP",gap)
@@ -626,11 +694,14 @@ class EnetLoggerService : Service() {
                             .firstOrNull { DiagnosticResponse.obd(it,id)!=null }
                     }
                     fun obd(p:ByteArray?,id:Int)=p?.let{DiagnosticResponse.obd(it,id)}
-                    val r=obd(pid(0x0C),0x0C)?.let{(((it[0].toInt()and 255)*256)+(it[1].toInt()and 255))/4.0}
+                    val rpmObdStarted=SystemClock.elapsedRealtime()
+                    val obdRpm=obd(pid(0x0C),0x0C)?.takeIf{it.size==2}
+                        ?.let{(((it[0].toInt()and 255)*256)+(it[1].toInt()and 255))/4.0}
+                    val obdRpmLatency=SystemClock.elapsedRealtime()-rpmObdStarted
                     val l=obd(pid(0x04),0x04)?.let{(it[0].toInt()and 255)*100.0/255.0}
                     val m=obd(pid(0x0B),0x0B)?.let{(it[0].toInt()and 255).toDouble()}
                     val obdMs=SystemClock.elapsedRealtime()-obdStarted
-                    if(r==null && l==null && m==null) {
+                    if(obdRpm==null && l==null && m==null) {
                         emptyPolls++
                         if(emptyPolls>=3) throw IOException("No ECU OBD reply for 3 consecutive polls")
                     } else emptyPolls=0
@@ -759,6 +830,8 @@ class EnetLoggerService : Service() {
                     }
                     val slowMs=SystemClock.elapsedRealtime()-slowStarted
                     val speed=slowSpeed; val i=slowIat; val a=slowIgn; val coolant=slowCoolant; val oil=slowOil; val throttle=slowThrottle; val stft1=slowStft; val ltft1=slowLtft; val lambdaEq=slowLambda
+                    // Legacy 1.7 measurements remain grounded in original OBD RPM.
+                    val r=obdRpm
                     val combinedTrim=if(stft1!=null && ltft1!=null)
                         ((1.0+stft1/100.0)*(1.0+ltft1/100.0)-1.0)*100.0 else null
                     val fastDmeStarted=SystemClock.elapsedRealtime()
@@ -863,6 +936,107 @@ class EnetLoggerService : Service() {
                     val knockMean=knockValues.takeIf{it.size==4}?.average()
                     val ignValues=listOfNotNull(iz1,iz2,iz3,iz4)
                     val ignSpread=ignValues.takeIf{it.size==4}?.let{v->v.maxOrNull()!!-v.minOrNull()!!}
+                    // Firmware identity was checked manually in the settings.
+                    // Never begin 0x23 while driving without a parked 0 km/h
+                    // reference cross-check. All reads use the SAME TCP owner.
+                    val ramStarted=SystemClock.elapsedRealtime()
+                    // Do not trust a cached speed=0 for the initial RAM
+                    // address read. The parked gate must have a fresh, exact
+                    // OBD 01 0D response immediately before the first 0x23.
+                    var ramGateSpeed=speed
+                    var ramGateFresh=if(optimizedSlow)
+                        slowScheduler.fresh(0x0D,ramStarted)
+                    else slowSensorAtMs>0L &&
+                        SampleFreshness.isFresh(ramStarted,slowSensorAtMs)
+                    if(ramPolicy.state==Octane2RamPolicy.State.NEEDS_PARKED_CHECK &&
+                        ramGateFresh && ramGateSpeed==0.0 &&
+                        obdRpm!=null && RamMemoryProtocol.parkedIdleRpm(obdRpm)) {
+                        val immediate=obd(pid(0x0D),0x0D)
+                        ramGateSpeed=immediate?.takeIf{it.size==1}
+                            ?.firstOrNull()?.let{(it.toInt() and 255).toDouble()}
+                        ramGateFresh=ramGateSpeed==0.0
+                    }
+                    val ramReadAllowed=(lastRamRequestMs==0L ||
+                        ramStarted-lastRamRequestMs>=300L) &&
+                        ramPolicy.canRead(obdRpm,ramGateSpeed,ramGateFresh)
+                    var ramRpm:Double?=null
+                    var acceptedRam=false
+                    if(ramReadAllowed && running) {
+                        lastRamRequestMs=ramStarted
+                        try {
+                            val request=RamMemoryProtocol.approvedVehicleRequest(
+                                RamMemoryProtocol.APPROVED_A2L,
+                                RamMemoryProtocol.RPM_SIGNAL)
+                                ?: throw IOException("RAM RPM not allowlisted")
+                            socket!!.getOutputStream().write(hsfz(request))
+                            socket!!.getOutputStream().flush()
+                            val replies=readFrames(socket!!.getInputStream())
+                                .mapNotNull(::payload)
+                            val reply=replies.singleOrNull()
+                                ?: throw IOException("RAM 0x23 ambiguous HSFZ reply")
+                            val data=RamMemoryProtocol.decodePositive(reply,2)
+                            if(data==null) {
+                                val nrc=RamMemoryProtocol.negativeCode(reply)
+                                if(nrc==null || nrc==0x78)
+                                    throw IOException("RAM 0x23 unexpected or pending reply")
+                                ramPolicy.disable("RAM NRC %02X".format(nrc))
+                            } else {
+                                ramRpm=RamMemoryProtocol.decodeNkwRpm(data)?.toDouble()
+                                acceptedRam=ramPolicy.accept(ramRpm,obdRpm)
+                            }
+                        }catch(e:Exception) {
+                            ramPolicy.disable("RAM transport/protocol fault")
+                            // Unknown/late response may desynchronize the socket:
+                            // never continue ordinary DID reads on this stream.
+                            throw IOException("RAM 0x23 uncertain; reconnect safely",e)
+                        }
+                    }
+                    val ramLatency=if(ramReadAllowed)
+                        SystemClock.elapsedRealtime()-ramStarted else null
+                    // Keep the established 1.7 model tied to OBD RPM.
+                    val octane2Rpm=if(acceptedRam)ramRpm else obdRpm
+                    val selectedRpmSource=if(acceptedRam)"RAM_NKW" else "OBD_01_0C"
+
+                    // Exact OBD capability masks: optional lambda/loop data
+                    // must never be synthesized from commanded PID 0x44.
+                    if(!lambdaChecked) {
+                        lambdaChecked=true
+                        val mask20=obd(pid(0x20),0x20)
+                        val sensor34=Octane2Lambda.supported(mask20,0x34)
+                        val sensor24=Octane2Lambda.supported(mask20,0x24)
+                        lambdaPid=when {
+                            sensor34 -> 0x34
+                            sensor24 -> 0x24
+                            else -> null
+                        }
+                        lambdaBackupPid=if(sensor34 && sensor24)0x24 else null
+                        val mask00=obd(pid(0x00),0x00)
+                        fuelControlSupported=Octane2Lambda.supportedBase(mask00,0x03)
+                    }
+                    val lambdaNow=SystemClock.elapsedRealtime()
+                    if(lambdaPid!=null && lambdaNow>=lambdaNextPoll) {
+                        val id=lambdaPid!!
+                        actualLambda=Octane2Lambda.decode(id,obd(pid(id),id))
+                        // Test supported alternate only on a later cycle. Do
+                        // not repeatedly hammer an ECU that rejects a PID.
+                        if(actualLambda==null) {
+                            lambdaPid=lambdaBackupPid
+                            lambdaBackupPid=null
+                        }
+                        actualLambdaAt=if(actualLambda!=null)
+                            SystemClock.elapsedRealtime() else 0L
+                        lambdaNextPoll=SystemClock.elapsedRealtime()+4000L
+                    }
+                    if(fuelControlSupported && lambdaNow>=fuelControlNext) {
+                        fuelControlState=Octane2Lambda.controlStatus(obd(pid(0x03),0x03))
+                        fuelControlNext=SystemClock.elapsedRealtime()+5000L
+                    }
+                    val freshActualLambda=actualLambda?.takeIf {
+                        actualLambdaAt>0L &&
+                            SampleFreshness.isFresh(SystemClock.elapsedRealtime(),
+                                actualLambdaAt,8000L)
+                    }
+
                     if(testWindow && knockMean!=null && ignSpread!=null) validOctaneSamples++
                     val confidence=(validOctaneSamples*2).coerceAtMost(100)
                     val measurementWindow=r!=null && l!=null && m!=null && r>=2000.0 && r<=4500.0 && l>=55.0 && m>=130.0
@@ -1189,13 +1363,39 @@ class EnetLoggerService : Service() {
                     samples++
                     // This broadcast is intentionally every completed FAST cycle.
                     // Dashboard's heavyweight status stays at every fourth cycle.
-                    emitFastTelemetry(r,m,l,steadyTargetTracker.progress(now))
+                    emitFastTelemetry(octane2Rpm,m,l,steadyTargetTracker.progress(now))
                     val effectiveMode=when {
                         batchEnabled && pollModeActive=="B+" -> "B+"
                         batchEnabled -> "B"
                         else -> "A"
                     }
                     val benchmarkNow=SystemClock.elapsedRealtime()
+                    // Side-by-side 2.0/1.7 reading metrics, not a RON score.
+                    val cycleGap=if(lastCycleComplete>0L)
+                        (cycleStart-lastCycleComplete).coerceAtLeast(0L) else null
+                    lastCycleComplete=benchmarkNow
+                    val currentLambdaAge=if(freshActualLambda!=null)
+                        (benchmarkNow-actualLambdaAt).coerceAtLeast(0L) else null
+                    val commandedAge=if(lambdaEq==null)null else if(optimizedSlow)
+                        slowScheduler.ageMs(0x44,benchmarkNow) else
+                        slowSensorAtMs.takeIf{it>0L}?.let{benchmarkNow-it}
+                    saveComparison(Octane2Cycle(
+                        System.currentTimeMillis(),benchmarkNow-started,
+                        learningTripId,fuelSessionId,reconnects,effectiveMode,
+                        obdRpm,ramRpm,octane2Rpm,selectedRpmSource,ramPolicy.state.name,
+                        obdRpmLatency,ramLatency,
+                        if(ramReadAllowed)ramStarted-rpmObdStarted else null,
+                        benchmarkNow-cycleStart,cycleGap,m,l,speed,i,coolant,
+                        knockMean,ignSpread,
+                        freshActualLambda?.lambda,freshActualLambda?.sourcePid,
+                        currentLambdaAge,freshActualLambda?.auxiliary,
+                        lambdaEq,commandedAge,stft1,ltft1,fuelControlState,
+                        steadyTargetTracker.progress(now).targetIndex,
+                        steadyTargetTracker.progress(now).dwellMs,
+                        sessionScore,sessionConfidence
+                    ))
+                    emitOctane2(obdRpm,ramRpm,ramPolicy.state.name,
+                        freshActualLambda?.lambda,freshActualLambda?.sourcePid)
                     // Record all completed FAST cycles, regardless of CAPTURE,
                     // and preserve provenance and freshness for offline replay.
                     fun slowAge(value:Double?,did:Int):Long? {
@@ -1250,7 +1450,7 @@ class EnetLoggerService : Service() {
                             }
                         } catch(_:Exception) { /* Benchmark must not interrupt ECU polling */ }
                     }
-                    if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v1.7.34 • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
+                    if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v2.0 EXP • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
                         steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,
                         steadyScore,accelScore,highRpmMean,highRpmPoints,highRpmOver120,
                         steadySurveyPoints,steadySurveyCells.size,accelV08Score,accelV08Points,
@@ -1368,6 +1568,8 @@ class EnetLoggerService : Service() {
                 ))
                 if(outageFrom==null) outageFrom=SystemClock.elapsedRealtime()
                 // Do not combine samples on opposite sides of a network interruption.
+                ramPolicy.onReconnect()
+                lastRamRequestMs=0L
                 steadyTargetTracker.resetCandidate(forceNewSegment=true)
                 captureActive=false; captureTailUntil=0L; previousSampleTime=0L
                 previousRpm=null; previousMap=null; lastQualified=0L;lastSteadyObservation=0L
@@ -1405,6 +1607,7 @@ class EnetLoggerService : Service() {
         }
         // Always flush the final buffered samples when polling ends normally.
         observationJournal?.close()
+        try{compareWriter?.flush();compareWriter?.close()}catch(_:Exception){}
         if(observationJournal?.failed==true && !journalFailureNoted)
             connectionEvent("OBSERVATION_JOURNAL_FAILED",reconnects,
                 "FILE",connectionTransport,null,"Journal close/flush failed")

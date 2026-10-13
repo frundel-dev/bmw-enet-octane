@@ -121,16 +121,16 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
 
         val hero=card("")
         val titleRow=row()
-        titleRow.addView(text("КАЧЕСТВО ТОПЛИВА",12f,muted,true),
+        titleRow.addView(text("ИССЛЕДОВАТЕЛЬСКИЕ ДАННЫЕ • 2.0",12f,muted,true),
             LayoutParams(0,LayoutParams.WRAP_CONTENT,1f))
         scoreState=text("ОЖИДАНИЕ",11f,amber,true).apply {
             gravity=Gravity.END
         }
         titleRow.addView(scoreState)
         hero.addView(titleRow)
-        score=text("—",54f,foreground,true).apply { setPadding(0,dp(5),0,0) }
+        score=text("—",28f,foreground,true).apply { setPadding(0,dp(5),0,0) }
         hero.addView(score)
-        hero.addView(text("Относительный индекс • эталон АИ-95 = 100",12f,muted))
+        hero.addView(text("Нет валидированной модели 2.0. Индексы 1.7 сохранены только в CSV.",12f,muted))
         val confidenceRow=row().apply { setPadding(0,dp(17),0,dp(7)) }
         confidenceRow.addView(text("ДОСТОВЕРНОСТЬ",11f,muted,true),
             LayoutParams(0,LayoutParams.WRAP_CONTENT,1f))
@@ -191,12 +191,12 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         modes.addView(accelColumn,LayoutParams(0,LayoutParams.WRAP_CONTENT,1f))
         measurement.addView(modes)
         measurement.addView(View(context),LayoutParams(1,dp(12)))
-        steadySurvey=text("STEADY v0.8 • собираем новую эталонную базу",12f,amber)
+        steadySurvey=text("STEADY v0.8 • исследовательское покрытие, не эталон топлива",12f,amber)
         measurement.addView(steadySurvey)
-        accelCalibration=text("ACCEL v0.8 • экспериментальный эталон: —",12f,blue)
+        accelCalibration=text("ACCEL v0.8 • исследовательский ориентир: —",12f,blue)
         accelCalibration.setPadding(0,dp(7),0,0)
         measurement.addView(accelCalibration)
-        measurement.addView(text("Общий Fuel Score по-прежнему по исходному эталону АИ-95.",11f,muted).apply {
+        measurement.addView(text("Индекс версии 1.7 сохранён в сравнительном CSV; модель 2.0 не валидирована.",11f,muted).apply {
             setPadding(0,dp(7),0,0)
         })
 
@@ -268,23 +268,14 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         val result=intent.getStringExtra(EnetLoggerService.EXTRA_RESULT_STATE) ?: "COLLECTING"
         val shownScore=if(result=="MIXING" || result=="REFUEL CHECK") Double.NaN
                        else if(sessionScore.isFinite()) sessionScore else runScore
-        score.text=format(shownScore,1)
-        scoreState.text=when(result) {
-            "NORMAL"->"В НОРМЕ"
-            "BORDERLINE"->"ПОГРАНИЧНО"
-            "BELOW BASELINE"->"НИЖЕ ЭТАЛОНА"
-            "MIXING"->"ПЕРЕМЕШИВАНИЕ"
-            "REFUEL CHECK"->"ПРОВЕРКА ЗАПРАВКИ"
-            else->"СБОР ДАННЫХ"
-        }
-        scoreState.setTextColor(when(result) {
-            "NORMAL"->teal
-            "BELOW BASELINE"->warning
-            else->amber
-        })
+        // The v1.7 legacy numeric score still exists in the saved logs for
+        // comparison; it is NOT a validated v2 fuel-quality result.
+        score.text="—"
+        scoreState.text="НЕДОСТАТОЧНО ДАННЫХ"
+        scoreState.setTextColor(amber)
         val conf=count(EnetLoggerService.EXTRA_SESSION_CONFIDENCE).coerceIn(0,100)
-        confidence.text="$conf%"
-        progress.progress=conf
+        confidence.text="— (2.0 не валидирована)"
+        progress.progress=0
         updateFastReadings(number(EnetLoggerService.EXTRA_RPM),
             number(EnetLoggerService.EXTRA_MAP),number(EnetLoggerService.EXTRA_LOAD))
         coolant.text=format(number(EnetLoggerService.EXTRA_COOLANT)) + "°"

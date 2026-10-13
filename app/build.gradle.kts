@@ -13,11 +13,11 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.bmwenettest"
+        applicationId = "com.example.bmwenettest.octane2"
         minSdk = 26
         targetSdk = 35
-        versionCode = 52
-        versionName = "1.7.34"
+        versionCode = 200
+        versionName = "2.0.0-experimental"
     }
     testOptions {
         unitTests.isIncludeAndroidResources = false

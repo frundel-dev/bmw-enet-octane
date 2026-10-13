@@ -59,8 +59,43 @@ class MainActivity : Activity() {
     private lateinit var liveRpmValue:TextView
     private lateinit var liveCue:TextView
     private lateinit var liveHold:ProgressBar
+    private lateinit var octane2LiveStatus:TextView
+    private lateinit var octane2LambdaStatus:TextView
+    private var pendingOctane2Export:File?=null
+    private lateinit var homeFuelTitle:TextView
+    private lateinit var homeFuelMeta:TextView
+    private lateinit var homeConnection:TextView
+    private lateinit var homeCaptureState:TextView
+    private lateinit var homeNextMode:TextView
+    private lateinit var homeTargetAState:TextView
+    private lateinit var homeTargetBState:TextView
+    private lateinit var analysisSummary:TextView
+    private lateinit var diagnosticSummary:TextView
+    private lateinit var navButtons:List<TextView>
+    private lateinit var tabPages:List<android.view.View>
+    private var selectedTab=0
+    private var firstTarget=Octane2UiState.target(null)
+    private var secondTarget=Octane2UiState.target(null)
+    private var connection=Octane2UiState.Connection.DISCONNECTED
+    private var transportLabel="ENET / VXSCAN"
+    private var lastFastReceivedAt=0L
+    private var latestRpm:Double?=null
+    private var latestMap:Double?=null
+    private var lastActualLambda:Double?=null
+    private var lastRamState="LOCKED"
+    private var lastPollHz:Double?=null
+    private var lastReconnectCount=0
+    private val surface=Color.rgb(23,34,52)
+    private val accentBlue=Color.rgb(89,171,255)
+    private val accentGreen=Color.rgb(75,219,183)
+    private val tertiary=Color.rgb(158,175,196)
     private val fastStaleClear=Runnable {
         showFastTelemetry(null,null,null,-1,0L)
+        lastActualLambda=null
+        octane2LambdaStatus.text="Фактическая λ: нет свежих данных"
+        if(logging && connection==Octane2UiState.Connection.CONNECTED)
+            connection=Octane2UiState.Connection.CONNECTING
+        renderHomeState()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,13 +126,13 @@ class MainActivity : Activity() {
             rightMargin=dp(8)
         })
         heading.addView(TextView(this).apply {
-            text="BMW  OCTANE"
+            text="BMW OCTANE 2.0"
             textSize=22f
             setTextColor(Color.WHITE)
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v1.7.34"
+            text="v2.0 LAB"
             textSize=13f
             setTextColor(sky)
         })
@@ -113,6 +148,8 @@ class MainActivity : Activity() {
             gravity=Gravity.CENTER_VERTICAL
         }
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        logging=EnetLoggerService.isLoggerActive
+        connection=if(logging)Octane2UiState.Connection.CONNECTING else Octane2UiState.Connection.DISCONNECTED
         val modeButton=Button(this).apply {
             text="НОВАЯ ЗАПРАВКА"
             textSize=13f
@@ -126,7 +163,7 @@ class MainActivity : Activity() {
             rightMargin=dp(7)
         })
         val startButton=Button(this).apply {
-            text="START LOGGER"
+            text=if(logging)"ОСТАНОВИТЬ" else "НАЧАТЬ СБОР"
             textSize=15f
             isAllCaps=false
             minHeight=dp(52)
@@ -140,14 +177,18 @@ class MainActivity : Activity() {
                         return@setOnClickListener
                     }
                     logging=true
-                    text="STOP LOGGER"
+                    text="ОСТАНОВИТЬ"
+                    connection=Octane2UiState.Connection.CONNECTING
+                    renderHomeState()
                     backgroundTintList=ColorStateList.valueOf(Color.rgb(255,179,126))
                     dashboard.setLogging(true)
                     startForegroundService(Intent(this@MainActivity,EnetLoggerService::class.java)
                         .setAction(EnetLoggerService.ACTION_START))
                 } else {
                     logging=false
-                    text="START LOGGER"
+                    text="НАЧАТЬ СБОР"
+                    connection=Octane2UiState.Connection.DISCONNECTED
+                    renderHomeState()
                     backgroundTintList=ColorStateList.valueOf(sky)
                     startService(Intent(this@MainActivity,EnetLoggerService::class.java)
                         .setAction(EnetLoggerService.ACTION_STOP))
@@ -234,6 +275,18 @@ class MainActivity : Activity() {
         quickPanel.addView(liveHold,LinearLayout.LayoutParams(-1,dp(5)).apply {
             topMargin=dp(5)
         })
+        octane2LiveStatus=TextView(this).apply {
+            text="RAM RPM: заблокирован до подтверждения SWFL • резерв OBD"
+            textSize=11f;setTextColor(sky)
+            setPadding(0,dp(6),0,0)
+        }
+        quickPanel.addView(octane2LiveStatus)
+        octane2LambdaStatus=TextView(this).apply {
+            text="Фактическая λ: нет подтверждённых данных"
+            textSize=11f;setTextColor(muted)
+            setPadding(0,dp(3),0,0)
+        }
+        quickPanel.addView(octane2LambdaStatus)
         root.addView(quickPanel,LinearLayout.LayoutParams(-1,-2).apply {
             topMargin=dp(6);bottomMargin=dp(3)
         })
@@ -328,30 +381,224 @@ class MainActivity : Activity() {
         guidedPanel.addView(guidedButtons)
         dashboard=OctaneDashboard(this)
         status=dashboard.connectionView
-        val scroll=ScrollView(this).apply {
-            setFillViewport(true)
-            addView(dashboard)
+        // Use the original, live-connected views; only their hierarchy
+        // changes. The diagnostic service, receiver and fuel storage remain.
+        root.removeView(controls)
+        // Refuelling is controlled from its own card, technical tools from Settings.
+        controls.removeView(modeButton)
+        if(controls.childCount>1)controls.removeViewAt(controls.childCount-1)
+        root.removeView(quickPanel)
+        root.removeView(targetPanel)
+        quickPanel.removeView(octane2LiveStatus)
+        quickPanel.removeView(octane2LambdaStatus)
+        fun smallText(t:String,size:Float=13f,color:Int=Color.WHITE)=TextView(this).apply {
+            text=t;textSize=size;setTextColor(color);includeFontPadding=false
         }
-        root.addView(scroll,LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,0,1f
-        ))
+        fun card(title:String)=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(12),dp(10),dp(12),dp(11))
+            background=android.graphics.drawable.GradientDrawable().apply {
+                setColor(surface);cornerRadius=dp(12).toFloat()
+                setStroke(dp(1),Color.rgb(45,62,83))
+            }
+            addView(smallText(title,11f,tertiary))
+        }
+        fun section()=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(0,dp(4),0,dp(12))
+        }
+        fun addCard(parent:LinearLayout,child:android.view.View) {
+            parent.addView(child,LinearLayout.LayoutParams(-1,-2).apply {
+                bottomMargin=dp(9)
+            })
+        }
+        fun action(text:String,block:()->Unit)=Button(this).apply {
+            this.text=text;isAllCaps=false;textSize=12f;minHeight=dp(44)
+            backgroundTintList=ColorStateList.valueOf(Color.rgb(41,60,84))
+            setOnClickListener{block()}
+        }
+        val home=section()
+        val fuelCard=card("ТЕКУЩАЯ ЗАПРАВКА")
+        homeFuelTitle=smallText("Топливо не выбрано",19f)
+        homeFuelMeta=smallText("Заправка не выбрана",12f,tertiary)
+        fuelCard.addView(homeFuelTitle)
+        fuelCard.addView(homeFuelMeta)
+        fuelCard.addView(action("НОВАЯ ЗАПРАВКА"){showNewFuelTestDialog()})
+        addCard(home,fuelCard)
+
+        val networkCard=card("СВЯЗЬ С DME И СБОР")
+        homeConnection=smallText("Отключено • ENET / VXSCAN",13f,accentBlue)
+        homeCaptureState=smallText("Диагностика остановлена",12f,tertiary)
+        networkCard.addView(homeConnection)
+        networkCard.addView(homeCaptureState)
+        addCard(home,networkCard)
+
+        // Measured coverage remains the canonical persisted SteadyTargets
+        // sample/segment/trip counter; never infer it from UI timers.
+        targetPanel.addView(smallText(
+            "Критерий: 24 точки, 4 независимых участка, 2 запуска LOGGER на область.",
+            10f,tertiary))
+        homeTargetAState=smallText("2500–2999: не начато",11f,tertiary)
+        homeTargetBState=smallText("3000–3499: не начато",11f,tertiary)
+        targetPanel.addView(homeTargetAState)
+        targetPanel.addView(homeTargetBState)
+        addCard(home,targetPanel)
+
+        val guidance=card("СЛЕДУЮЩИЙ РЕЖИМ")
+        homeNextMode=smallText(
+            "STEADY • 2500–2999 об/мин\nMAP 105–129 кПа",16f,Color.WHITE)
+        guidance.addView(homeNextMode)
+        addCard(home,guidance)
+        addCard(home,quickPanel)
+        addCard(home,controls)
+
+        val refuels=section()
+        val refuelCard=card("ЗАПРАВКИ")
+        refuelCard.addView(smallText(
+            "Текущая заправка, её история и субъективная оценка — только здесь.",
+            13f,tertiary))
+        refuelCard.addView(action("СОЗДАТЬ ЗАПРАВКУ"){showNewFuelTestDialog()})
+        refuelCard.addView(action("ТЕКУЩАЯ ЗАПРАВКА"){showFuelTestOverview()})
+        refuelCard.addView(action("ИСТОРИЯ ЗАПРАВОК"){showGuidedFuelHistory()})
+        addCard(refuels,refuelCard)
+
+        val analysis=section()
+        val analysisCard=card("АНАЛИЗ ТОПЛИВА")
+        analysisSummary=smallText(
+            "2.0: недостаточно данных. Научно валидированного Fuel Score пока нет.",
+            14f,Color.WHITE)
+        analysisCard.addView(analysisSummary)
+        analysisCard.addView(action("КАРТА RPM × LOAD • STEADY / ACCEL"){
+            showGuidedCoverageMap()
+        })
+        analysisCard.addView(action("ПРЕДВАРИТЕЛЬНЫЙ АНАЛИЗ ЗАПРАВКИ"){
+            showGuidedResult()
+        })
+        analysisCard.addView(action("СРАВНИТЬ 1.7 ↔ 2.0 И ЭКСПОРТИРОВАТЬ CSV"){
+            showOctane2ComparisonFiles()
+        })
+        addCard(analysis,analysisCard)
+
+        val diagnostics=section()
+        val diagnosticCard=card("ДИАГНОСТИЧЕСКИЕ ИСТОЧНИКИ")
+        diagnosticSummary=smallText("Нет свежих данных • RAM / DID / OBD",12f,tertiary)
+        diagnosticCard.addView(diagnosticSummary)
+        diagnosticCard.addView(octane2LiveStatus)
+        diagnosticCard.addView(octane2LambdaStatus)
+        addCard(diagnostics,diagnosticCard)
+        diagnostics.addView(dashboard)
+
+        val settings=section()
+        val settingsCard=card("НАСТРОЙКИ")
+        settingsCard.addView(smallText(
+            "Параметры диагностики и резервные режимы. Изменения RAM/SWFL применяются после остановки сбора.",
+            12f,tertiary))
+        settingsCard.addView(action("RAM / SWFL • ПРОФИЛЬ"){showOctane2RamProfile()})
+        settingsCard.addView(action("РЕЖИМ ОПРОСА DME"){showPollingModeDialog()})
+        settingsCard.addView(action("OFFLINE REPLAY"){showObservationReplay()})
+        settingsCard.addView(action("ДОПОЛНИТЕЛЬНО • ДИАГНОСТИКА / ЭКСПОРТ"){
+            showAdditionalMenu()
+        })
+        addCard(settings,settingsCard)
+
+        tabPages=listOf(home,refuels,analysis,diagnostics,settings).map { section ->
+            ScrollView(this).apply {
+                isFillViewport=true
+                isVerticalScrollBarEnabled=false
+                addView(section)
+            }
+        }
+        val holder=android.widget.FrameLayout(this)
+        tabPages.forEach { view ->
+            holder.addView(view,android.widget.FrameLayout.LayoutParams(-1,-1))
+        }
+        root.addView(holder,LinearLayout.LayoutParams(-1,0,1f))
+        val nav=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            background=android.graphics.drawable.GradientDrawable().apply {
+                setColor(Color.rgb(18,29,45))
+                setStroke(dp(1),Color.rgb(45,62,83))
+            }
+        }
+        navButtons=listOf("Главная","Заправки","Анализ","Диагностика","Настройки")
+            .mapIndexed{index,label ->
+                TextView(this).apply {
+                    text=label;textSize=if(index==3)10f else 11f
+                    gravity=Gravity.CENTER
+                    isClickable=true
+                    contentDescription="Раздел: $label"
+                    setOnClickListener{selectTab(index)}
+                    nav.addView(this,LinearLayout.LayoutParams(0,dp(52),1f))
+                }
+            }
+        root.addView(nav,LinearLayout.LayoutParams(-1,dp(52)))
         setContentView(root)
+        selectTab(savedInstanceState?.getInt("octane2_tab",0)?:0)
+        dashboard.setLogging(logging)
+        if(logging)startButton.backgroundTintList=
+            ColorStateList.valueOf(Color.rgb(255,179,126))
+        renderHomeState()
         statusReceiver=object:BroadcastReceiver() {
             override fun onReceive(context:Context?,intent:Intent?) {
+                if(intent?.action==EnetLoggerService.ACTION_OCTANE2) {
+                    val state=intent.getStringExtra(EnetLoggerService.EXTRA_RAM_STATUS)
+                        ?: "LOCKED"
+                    val ram=intent.getDoubleExtra(EnetLoggerService.EXTRA_RAM_RPM,Double.NaN)
+                    val obd=intent.getDoubleExtra(EnetLoggerService.EXTRA_OBD_RPM,Double.NaN)
+                    lastRamState=state
+                    octane2LiveStatus.text=if(ram.isFinite() && obd.isFinite())
+                        "RAM $state • RAM ${ram.toInt()} / OBD ${obd.toInt()} об/мин"
+                        else "RAM: $state • OBD сохранён как контроль"
+                    val lambda=intent.getDoubleExtra(
+                        EnetLoggerService.EXTRA_ACTUAL_LAMBDA,Double.NaN)
+                    val pid=intent.getIntExtra(
+                        EnetLoggerService.EXTRA_LAMBDA_SOURCE,-1)
+                    lastActualLambda=lambda.takeIf{it.isFinite()}
+                    octane2LambdaStatus.text=if(lambda.isFinite())
+                        "Фактическая λ = ${"%.3f".format(java.util.Locale.US,lambda)} • PID 0x${pid.toString(16)}"
+                        else "Фактическая λ недоступна • заданная смесь не заменяет датчик"
+                    renderHomeState()
+                    return
+                }
                 if(intent?.action==EnetLoggerService.ACTION_FAST_TELEMETRY) {
                     val r=intent.getDoubleExtra(EnetLoggerService.EXTRA_RPM,Double.NaN)
                     val m=intent.getDoubleExtra(EnetLoggerService.EXTRA_MAP,Double.NaN)
                     val l=intent.getDoubleExtra(EnetLoggerService.EXTRA_LOAD,Double.NaN)
+                    if(logging && (r.isFinite() || m.isFinite()))
+                        connection=Octane2UiState.Connection.CONNECTED
+                    lastFastReceivedAt=SystemClock.elapsedRealtime()
+                    latestRpm=r.takeIf{it.isFinite()}
+                    latestMap=m.takeIf{it.isFinite()}
                     showFastTelemetry(r.takeIf{it.isFinite()},m.takeIf{it.isFinite()},
                         l.takeIf{it.isFinite()},
                         intent.getIntExtra(EnetLoggerService.EXTRA_STEADY_TARGET_INDEX,-1),
                         intent.getLongExtra(EnetLoggerService.EXTRA_STEADY_HOLD_MS,0L))
                     main.removeCallbacks(fastStaleClear)
                     main.postDelayed(fastStaleClear,2500L)
+                    renderHomeState()
                     return
                 }
                 if(intent?.action!=EnetLoggerService.ACTION_STATUS)return
                 val message=intent.getStringExtra(EnetLoggerService.EXTRA_STATUS)?:return
+                val newTransport=intent.getStringExtra(EnetLoggerService.EXTRA_TRANSPORT)
+                if(!newTransport.isNullOrBlank())transportLabel=newTransport
+                lastPollHz=intent.takeIf{it.hasExtra(EnetLoggerService.EXTRA_HZ)}
+                    ?.getDoubleExtra(EnetLoggerService.EXTRA_HZ,Double.NaN)
+                    ?.takeIf{it.isFinite()}
+                    ?:lastPollHz
+                if(intent.hasExtra(EnetLoggerService.EXTRA_RECONNECTS))
+                    lastReconnectCount=intent.getIntExtra(EnetLoggerService.EXTRA_RECONNECTS,0)
+                when {
+                    message.startsWith("ENET reconnect",true) ->
+                        connection=Octane2UiState.Connection.RECONNECTING
+                    message.startsWith("CONNECTED ",true) ->
+                        connection=Octane2UiState.Connection.CONNECTED
+                    message.startsWith("DISCOVERY ",true) ||
+                    message.startsWith("GATEWAY ",true) ->
+                        connection=Octane2UiState.Connection.CONNECTING
+                    message.contains("No usable physical",true) ->
+                        connection=Octane2UiState.Connection.ERROR
+                }
                 if(intent.hasExtra(EnetLoggerService.EXTRA_RPM))
                     liveLearningRpm=intent.getDoubleExtra(EnetLoggerService.EXTRA_RPM,0.0)
                 if(intent.hasExtra(EnetLoggerService.EXTRA_LOAD))
@@ -367,9 +614,11 @@ class MainActivity : Activity() {
                 } else {
                     dashboard.render(intent)
                 }
+                renderHomeState()
             }
         }
         val filter=IntentFilter(EnetLoggerService.ACTION_STATUS).apply {
+            addAction(EnetLoggerService.ACTION_OCTANE2)
             addAction(EnetLoggerService.ACTION_FAST_TELEMETRY)
         }
         if(Build.VERSION.SDK_INT>=33) {
@@ -387,7 +636,10 @@ class MainActivity : Activity() {
                     lines.forEach { SteadyTargets.parse(it)?.let(old::add) }
                 }
             }catch(_:Exception){}
-            val snap=SteadyTargets.Tracker(session,old).snapshot()
+            val scoped=Octane2UiState.recordsForCurrentRefuel(old,session,
+                prefs.getLong(GuidedFuelTest.PREF_ID,0L),
+                prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1))
+            val snap=SteadyTargets.Tracker(session,scoped).snapshot()
             runOnUiThread {
                 if(!isFinishing && !isDestroyed)
                     updateTargetStatus(intArrayOf(snap.first.points,snap.first.segments,
@@ -399,11 +651,120 @@ class MainActivity : Activity() {
         }
         guidedUiRefresh=object:Runnable {
             override fun run() {
-                if(fuelOverviewDialog?.isShowing==true) refreshGuidedPanel()
+                if(fuelOverviewDialog?.isShowing==true || selectedTab==0 ||
+                    selectedTab==2) refreshGuidedPanel()
                 main.postDelayed(this,4800L)
             }
         }
         main.post(guidedUiRefresh!!)
+    }
+
+    private fun selectTab(tab:Int) {
+        if(!::tabPages.isInitialized)return
+        selectedTab=tab.coerceIn(0,tabPages.lastIndex)
+        tabPages.forEachIndexed{index,page ->
+            page.visibility=if(index==selectedTab)android.view.View.VISIBLE
+                else android.view.View.GONE
+        }
+        navButtons.forEachIndexed {index,button ->
+            button.setTextColor(if(index==selectedTab)accentGreen else tertiary)
+            button.typeface=Typeface.create("sans-serif-medium",
+                if(index==selectedTab)Typeface.BOLD else Typeface.NORMAL)
+            button.isSelected=index==selectedTab
+        }
+        renderHomeState()
+    }
+
+    private fun renderHomeState() {
+        if(!::homeFuelTitle.isInitialized)return
+        val pref=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        val id=pref.getLong(GuidedFuelTest.PREF_ID,0L)
+        val hasFuel=id>0L && pref.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)==
+            pref.getInt("fuel_session_id",1)
+        val grade=pref.getString(GuidedFuelTest.PREF_GRADE,"Топливо")?:"Топливо"
+        val station=pref.getString(GuidedFuelTest.PREF_STATION,"")?:""
+        homeFuelTitle.text=if(hasFuel)grade else "Топливо не выбрано"
+        val date=if(id>0L)java.text.DateFormat.getDateInstance(
+            java.text.DateFormat.MEDIUM).format(java.util.Date(id)) else "—"
+        homeFuelMeta.text=if(hasFuel)
+            listOf(station.takeIf{it.isNotBlank()},date,
+                "Сессия #"+pref.getInt("fuel_session_id",1))
+                .filterNotNull().joinToString("  •  ")
+            else "Создай заправку для независимого исследования"
+        homeConnection.text=when(connection) {
+            Octane2UiState.Connection.CONNECTED -> "● Подключено • $transportLabel"
+            Octane2UiState.Connection.RECONNECTING -> "● Переподключение • $transportLabel"
+            Octane2UiState.Connection.CONNECTING -> "● Ожидание DME • $transportLabel"
+            Octane2UiState.Connection.ERROR -> "● Ошибка подключения • $transportLabel"
+            else -> "● Отключено • ENET / VXSCAN"
+        }
+        homeConnection.setTextColor(when(connection) {
+            Octane2UiState.Connection.CONNECTED -> accentGreen
+            Octane2UiState.Connection.ERROR -> Color.rgb(255,134,117)
+            else -> accentBlue
+        })
+        val paused=hasFuel && !pref.getBoolean(GuidedFuelTest.PREF_ACTIVE,false)
+            && !pref.getBoolean(GuidedFuelTest.PREF_DONE,false)
+        homeCaptureState.text=Octane2UiState.stateText(
+            logging,connection,hasFuel,firstTarget,secondTarget,paused)
+        val guide=Octane2UiState.guidance(firstTarget,secondTarget,
+            logging && connection==Octane2UiState.Connection.CONNECTED,paused)
+        homeNextMode.text=guide.heading+"\n"+guide.instructions
+        fun stageText(target:Octane2UiState.Target)=when(target.stage) {
+            Octane2UiState.Stage.NOT_STARTED -> "НЕ НАЧАТО"
+            Octane2UiState.Stage.COLLECTING -> "СОБИРАЕТСЯ"
+            Octane2UiState.Stage.SUFFICIENT -> "ДОСТАТОЧНО ДАННЫХ"
+        }
+        homeTargetAState.text="2500–2999: "+stageText(firstTarget)
+        homeTargetBState.text="3000–3499: "+stageText(secondTarget)
+        homeTargetAState.setTextColor(if(firstTarget.sufficient)accentGreen else tertiary)
+        homeTargetBState.setTextColor(if(secondTarget.sufficient)accentGreen else tertiary)
+        if(::analysisSummary.isInitialized) {
+            val fuelOverview=if(hasFuel)guidedSnapshot else null
+            analysisSummary.text="BMW OCTANE 2.0 • НЕДОСТАТОЧНО ДАННЫХ\n"+
+                "Подтверждённой числовой оценки топлива нет.\n"+
+                "STEADY 2500–2999: ${firstTarget.points} точек / ${firstTarget.segments} участков / ${firstTarget.loggerStarts} запусков\n"+
+                "STEADY 3000–3499: ${secondTarget.points} точек / ${secondTarget.segments} участков / ${secondTarget.loggerStarts} запусков\n"+
+                "Текущий тест: ${fuelOverview?.progress?.toString()?.plus("%")?:"не начат"}."+
+                " Сравнение 1.7 ↔ 2.0 доступно по диагностическому CSV.\n"+
+                "Даже при достаточном покрытии результат не является измеренным RON."
+        }
+        if(::diagnosticSummary.isInitialized) {
+            val rpm=latestRpm?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"
+            val map=latestMap?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"
+            diagnosticSummary.text="Транспорт: $transportLabel • RAM: $lastRamState\n"+
+                "RPM: $rpm (RAM при валидации / OBD fallback) • MAP: $map кПа (OBD)\n"+
+                "Детонация/зажигание: UDS DID • другие показатели: OBD / DID\n"+
+                "Опрос: ${lastPollHz?.let{String.format(java.util.Locale.US,"%.1f Гц",it)}?:"—"}"+
+                " • реконнекты: $lastReconnectCount\n"+
+                "λ: ${lastActualLambda?.let{String.format(java.util.Locale.US,"%.3f",it)}?:"недоступна"}; "+
+                "данные реальны только при свежих диагностических сообщениях."
+        }
+    }
+
+    override fun onSaveInstanceState(outState:Bundle) {
+        outState.putInt("octane2_tab",selectedTab)
+        super.onSaveInstanceState(outState)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if(::homeFuelTitle.isInitialized) {
+            logging=EnetLoggerService.isLoggerActive
+            if(!logging) {
+                connection=Octane2UiState.Connection.DISCONNECTED
+                latestRpm=null;latestMap=null;lastActualLambda=null
+            } else if(lastFastReceivedAt==0L) {
+                connection=Octane2UiState.Connection.CONNECTING
+            }
+            loggerControl?.let { button ->
+                button.text=if(logging)"ОСТАНОВИТЬ" else "НАЧАТЬ СБОР"
+                button.backgroundTintList=ColorStateList.valueOf(
+                    if(logging)Color.rgb(255,179,126) else accentBlue)
+            }
+            renderHomeState()
+            refreshGuidedPanel()
+        }
     }
 
     // Android < 13 has no RECEIVER_NOT_EXPORTED overload. The only caller
@@ -423,7 +784,8 @@ class MainActivity : Activity() {
             "Считать историю и адаптации DME (LOGGER STOP)",
             "Сохранённые снимки истории DME", "Фоновый DME Monitor • журнал",
             "Обучение эталона • RPM × нагрузка", "Режим замеров AUTO / TEST",
-            "История тестов топлива", "Offline replay • наблюдения")
+            "История тестов топлива", "Offline replay • наблюдения",
+            "BMW OCTANE 2.0 • RAM/SWFL", "BMW OCTANE 2.0 • экспорт сравнения")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -453,6 +815,8 @@ class MainActivity : Activity() {
                     }
                     12 -> showGuidedFuelHistory()
                     13 -> showObservationReplay()
+                    14 -> showOctane2RamProfile()
+                    15 -> showOctane2ComparisonFiles()
                 }
             }
             .setNegativeButton("Закрыть",null)
@@ -463,6 +827,92 @@ class MainActivity : Activity() {
      * Deterministic replay of our own versioned per-FAST-cycle observations.
      * Never connects to DME and never changes Fuel Score or calibration.
      */
+    private fun showOctane2RamProfile() {
+        if(logging || EnetLoggerService.isLoggerActive) {
+            AlertDialog.Builder(this).setTitle("Сначала останови LOGGER")
+                .setMessage("Настройка RAM применяется только при следующем старте LOGGER.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        AlertDialog.Builder(this)
+            .setTitle("RAM 0x23 • проверенный RPM Nkw")
+            .setMessage("РАЗРЕШЕНО ТОЛЬКО при точном совпадении автомобиля с RAM LAB:\n"+
+                "A2L R4C9J797B_5d55-070_060_007\n"+
+                "SWFL 00005D55-070.060.007\n"+
+                "MG1CS201 • Nkw 0x60003B64 (2 байта).\n\n"+
+                "Идентификатор ПО автоматически не подтверждён. "+
+                "После подтверждения сначала требуется 0 км/ч и проверка OBD RPM. "+
+                "При отказе ECU RAM выключится, останется OBD. "+
+                "Не включай после перепрошивки без повторной проверки.")
+            .setPositiveButton("Подтверждаю точное совпадение") { _,_ ->
+                prefs.edit().putBoolean("octane2_swfl_confirmed",true).apply()
+                Toast.makeText(this,"RAM будет разрешён после проверки на холостом ходу",Toast.LENGTH_LONG).show()
+            }
+            .setNeutralButton("Отключить RAM") { _,_ ->
+                prefs.edit().putBoolean("octane2_swfl_confirmed",false).apply()
+                Toast.makeText(this,"Останется диагностический OBD режим",Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Отмена",null).show()
+    }
+
+    private fun showOctane2ComparisonFiles() {
+        if(logging || EnetLoggerService.isLoggerActive) {
+            AlertDialog.Builder(this).setTitle("Экспорт после STOP LOGGER")
+                .setMessage("Останови LOGGER для завершения и сброса буфера CSV.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        val dir=getExternalFilesDir(null)?:filesDir
+        val files=dir.listFiles()?.filter{it.isFile &&
+            (it.name.startsWith("bmw_octane2_comparison_v1_") ||
+                it.name.startsWith("bmw_observations_v1_") ||
+                it.name.startsWith("bmw_steady_targets_v1732_")) &&
+            it.extension=="csv"}?.sortedByDescending{it.lastModified()}?:emptyList()
+        if(files.isEmpty()) {
+            AlertDialog.Builder(this).setTitle("Нет CSV сравнения")
+                .setMessage("Запусти и останови LOGGER, затем повтори.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        AlertDialog.Builder(this).setTitle("Выбери CSV для экспорта")
+            .setItems(files.take(40).map{it.name}.toTypedArray()) { _,index ->
+                val chosen=files[index]
+                AlertDialog.Builder(this)
+                    .setTitle(chosen.name)
+                    .setItems(arrayOf("Отчёт 1.7 ↔ 2.0 (если формат 2.0)",
+                        "Экспорт CSV")) { _,action ->
+                        if(action==0) {
+                            if(!chosen.name.startsWith("bmw_octane2_comparison_v1_")) {
+                                AlertDialog.Builder(this).setMessage(
+                                    "Для парного отчёта необходим CSV сравнения OCTANE 2.0.")
+                                    .setPositiveButton("OK",null).show()
+                            }else executor.execute {
+                                val text=try {
+                                    chosen.useLines { lines ->
+                                        Octane2ComparisonReport.analyze(lines).russianReport()
+                                    }
+                                }catch(e:Exception){"Ошибка CSV: ${e.message}"}
+                                main.post {
+                                    if(!isFinishing && !isDestroyed)
+                                        AlertDialog.Builder(this)
+                                            .setTitle("RAM ↔ OBD • одна поездка")
+                                            .setMessage(text).setPositiveButton("Закрыть",null).show()
+                                }
+                            }
+                        }else {
+                            pendingOctane2Export=chosen
+                            @Suppress("DEPRECATION")
+                            startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                addCategory(Intent.CATEGORY_OPENABLE)
+                                type="text/csv"
+                                putExtra(Intent.EXTRA_TITLE,chosen.name)
+                            },902)
+                        }
+                    }.show()
+            }.setNegativeButton("Отмена",null).show()
+    }
+
     private fun showObservationReplay() {
         if(logging || EnetLoggerService.isLoggerActive) {
             AlertDialog.Builder(this).setTitle("Offline replay")
@@ -680,7 +1130,10 @@ class MainActivity : Activity() {
         liveCue.text=cue.description
         liveCue.setTextColor(accent)
         liveHold.progress=cue.holdPct
+        latestRpm=rpm
+        latestMap=map
         dashboard.updateFastReadings(rpm,map,load)
+        renderHomeState()
     }
 
     private fun updateTargetStatus(a:IntArray?,b:IntArray?,hint:String?) {
@@ -693,6 +1146,9 @@ class MainActivity : Activity() {
         targetProgressOne.progress=a[4].coerceIn(0,100)
         targetProgressTwo.progress=b[4].coerceIn(0,100)
         targetHint.text=hint?:"Ожидаю устойчивые RPM и MAP"
+        firstTarget=Octane2UiState.target(a)
+        secondTarget=Octane2UiState.target(b)
+        renderHomeState()
     }
 
     private fun showFuelTestOverview() {
@@ -744,6 +1200,17 @@ class MainActivity : Activity() {
             setTextSize(14f)
         }
         parent.addView(station)
+        val subjectiveLabel=TextView(this).apply {
+            text="Личная оценка после заправки (не влияет на алгоритм)"
+            textSize=13f;setPadding(0,12,0,0)
+        }
+        parent.addView(subjectiveLabel)
+        val subjective=Spinner(this).apply {
+            adapter=ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("Без оценки","Понравилось","Нейтрально","Не понравилось"))
+        }
+        parent.addView(subjective)
         AlertDialog.Builder(this)
             .setTitle("Новая заправка")
             .setMessage("Будет создан независимый тест топлива. Прошивка MG Flasher ST1; "+
@@ -762,15 +1229,20 @@ class MainActivity : Activity() {
                         prefs.getInt("fuel_session_id",1))
                     .putString(GuidedFuelTest.PREF_GRADE,options[grade.selectedItemPosition])
                     .putString(GuidedFuelTest.PREF_STATION,station.text.toString().take(100))
+                    .putString("octane2_refuel_rating_"+id,
+                        subjective.selectedItem.toString())
                     .putString("measurement_mode","AUTO")
                     .putBoolean(BaselineLearning.PREF_ENABLED,false)
                     .commit()
                 guidedSnapshot=null
+                updateTargetStatus(intArrayOf(0,0,0,0,0),intArrayOf(0,0,0,0,0),
+                    "Новая заправка • ждём пригодные диагностические измерения")
                 refreshGuidedPanel()
-                loggerControl?.performClick()
-                // Immediately show the fuel-test screen after selecting a
-                // refill; do not occupy permanent home-screen space.
-                main.post { if(!isFinishing && !isDestroyed)showFuelTestOverview() }
+                selectTab(0)
+                renderHomeState()
+                Toast.makeText(this@MainActivity,
+                    "Заправка сохранена. Запусти сбор кнопкой «НАЧАТЬ СБОР».",
+                    Toast.LENGTH_LONG).show()
             }.show()
     }
 
@@ -816,6 +1288,7 @@ class MainActivity : Activity() {
                     prefs.getLong(GuidedFuelTest.PREF_ID,0L)!=id)return@runOnUiThread
                 guidedSnapshot=state
                 guidedProgress.progress=state.progress
+                renderHomeState()
                 guidedDetail.text=when {
                     fuel!=prefs.getInt("fuel_session_id",1) -> "Заправка изменилась • тест остановлен"
                     done -> "Измерения завершены • STEADY ${state.steadyReady}/2 · ACCEL ${state.accelReady}/3"
@@ -1004,7 +1477,9 @@ class MainActivity : Activity() {
                         else Regex("fuel_session=(\\d+)").find(meta)?.groupValues?.get(1)?.toIntOrNull()?:-1
                     val coverage=readGuided(dataset,fuel).snapshot()
                     val grade=Regex("grade=([^;]+)").find(meta)?.groupValues?.get(1)?:"Топливо"
-                    "$grade • ${coverage.progress}% • ${coverage.steadyReady}/2 STEADY · ${coverage.accelReady}/3 ACCEL"
+                    val rating=prefs.getString("octane2_refuel_rating_"+dataset,"")?:""
+                    "$grade • ${coverage.progress}% • ${coverage.steadyReady}/2 STEADY · ${coverage.accelReady}/3 ACCEL"+
+                        if(rating.isNotBlank() && rating!="Без оценки")" • $rating" else ""
                 }catch(_:Exception){file.name}
                 rows
             }
@@ -1460,6 +1935,27 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode:Int, resultCode:Int, data:Intent?) {
         super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode==902) {
+            val source=pendingOctane2Export
+            pendingOctane2Export=null
+            val dest=data?.data
+            if(resultCode==RESULT_OK && source!=null && dest!=null &&
+                source.isFile) {
+                executor.execute {
+                    val result=try {
+                        contentResolver.openOutputStream(dest)?.use{out ->
+                            source.inputStream().use{input->input.copyTo(out)}
+                        } ?: throw IllegalStateException("Export stream unavailable")
+                        "CSV экспортирован: ${source.name}"
+                    }catch(e:Exception){"Ошибка экспорта: ${e.message}"}
+                    runOnUiThread {
+                        if(!isFinishing && !isDestroyed)
+                            Toast.makeText(this,result,Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+            return
+        }
         if(requestCode!=901 || resultCode!=RESULT_OK) return
         val uri=data?.data ?: return
         try {
