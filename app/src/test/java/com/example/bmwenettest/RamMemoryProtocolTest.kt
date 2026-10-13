@@ -70,6 +70,25 @@ class RamMemoryProtocolTest {
         assertNull(codec.decodeNkwRpm(byteArrayOf(0xFF.toByte())))
     }
 
+    @Test fun liveOneShotRequiresSpeedZeroAndPlausibleIdle() {
+        assertTrue(codec.vehicleStationary(byteArrayOf(0)))
+        assertFalse(codec.vehicleStationary(byteArrayOf(1)))
+        assertFalse(codec.vehicleStationary(byteArrayOf()))
+        assertFalse(codec.vehicleStationary(byteArrayOf(0,0)))
+        assertTrue(codec.parkedIdleRpm(750.0))
+        assertFalse(codec.parkedIdleRpm(0.0))
+        assertFalse(codec.parkedIdleRpm(2500.0))
+        assertFalse(codec.parkedIdleRpm(Double.NaN))
+    }
+
+    @Test fun liveReadMustMatchObdBeforeAndAfter() {
+        assertTrue(codec.matchesObdRpm(720.0,725.0,724))
+        assertFalse(codec.matchesObdRpm(720.0,725.0,400))
+        assertFalse(codec.matchesObdRpm(720.0,900.0,850))
+        assertFalse(codec.matchesObdRpm(720.0,725.0,-10))
+        assertFalse(codec.matchesObdRpm(Double.NaN,725.0,724))
+    }
+
     @Test fun offlineFixtureProducesValidResponseWithoutAccessingTransport() {
         val (request,response)=codec.offlineFixture()
         assertEquals(0x23,request[0].toInt() and 255)
