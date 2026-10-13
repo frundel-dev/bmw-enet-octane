@@ -809,7 +809,9 @@ class EnetLoggerService : Service() {
                     if(lastDistanceSampleTime>0L && now-lastDistanceSampleTime in 1L..10000L && mixingKm>0.0 && slowSpeed!=null) {
                         val traveled=(slowSpeed!!*(now-lastDistanceSampleTime)/3600000.0).coerceAtLeast(0.0)
                         mixingKm=(mixingKm-traveled).coerceAtLeast(0.0)
-                        prefs.edit().putFloat("mixing_remaining_km",mixingKm.toFloat()).apply()
+                        prefs.edit().putFloat("mixing_remaining_km",mixingKm.toFloat())
+                            .putString(RefuelSessionStore.PREF_ACTIVE_STATE,
+                                if(mixingKm>0.0)"MIXING" else "COLLECTING").apply()
                     }
                     lastDistanceSampleTime=now
                     val freshnessNow=SystemClock.elapsedRealtime()
@@ -904,7 +906,8 @@ class EnetLoggerService : Service() {
                     }
                     val foctanMs=SystemClock.elapsedRealtime()-foctanStarted
                     val postFastStarted=SystemClock.elapsedRealtime()
-                    val fuelQuarantined=refuelStore.hasPending() || mixingKm>0.0
+                    val fuelQuarantined=!RefuelEligibility.mayAssessFuel(
+                        refuelStore.hasPending(),mixingKm)
                     if(fuelQuarantined) {
                         captureActive=false;captureTailUntil=0L
                         steadyTargetTracker.resetCandidate()
