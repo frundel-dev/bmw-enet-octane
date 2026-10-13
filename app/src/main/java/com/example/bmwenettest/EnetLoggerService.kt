@@ -353,11 +353,11 @@ class EnetLoggerService : Service() {
     private suspend fun loop() {
         val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0
         val ramFrameReader=HsfzReusableReader()
-        val csvWriter=AsyncCsvWriter { file,error ->
+        val csvWriter=AsyncCsvWriter(onFailure={ file,error ->
             connectionEvent("ASYNC_CSV_WRITE_FAILED",reconnects,"FILE",
                 "ASYNC",null,"file=${file.name};error=${error.javaClass.simpleName}: ${error.message}")
             emit("Ошибка записи CSV: ${file.name}. Данные в этом журнале неполные.")
-        }
+        })
         // A new trip ID on each LOGGER start. Not equivalent to a separate day.
         val learningTripId=System.currentTimeMillis()
         val ramPolicy=Octane2RamPolicy(
