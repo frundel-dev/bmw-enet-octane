@@ -459,7 +459,10 @@ class EnetLoggerService : Service() {
                     }
                 }
             } catch(_:Exception) { /* A damaged file must never break DME polling. */ }
-            return SteadyTargets.Tracker(session,past)
+            return SteadyTargets.Tracker(session,
+                Octane2UiState.recordsForCurrentRefuel(past,session,
+                    prefs.getLong(GuidedFuelTest.PREF_ID,0L),
+                    prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)))
         }
         var steadyTargetTracker=loadSteadyTargets(fuelSessionId)
         var lastAcknowledgedTargetSegment=0
