@@ -1631,50 +1631,69 @@ class MainActivity : Activity() {
     }
 
     private fun showGuidedFuelHistory() {
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val dir=getExternalFilesDir(null)?:filesDir
-        val files=dir.listFiles()?.filter {
-            it.isFile && it.name.startsWith("bmw_fuel_test_v1731_") &&
-                it.name.endsWith(".csv")
-        }?.sortedByDescending{it.lastModified()}?.take(30).orEmpty()
-        if(files.isEmpty()) {
+        val legacyIds=dir.listFiles()?.mapNotNull { f ->
+            if(f.isFile && f.name.startsWith("bmw_fuel_test_v1731_") &&
+                f.name.endsWith(".csv"))
+                f.name.removePrefix("bmw_fuel_test_v1731_")
+                    .removeSuffix(".csv").toLongOrNull()
+            else null
+        }.orEmpty()
+        val confirmedIds=prefs.all.keys.mapNotNull { key ->
+            if(key.startsWith(RefuelSessionStore.PREF_META_GRADE_PREFIX))
+                key.removePrefix(RefuelSessionStore.PREF_META_GRADE_PREFIX).toLongOrNull()
+            else null
+        }
+        val currentId=prefs.getLong(GuidedFuelTest.PREF_ID,0L)
+        val ids=(legacyIds+confirmedIds+listOf(currentId).filter{it>0L})
+            .distinct().sortedDescending().take(50)
+        if(ids.isEmpty()) {
             AlertDialog.Builder(this).setTitle("История заправок")
-                .setMessage("Пока нет записанных тестов.")
+                .setMessage("Подтверждённых заправок пока нет.")
                 .setPositiveButton("OK",null).show()
             return
         }
         executor.execute {
-            val summaries=files.map { file ->
-                val rows=try {
-                    val meta=file.useLines{it.firstOrNull()}?:""
-                    val dataset=file.name.removePrefix("bmw_fuel_test_v1731_")
-                        .removeSuffix(".csv").toLongOrNull()?:0L
-                    val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
-                    val current=dataset==prefs.getLong(GuidedFuelTest.PREF_ID,-1)
-                    val fuel=if(current)prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)
-                        else Regex("fuel_session=(\\d+)").find(meta)?.groupValues?.get(1)?.toIntOrNull()?:-1
-                    val coverage=readGuided(dataset,fuel).snapshot()
-                    val legacyGrade=Regex("grade=([^;]+)").find(meta)?.groupValues?.get(1)?:"Топливо"
-                    val grade=prefs.getString(RefuelSessionStore.PREF_META_GRADE_PREFIX+dataset,legacyGrade)
-                        ?:legacyGrade
-                    val rating=prefs.getString("octane2_refuel_rating_"+dataset,"")?:""
-                    "$grade • ${coverage.progress}% • ${coverage.steadyReady}/2 STEADY · ${coverage.accelReady}/3 ACCEL"+
-                        if(rating.isNotBlank() && rating!="Без оценки")" • $rating" else ""
-                }catch(_:Exception){file.name}
-                rows
+            val summaries=ids.map { id ->
+                try {
+                    val file=File(dir,GuidedFuelTest.filename(id))
+                    val metadata=if(file.isFile)file.useLines{it.firstOrNull()}?:"" else ""
+                    val current=id==prefs.getLong(GuidedFuelTest.PREF_ID,-1L)
+                    val oldSession=Regex("fuel_session=(\\d+)")
+                        .find(metadata)?.groupValues?.get(1)?.toIntOrNull()?:-1
+                    val fuelSession=prefs.getInt(
+                        RefuelSessionStore.PREF_META_SESSION_PREFIX+id,
+                        if(current)prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)
+                        else oldSession)
+                    val historicalGrade=Regex("grade=([^;]+)")
+                        .find(metadata)?.groupValues?.get(1)?:"Топливо"
+                    val grade=prefs.getString(RefuelSessionStore.PREF_META_GRADE_PREFIX+id,
+                        if(current)prefs.getString(GuidedFuelTest.PREF_GRADE,historicalGrade)
+                            else historicalGrade) ?:historicalGrade
+                    val station=prefs.getString(RefuelSessionStore.PREF_META_STATION_PREFIX+id,
+                        if(current)prefs.getString(GuidedFuelTest.PREF_STATION,"") else "")?:""
+                    val rating=prefs.getString(RefuelSessionStore.PREF_RATING_PREFIX+id,"")?:""
+                    val progress=if(file.isFile && fuelSession>0)
+                        readGuided(id,fuelSession).snapshot().progress else 0
+                    val date=java.text.SimpleDateFormat("dd.MM.yyyy",
+                        java.util.Locale.getDefault()).format(java.util.Date(id))
+                    "$date • $grade"+
+                        (if(station.isNotBlank())" • $station" else "")+
+                        " • $progress%"+
+                        (if(rating.isNotBlank() && rating!="Без оценки")" • $rating" else "")
+                }catch(_:Exception){"Заправка #$id • данные сохранены"}
             }
             runOnUiThread {
                 if(isFinishing || isDestroyed)return@runOnUiThread
-                AlertDialog.Builder(this)
-                    .setTitle("История тестов топлива")
+                AlertDialog.Builder(this).setTitle("История заправок")
                     .setItems(summaries.toTypedArray()) { _,index ->
                         AlertDialog.Builder(this)
-                            .setTitle("Сохранённый тест")
-                            .setMessage("${summaries[index]}\nФайл: ${files[index].name}\n"+
-                                "Архивный CSV сохраняется без изменения Fuel Score.")
+                            .setTitle("Заправка • данные сохранены")
+                            .setMessage(summaries[index]+"\nID: ${ids[index]}\n"+
+                                "Изменение метаданных не меняет диагностические CSV.")
                             .setPositiveButton("Изменить топливо") { _,_ ->
-                                editFuelMetadata(files[index].name
-                                    .removePrefix("bmw_fuel_test_v1731_")
-                                    .removeSuffix(".csv").toLongOrNull()?:0L)
+                                editFuelMetadata(ids[index])
                             }
                             .setNegativeButton("Закрыть",null).show()
                     }
