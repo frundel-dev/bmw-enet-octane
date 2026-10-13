@@ -16,6 +16,10 @@ class Octane2DiagnosticsTest {
         assertTrue(policy.accept(765.0,750.0))
         assertEquals(Octane2RamPolicy.State.ACTIVE,policy.state)
         assertTrue(policy.canRead(2700.0,53.0,true))
+        policy.onReconnect()
+        assertEquals(Octane2RamPolicy.State.NEEDS_PARKED_CHECK,policy.state)
+        assertFalse(policy.canRead(2700.0,53.0,true))
+        assertTrue(policy.canRead(770.0,0.0,true))
     }
 
     @Test fun ramMismatchDisablesAndNeverRetriesInSameLoggerStart() {
