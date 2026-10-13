@@ -67,6 +67,7 @@ class MainActivity : Activity() {
     private lateinit var pendingRefuelAction:Button
     private var recentVehicleSpeed:Double?=null
     private var recentSpeedAt=0L
+    private var stoppedSinceMs=0L
     private var presentedRefuelId=0L
     private lateinit var homeFuelTitle:TextView
     private lateinit var homeFuelMeta:TextView
@@ -606,6 +607,9 @@ class MainActivity : Activity() {
                     val speed=intent.getDoubleExtra(EnetLoggerService.EXTRA_SPEED,Double.NaN)
                     recentVehicleSpeed=speed.takeIf{it.isFinite() && it>=0.0}
                     recentSpeedAt=SystemClock.elapsedRealtime()
+                    if(recentVehicleSpeed==0.0) {
+                        if(stoppedSinceMs==0L)stoppedSinceMs=recentSpeedAt
+                    } else stoppedSinceMs=0L
                 }
                 val newTransport=intent.getStringExtra(EnetLoggerService.EXTRA_TRANSPORT)
                 if(!newTransport.isNullOrBlank())transportLabel=newTransport
@@ -1231,7 +1235,10 @@ class MainActivity : Activity() {
     private fun maybeOfferStationaryRefuel() {
         val pending=refuelStore.pending()?:return
         if(!canConfirmRefuelNow() || presentedRefuelId==pending.id ||
-            isFinishing || isDestroyed)return
+            isFinishing || isDestroyed ||
+            (EnetLoggerService.isLoggerActive &&
+                (stoppedSinceMs<=0L || SystemClock.elapsedRealtime()-stoppedSinceMs<15000L)))
+            return
         presentedRefuelId=pending.id
         main.post {
             if(!isFinishing && !isDestroyed &&
