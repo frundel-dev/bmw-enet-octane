@@ -59,6 +59,12 @@ internal object Octane2Lambda {
         val offset=pid-0x21
         return (mask[offset/8].toInt() and (0x80 ushr (offset%8)))!=0
     }
+    // Mode 01 PID 00 is an exact 4-byte support bitmap for PIDs 01..20.
+    fun supportedBase(mask:ByteArray?,pid:Int):Boolean {
+        if(pid !in 0x01..0x20 || mask?.size!=4)return false
+        val offset=pid-1
+        return (mask[offset/8].toInt() and (0x80 ushr (offset%8)))!=0
+    }
     // Wideband bank 1 sensor 1: equivalence-ratio output interpreted
     // as lambda per standard OBD PID descriptor; not commanded PID 0x44.
     fun decode(pid:Int,data:ByteArray?):Sample? {
