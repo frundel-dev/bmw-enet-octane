@@ -352,6 +352,7 @@ class EnetLoggerService : Service() {
 
     private suspend fun loop() {
         val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0
+        val ramFrameReader=HsfzReusableReader()
         val csvWriter=AsyncCsvWriter { file,error ->
             connectionEvent("ASYNC_CSV_WRITE_FAILED",reconnects,"FILE",
                 "ASYNC",null,"file=${file.name};error=${error.javaClass.simpleName}: ${error.message}")
@@ -1028,19 +1029,17 @@ class EnetLoggerService : Service() {
                                 ?: throw IOException("RAM RPM not allowlisted")
                             socket!!.getOutputStream().write(hsfz(request))
                             socket!!.getOutputStream().flush()
-                            val replies=readFrames(socket!!.getInputStream())
-                                .mapNotNull(::payload)
-                            val reply=replies.singleOrNull()
-                                ?: throw IOException("RAM 0x23 ambiguous HSFZ reply")
-                            val data=RamMemoryProtocol.decodePositive(reply,2)
-                            if(data==null) {
-                                val nrc=RamMemoryProtocol.negativeCode(reply)
-                                if(nrc==null || nrc==0x78)
-                                    throw IOException("RAM 0x23 unexpected or pending reply")
-                                ramPolicy.disable("RAM NRC %02X".format(nrc))
-                            } else {
-                                ramRpm=RamMemoryProtocol.decodeNkwRpm(data)?.toDouble()
+                            val ramLength=ramFrameReader.readDiagnostic(
+                                socket!!.getInputStream())
+                                ?: throw IOException("RAM 0x23 missing HSFZ reply")
+                            if(ramFrameReader.isRamPositiveRpm()) {
+                                ramRpm=ramFrameReader.rpm()?.toDouble()
                                 acceptedRam=ramPolicy.accept(ramRpm,obdRpm)
+                            } else {
+                                val nrc=ramFrameReader.ramNegativeCode()
+                                if(nrc==null || nrc==0x78)
+                                    throw IOException("RAM 0x23 unexpected or pending reply (length=$ramLength)")
+                                ramPolicy.disable("RAM NRC %02X".format(nrc))
                             }
                         }catch(e:Exception) {
                             ramPolicy.disable("RAM transport/protocol fault")
