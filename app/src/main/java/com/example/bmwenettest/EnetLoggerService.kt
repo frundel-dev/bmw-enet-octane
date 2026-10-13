@@ -1090,16 +1090,27 @@ class EnetLoggerService : Service() {
                     var acceptedRam=false
                     if(ramReadAllowed && running) {
                         lastRamRequestMs=ramStarted
+                        val ramT0=System.nanoTime()
+                        var ramPrepared=ramT0
+                        var ramSent=ramT0
+                        var ramFirst:Long?=null
+                        var ramReceived=ramT0
+                        var ramDecoded=ramT0
                         try {
                             val request=RamMemoryProtocol.approvedVehicleRequest(
                                 RamMemoryProtocol.APPROVED_A2L,
                                 RamMemoryProtocol.RPM_SIGNAL)
                                 ?: throw IOException("RAM RPM not allowlisted")
-                            socket!!.getOutputStream().write(hsfz(request))
+                            val packet=hsfz(request)
+                            ramPrepared=System.nanoTime()
+                            socket!!.getOutputStream().write(packet)
                             socket!!.getOutputStream().flush()
+                            ramSent=System.nanoTime()
                             val ramLength=ramFrameReader.readDiagnostic(
-                                socket!!.getInputStream())
+                                FirstByteMeasuredStream(socket!!.getInputStream(),
+                                    {time->if(ramFirst==null)ramFirst=time}))
                                 ?: throw IOException("RAM 0x23 missing HSFZ reply")
+                            ramReceived=System.nanoTime()
                             if(ramFrameReader.isRamPositiveRpm()) {
                                 ramRpm=ramFrameReader.rpm()?.toDouble()
                                 acceptedRam=ramPolicy.accept(ramRpm,obdRpm)
@@ -1109,11 +1120,24 @@ class EnetLoggerService : Service() {
                                     throw IOException("RAM 0x23 unexpected or pending reply (length=$ramLength)")
                                 ramPolicy.disable("RAM NRC %02X".format(nrc))
                             }
+                            ramDecoded=System.nanoTime()
                         }catch(e:Exception) {
                             ramPolicy.disable("RAM transport/protocol fault")
                             // Unknown/late response may desynchronize the socket:
                             // never continue ordinary DID reads on this stream.
                             throw IOException("RAM 0x23 uncertain; reconnect safely",e)
+                        } finally {
+                            // The approved RAM channel uses the same single
+                            // socket owner and re-usable HSFZ body buffer.
+                            val last=System.nanoTime()
+                            highspeed.record("RAM_23",ramT0,HighSpeedMetrics.Request(
+                                (ramPrepared-ramT0).coerceAtLeast(0),
+                                (ramSent-ramPrepared).coerceAtLeast(0),
+                                ramFirst?.let{(it-ramSent).coerceAtLeast(0)},
+                                ramFirst?.let{((if(ramReceived>=it)ramReceived else last)-it)
+                                    .coerceAtLeast(0)},
+                                (ramDecoded-ramReceived).coerceAtLeast(0),
+                                acceptedRam,ramRpm?.toInt()))
                         }
                     }
                     val ramLatency=if(ramReadAllowed)
