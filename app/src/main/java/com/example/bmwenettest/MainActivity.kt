@@ -341,7 +341,8 @@ class MainActivity : Activity() {
             "RAM LAB 2 • тест пакетного опроса",
             "RAM LAB 3 • RAM 0x23 (офлайн)",
             "RAM LAB 4 • одно чтение RAM RPM",
-            "RAM LAB 6 • скорость прямого RAM 0x23")
+            "RAM LAB 6 • скорость прямого RAM 0x23",
+            "RAM LAB Suite 1.0.1 • тесты 7–12")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -375,6 +376,7 @@ class MainActivity : Activity() {
                     15 -> showRamMemoryOffline()
                     16 -> showRamLiveSingleRead()
                     17 -> showRamDirectBenchmark()
+                    18 -> showRamSuiteMenu()
                 }
             }
             .setNegativeButton("Закрыть",null)
@@ -450,6 +452,116 @@ class MainActivity : Activity() {
 
 
 
+
+
+    private fun showRamSuiteMenu() {
+        if(historyBusy || logging || EnetLoggerService.isLoggerActive) {
+            AlertDialog.Builder(this).setTitle("RAM LAB Suite • LOGGER STOP")
+                .setMessage("Останови LOGGER, MG Flasher и другие диагностические "+
+                    "приложения перед любым RAM-испытанием.")
+                .setPositiveButton("Понятно",null).show()
+            return
+        }
+        val prefs=getSharedPreferences("bmw_ram_suite",MODE_PRIVATE)
+        val completed=RamSuiteProtocol.Stage.entries.filter {
+            prefs.getBoolean(RamSuiteProtocol.VERSION+"_"+it.number,false)
+        }.map { it.number }.toSet()
+        val entries=RamSuiteProtocol.Stage.entries
+        val labels=RamSuiteProtocol.menuItems(completed)
+        // Never combine AlertDialog.setMessage and setItems: Android
+        // renders the message instead of the stage list.
+        AlertDialog.Builder(this)
+            .setTitle("RAM LAB Suite 1.0.1 • выбери этап")
+            .setItems(labels) { _,selected ->
+                val item=entries[selected]
+                if(!RamSuiteProtocol.allowed(item,completed)) {
+                    AlertDialog.Builder(this).setTitle("Этап заблокирован")
+                        .setMessage("Сначала выполни предыдущий этап и "+
+                            "проанализируй его CSV. Повторный запуск не нужен "+
+                            "при уже выполненном этапе.")
+                        .setPositiveButton("Понятно",null).show()
+                }else confirmRamSuiteStage(item)
+            }
+            .setNegativeButton("Закрыть",null).show()
+    }
+
+    private fun confirmRamSuiteStage(stage:RamSuiteProtocol.Stage) {
+        AlertDialog.Builder(this)
+            .setTitle("RAM LAB Suite ${stage.number} • ${stage.label}")
+            .setMessage("Эксперимент только на стоянке, селектор P, "+
+                "двигатель на ровном холостом ходу. Нельзя пользоваться "+
+                "телефоном во время движения. Закрой MG Flasher, "+
+                "LOGGER и другие программы, использующие DME.\n\n"+
+                "ПО DME НЕ должно отличаться от:\n"+
+                "A2L R4C9J797B\nSWFL 00005D55-070.060.007\n\n"+
+                "Используются только OBD 01 0C / 01 0D, проверенный RPM "+
+                "RAM Nkw, один A2L-кандидат Dzw_tot_kr и штатный DID 4A49. "+
+                "Параметр Dzw_tot_kr ещё НЕ валидирован на автомобиле. "+
+                "Только ограниченные чтения: без 0x2C, переключения сессии, "+
+                "SecurityAccess и записи.\n\n"+
+                if(stage==RamSuiteProtocol.Stage.SOAK)
+                    "Этот тест длится до двух минут. Следи за условиями "+
+                    "безопасности; останови его при любых проблемах."
+                else "Эксперимент прекращается при первой ошибке; "+
+                    "повторять его до изучения CSV не нужно.")
+            .setNegativeButton("Отмена",null)
+            .setPositiveButton("ПО совпадает • Начать") { _,_ ->
+                if(!historyBusy && !logging && !EnetLoggerService.isLoggerActive)
+                    startRamSuiteStage(stage)
+            }.show()
+    }
+
+    private fun startRamSuiteStage(stage:RamSuiteProtocol.Stage) {
+        historyBusy=true
+        historyCancel=false
+        val dialog=AlertDialog.Builder(this)
+            .setTitle("RAM LAB Suite ${stage.number}")
+            .setMessage("Соединение с DME…")
+            .setNegativeButton("Отменить") { _,_ -> historyCancel=true }
+            .create()
+        dialog.setCancelable(false)
+        dialog.show()
+        executor.execute {
+            try {
+                val result=DmeHistoryReader(applicationContext).collectRamSuiteStage(
+                    stage,
+                    { historyCancel || Thread.currentThread().isInterrupted },
+                    { message -> main.post {
+                        if(!isFinishing && !isDestroyed && dialog.isShowing)
+                            dialog.setMessage(message)
+                    } }
+                )
+                main.post {
+                    if(!isFinishing && !isDestroyed) {
+                        if(dialog.isShowing)dialog.dismiss()
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle(if(result.successful)
+                                "LAB ${stage.number} • технически завершён"
+                                else "LAB ${stage.number} • частичный результат")
+                            .setMessage(result.summary+"\n\nCSV: "+
+                                result.file.absolutePath+
+                                "\n\nПеред переходом к следующему этапу "+
+                                "сохрани и проверь журнал.")
+                            .setPositiveButton("Сохранить CSV") { _,_ ->
+                                exportRamReport(result.file)
+                            }
+                            .setNegativeButton("Закрыть",null).show()
+                    }
+                }
+            }catch(e:Exception) {
+                main.post {
+                    if(!isFinishing && !isDestroyed) {
+                        if(dialog.isShowing)dialog.dismiss()
+                        AlertDialog.Builder(this@MainActivity)
+                            .setTitle("RAM LAB Suite • ошибка")
+                            .setMessage(e.javaClass.simpleName+": "+
+                                (e.message ?: "unknown"))
+                            .setPositiveButton("Закрыть",null).show()
+                    }
+                }
+            }finally { historyBusy=false }
+        }
+    }
 
     private fun showRamDirectBenchmark() {
         if(historyBusy || logging || EnetLoggerService.isLoggerActive) {
