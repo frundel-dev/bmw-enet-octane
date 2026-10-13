@@ -29,8 +29,6 @@ internal class AsyncCsvWriter(
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     private val consumer=scope.launch {
         val writers=linkedMapOf<String,BufferedWriter>()
-        val pending=hashMapOf<String,Int>()
-        val flushedAt=hashMapOf<String,Long>()
         try {
             for(entry in queue) {
                 val key=entry.file.absolutePath
@@ -39,17 +37,10 @@ internal class AsyncCsvWriter(
                     val writer=writers.getOrPut(key) {
                         FileOutputStream(entry.file,true).bufferedWriter()
                     }
+                    // Buffered writer stays open, but flush each row to avoid
+                    // increasing the loss window compared with v1.7.
                     writer.append(entry.text).append('\n')
-                    val count=(pending[key]?:0)+1
-                    val now=System.nanoTime()
-                    if(count>=8 || now-(flushedAt[key]?:now)>=3_000_000_000L) {
-                        writer.flush()
-                        pending[key]=0
-                        flushedAt[key]=now
-                    } else {
-                        pending[key]=count
-                        flushedAt.putIfAbsent(key,now)
-                    }
+                    writer.flush()
                 } catch(e:Exception) {
                     failed.add(key)
                     try { writers.remove(key)?.close() } catch(_:Exception) {}
