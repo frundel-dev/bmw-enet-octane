@@ -16,6 +16,9 @@ internal object GuidedFuelTest {
     const val PREF_GRADE = "guided_fuel_test_grade"
     const val PREF_STATION = "guided_fuel_test_station"
     val grades = listOf("АИ-92", "АИ-95", "АИ-98", "АИ-100", "Другое")
+    // Keep legacy labels readable/editable in saved sessions, but for this BMW
+    // do not offer AI-92 or free-text fuel as a new laboratory category.
+    val selectableGrades = listOf("АИ-95", "АИ-98", "АИ-100")
     fun filename(id:Long)="bmw_fuel_test_v1731_$id.csv"
 
     data class CellProgress(val count:Int,val segments:Int) {
