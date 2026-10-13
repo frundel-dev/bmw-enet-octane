@@ -21,6 +21,20 @@ class RamSuiteProtocolTest {
         assertEquals(null,p.nextStage((7..12).toSet()))
     }
 
+    @Test fun suitePickerAlwaysListsSixStagesAndUnblocksLab7First() {
+        val initial=p.menuItems(emptySet())
+        assertEquals(6,initial.size)
+        assertTrue(initial[0].contains("LAB 7"))
+        assertTrue(initial[0].contains("Можно запускать"))
+        assertTrue(initial[1].contains("Заблокирован"))
+        assertTrue(initial[5].contains("LAB 12"))
+
+        val after7=p.menuItems(setOf(7))
+        assertTrue(after7[0].contains("Технически завершён"))
+        assertTrue(after7[1].contains("Можно запускать"))
+        assertTrue(after7[2].contains("Заблокирован"))
+    }
+
     @Test fun exactAllowlistedAddressesAndService() {
         assertArrayEquals(byteArrayOf(0x23,0x14,0x60,0,0x3B,0x64,0x02),
             p.memoryRequest("Nkw"))
