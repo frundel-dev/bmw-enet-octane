@@ -210,9 +210,9 @@ class EnetLoggerService : Service() {
         running=false
         androidNetworkMonitor?.stop(); androidNetworkMonitor=null
         try{socket?.close()}catch(_:Exception){}
-        isLoggerActive=false
         pollingJob?.cancel()
-        stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
+        // Do not stop the Service before the CSV Channel finishes draining.
+        // loop() releases the foreground service only after all writers close.
     }
     override fun onDestroy() {
         androidNetworkMonitor?.stop(); androidNetworkMonitor=null
@@ -1674,6 +1674,11 @@ class EnetLoggerService : Service() {
         if(observationJournal?.failed==true && !journalFailureNoted)
             connectionEvent("OBSERVATION_JOURNAL_FAILED",reconnects,
                 "FILE",connectionTransport,null,"Journal close/flush failed")
+        isLoggerActive=false
+        if(!running) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
         }
         }
     }
