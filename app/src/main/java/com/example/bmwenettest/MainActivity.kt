@@ -618,6 +618,103 @@ class MainActivity : Activity() {
         main.post(guidedUiRefresh!!)
     }
 
+    private fun selectTab(tab:Int) {
+        if(!::tabPages.isInitialized)return
+        selectedTab=tab.coerceIn(0,tabPages.lastIndex)
+        tabPages.forEachIndexed{index,page ->
+            page.visibility=if(index==selectedTab)android.view.View.VISIBLE
+                else android.view.View.GONE
+        }
+        navButtons.forEachIndexed {index,button ->
+            button.setTextColor(if(index==selectedTab)accentGreen else tertiary)
+            button.typeface=Typeface.create("sans-serif-medium",
+                if(index==selectedTab)Typeface.BOLD else Typeface.NORMAL)
+            button.isSelected=index==selectedTab
+        }
+        renderHomeState()
+    }
+
+    private fun renderHomeState() {
+        if(!::homeFuelTitle.isInitialized)return
+        val pref=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        val id=pref.getLong(GuidedFuelTest.PREF_ID,0L)
+        val hasFuel=id>0L && pref.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)==
+            pref.getInt("fuel_session_id",1)
+        val grade=pref.getString(GuidedFuelTest.PREF_GRADE,"Топливо")?:"Топливо"
+        val station=pref.getString(GuidedFuelTest.PREF_STATION,"")?:""
+        homeFuelTitle.text=if(hasFuel)grade else "Топливо не выбрано"
+        val date=if(id>0L)java.text.DateFormat.getDateInstance(
+            java.text.DateFormat.MEDIUM).format(java.util.Date(id)) else "—"
+        homeFuelMeta.text=if(hasFuel)
+            listOf(station.takeIf{it.isNotBlank()},date,
+                "Сессия #"+pref.getInt("fuel_session_id",1))
+                .filterNotNull().joinToString("  •  ")
+            else "Создай заправку для независимого исследования"
+        homeConnection.text=when(connection) {
+            Octane2UiState.Connection.CONNECTED -> "● Подключено • $transportLabel"
+            Octane2UiState.Connection.RECONNECTING -> "● Переподключение • $transportLabel"
+            Octane2UiState.Connection.CONNECTING -> "● Ожидание DME • $transportLabel"
+            Octane2UiState.Connection.ERROR -> "● Ошибка подключения • $transportLabel"
+            else -> "● Отключено • ENET / VXSCAN"
+        }
+        homeConnection.setTextColor(when(connection) {
+            Octane2UiState.Connection.CONNECTED -> accentGreen
+            Octane2UiState.Connection.ERROR -> Color.rgb(255,134,117)
+            else -> accentBlue
+        })
+        val paused=hasFuel && !pref.getBoolean(GuidedFuelTest.PREF_ACTIVE,false)
+            && !pref.getBoolean(GuidedFuelTest.PREF_DONE,false)
+        homeCaptureState.text=Octane2UiState.stateText(
+            logging,connection,hasFuel,firstTarget,secondTarget,paused)
+        val guide=Octane2UiState.guidance(firstTarget,secondTarget,
+            logging && connection==Octane2UiState.Connection.CONNECTED,paused)
+        homeNextMode.text=guide.heading+"\n"+guide.instructions
+        fun stageText(target:Octane2UiState.Target)=when(target.stage) {
+            Octane2UiState.Stage.NOT_STARTED -> "НЕ НАЧАТО"
+            Octane2UiState.Stage.COLLECTING -> "СОБИРАЕТСЯ"
+            Octane2UiState.Stage.SUFFICIENT -> "ДОСТАТОЧНО ДАННЫХ"
+        }
+        homeTargetAState.text="2500–2999: "+stageText(firstTarget)
+        homeTargetBState.text="3000–3499: "+stageText(secondTarget)
+        homeTargetAState.setTextColor(if(firstTarget.sufficient)accentGreen else tertiary)
+        homeTargetBState.setTextColor(if(secondTarget.sufficient)accentGreen else tertiary)
+        if(::analysisSummary.isInitialized) {
+            val fuelOverview=if(hasFuel)guidedSnapshot else null
+            analysisSummary.text="BMW OCTANE 2.0 • НЕДОСТАТОЧНО ДАННЫХ\n"+
+                "Подтверждённой числовой оценки топлива нет.\n"+
+                "STEADY 2500–2999: ${firstTarget.points} точек / ${firstTarget.segments} участков / ${firstTarget.loggerStarts} запусков\n"+
+                "STEADY 3000–3499: ${secondTarget.points} точек / ${secondTarget.segments} участков / ${secondTarget.loggerStarts} запусков\n"+
+                "Текущий тест: ${fuelOverview?.progress?.toString()?.plus("%")?:"не начат"}."+
+                " Сравнение 1.7 ↔ 2.0 доступно по диагностическому CSV.\n"+
+                "Даже при достаточном покрытии результат не является измеренным RON."
+        }
+        if(::diagnosticSummary.isInitialized) {
+            val rpm=latestRpm?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"
+            val map=latestMap?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"
+            diagnosticSummary.text="Транспорт: $transportLabel • RAM: $lastRamState\n"+
+                "RPM: $rpm (RAM при валидации / OBD fallback) • MAP: $map кПа (OBD)\n"+
+                "Детонация/зажигание: UDS DID • другие показатели: OBD / DID\n"+
+                "Опрос: ${lastPollHz?.let{String.format(java.util.Locale.US,"%.1f Гц",it)}?:"—"}"+
+                " • реконнекты: $lastReconnectCount\n"+
+                "λ: ${lastActualLambda?.let{String.format(java.util.Locale.US,"%.3f",it)}?:"недоступна"}; "+
+                "данные реальны только при свежих диагностических сообщениях."
+        }
+    }
+
+    override fun onSaveInstanceState(outState:Bundle) {
+        outState.putInt("octane2_tab",selectedTab)
+        super.onSaveInstanceState(outState)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if(::homeFuelTitle.isInitialized) {
+            logging=EnetLoggerService.isLoggerActive
+            renderHomeState()
+            refreshGuidedPanel()
+        }
+    }
+
     // Android < 13 has no RECEIVER_NOT_EXPORTED overload. The only caller
     // checks SDK_INT, and this receiver listens solely for our internal
     // app-scoped broadcasts sent with Intent.setPackage(packageName).
