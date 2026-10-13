@@ -825,88 +825,8 @@ class EnetLoggerService : Service() {
                     }
                     val slowMs=SystemClock.elapsedRealtime()-slowStarted
                     val speed=slowSpeed; val i=slowIat; val a=slowIgn; val coolant=slowCoolant; val oil=slowOil; val throttle=slowThrottle; val stft1=slowStft; val ltft1=slowLtft; val lambdaEq=slowLambda
-                    // Firmware identity was checked manually in the settings.
-                    // Never begin 0x23 while driving without a parked 0 km/h
-                    // reference cross-check. All reads use the SAME TCP owner.
-                    val ramStarted=SystemClock.elapsedRealtime()
-                    val ramReadAllowed=(lastRamRequestMs==0L ||
-                        ramStarted-lastRamRequestMs>=300L) &&
-                        ramPolicy.canRead(
-                        obdRpm,speed,if(optimizedSlow)
-                            slowScheduler.fresh(0x0D,ramStarted)
-                        else slowSensorAtMs>0L &&
-                            SampleFreshness.isFresh(ramStarted,slowSensorAtMs))
-                    var ramRpm:Double?=null
-                    var acceptedRam=false
-                    if(ramReadAllowed && running) {
-                        lastRamRequestMs=ramStarted
-                        try {
-                            val request=RamMemoryProtocol.approvedVehicleRequest(
-                                RamMemoryProtocol.APPROVED_A2L,
-                                RamMemoryProtocol.RPM_SIGNAL)
-                                ?: throw IOException("RAM RPM not allowlisted")
-                            socket!!.getOutputStream().write(hsfz(request))
-                            socket!!.getOutputStream().flush()
-                            val replies=readFrames(socket!!.getInputStream())
-                                .mapNotNull(::payload)
-                            val reply=replies.singleOrNull()
-                                ?: throw IOException("RAM 0x23 ambiguous HSFZ reply")
-                            val data=RamMemoryProtocol.decodePositive(reply,2)
-                            if(data==null) {
-                                val nrc=RamMemoryProtocol.negativeCode(reply)
-                                if(nrc==null || nrc==0x78)
-                                    throw IOException("RAM 0x23 unexpected or pending reply")
-                                ramPolicy.disable("RAM NRC %02X".format(nrc))
-                            } else {
-                                ramRpm=RamMemoryProtocol.decodeNkwRpm(data)?.toDouble()
-                                acceptedRam=ramPolicy.accept(ramRpm,obdRpm)
-                            }
-                        }catch(e:Exception) {
-                            ramPolicy.disable("RAM transport/protocol fault")
-                            // Unknown/late response may desynchronize the socket:
-                            // never continue ordinary DID reads on this stream.
-                            throw IOException("RAM 0x23 uncertain; reconnect safely",e)
-                        }
-                    }
-                    val ramLatency=if(ramReadAllowed)
-                        SystemClock.elapsedRealtime()-ramStarted else null
-                    // Preserve 1.7 Fuel Score and STEADY classification against
-                    // the unchanged OBD source. RAM-first is the separate 2.0
-                    // stream until moving-load validation establishes equivalence.
+                    // Legacy 1.7 measurements remain grounded in original OBD RPM.
                     val r=obdRpm
-                    val octane2Rpm=if(acceptedRam)ramRpm else obdRpm
-                    val selectedRpmSource=if(acceptedRam)"RAM_NKW" else "OBD_01_0C"
-
-                    // Exact OBD capability masks: optional lambda/loop data
-                    // must never be synthesized from commanded PID 0x44.
-                    if(!lambdaChecked) {
-                        lambdaChecked=true
-                        val mask20=obd(pid(0x20),0x20)
-                        lambdaPid=when {
-                            Octane2Lambda.supported(mask20,0x34) -> 0x34
-                            Octane2Lambda.supported(mask20,0x24) -> 0x24
-                            else -> null
-                        }
-                        val mask00=obd(pid(0x00),0x00)
-                        fuelControlSupported=Octane2Lambda.supportedBase(mask00,0x03)
-                    }
-                    val lambdaNow=SystemClock.elapsedRealtime()
-                    if(lambdaPid!=null && lambdaNow>=lambdaNextPoll) {
-                        val id=lambdaPid!!
-                        actualLambda=Octane2Lambda.decode(id,obd(pid(id),id))
-                        actualLambdaAt=if(actualLambda!=null)
-                            SystemClock.elapsedRealtime() else 0L
-                        lambdaNextPoll=SystemClock.elapsedRealtime()+4000L
-                    }
-                    if(fuelControlSupported && lambdaNow>=fuelControlNext) {
-                        fuelControlState=Octane2Lambda.controlStatus(obd(pid(0x03),0x03))
-                        fuelControlNext=SystemClock.elapsedRealtime()+5000L
-                    }
-                    val freshActualLambda=actualLambda?.takeIf {
-                        actualLambdaAt>0L &&
-                            SampleFreshness.isFresh(SystemClock.elapsedRealtime(),
-                                actualLambdaAt,8000L)
-                    }
                     val combinedTrim=if(stft1!=null && ltft1!=null)
                         ((1.0+stft1/100.0)*(1.0+ltft1/100.0)-1.0)*100.0 else null
                     val fastDmeStarted=SystemClock.elapsedRealtime()
@@ -1011,6 +931,86 @@ class EnetLoggerService : Service() {
                     val knockMean=knockValues.takeIf{it.size==4}?.average()
                     val ignValues=listOfNotNull(iz1,iz2,iz3,iz4)
                     val ignSpread=ignValues.takeIf{it.size==4}?.let{v->v.maxOrNull()!!-v.minOrNull()!!}
+                    // Firmware identity was checked manually in the settings.
+                    // Never begin 0x23 while driving without a parked 0 km/h
+                    // reference cross-check. All reads use the SAME TCP owner.
+                    val ramStarted=SystemClock.elapsedRealtime()
+                    val ramReadAllowed=(lastRamRequestMs==0L ||
+                        ramStarted-lastRamRequestMs>=300L) &&
+                        ramPolicy.canRead(
+                        obdRpm,speed,if(optimizedSlow)
+                            slowScheduler.fresh(0x0D,ramStarted)
+                        else slowSensorAtMs>0L &&
+                            SampleFreshness.isFresh(ramStarted,slowSensorAtMs))
+                    var ramRpm:Double?=null
+                    var acceptedRam=false
+                    if(ramReadAllowed && running) {
+                        lastRamRequestMs=ramStarted
+                        try {
+                            val request=RamMemoryProtocol.approvedVehicleRequest(
+                                RamMemoryProtocol.APPROVED_A2L,
+                                RamMemoryProtocol.RPM_SIGNAL)
+                                ?: throw IOException("RAM RPM not allowlisted")
+                            socket!!.getOutputStream().write(hsfz(request))
+                            socket!!.getOutputStream().flush()
+                            val replies=readFrames(socket!!.getInputStream())
+                                .mapNotNull(::payload)
+                            val reply=replies.singleOrNull()
+                                ?: throw IOException("RAM 0x23 ambiguous HSFZ reply")
+                            val data=RamMemoryProtocol.decodePositive(reply,2)
+                            if(data==null) {
+                                val nrc=RamMemoryProtocol.negativeCode(reply)
+                                if(nrc==null || nrc==0x78)
+                                    throw IOException("RAM 0x23 unexpected or pending reply")
+                                ramPolicy.disable("RAM NRC %02X".format(nrc))
+                            } else {
+                                ramRpm=RamMemoryProtocol.decodeNkwRpm(data)?.toDouble()
+                                acceptedRam=ramPolicy.accept(ramRpm,obdRpm)
+                            }
+                        }catch(e:Exception) {
+                            ramPolicy.disable("RAM transport/protocol fault")
+                            // Unknown/late response may desynchronize the socket:
+                            // never continue ordinary DID reads on this stream.
+                            throw IOException("RAM 0x23 uncertain; reconnect safely",e)
+                        }
+                    }
+                    val ramLatency=if(ramReadAllowed)
+                        SystemClock.elapsedRealtime()-ramStarted else null
+                    // Keep the established 1.7 model tied to OBD RPM.
+                    val octane2Rpm=if(acceptedRam)ramRpm else obdRpm
+                    val selectedRpmSource=if(acceptedRam)"RAM_NKW" else "OBD_01_0C"
+
+                    // Exact OBD capability masks: optional lambda/loop data
+                    // must never be synthesized from commanded PID 0x44.
+                    if(!lambdaChecked) {
+                        lambdaChecked=true
+                        val mask20=obd(pid(0x20),0x20)
+                        lambdaPid=when {
+                            Octane2Lambda.supported(mask20,0x34) -> 0x34
+                            Octane2Lambda.supported(mask20,0x24) -> 0x24
+                            else -> null
+                        }
+                        val mask00=obd(pid(0x00),0x00)
+                        fuelControlSupported=Octane2Lambda.supportedBase(mask00,0x03)
+                    }
+                    val lambdaNow=SystemClock.elapsedRealtime()
+                    if(lambdaPid!=null && lambdaNow>=lambdaNextPoll) {
+                        val id=lambdaPid!!
+                        actualLambda=Octane2Lambda.decode(id,obd(pid(id),id))
+                        actualLambdaAt=if(actualLambda!=null)
+                            SystemClock.elapsedRealtime() else 0L
+                        lambdaNextPoll=SystemClock.elapsedRealtime()+4000L
+                    }
+                    if(fuelControlSupported && lambdaNow>=fuelControlNext) {
+                        fuelControlState=Octane2Lambda.controlStatus(obd(pid(0x03),0x03))
+                        fuelControlNext=SystemClock.elapsedRealtime()+5000L
+                    }
+                    val freshActualLambda=actualLambda?.takeIf {
+                        actualLambdaAt>0L &&
+                            SampleFreshness.isFresh(SystemClock.elapsedRealtime(),
+                                actualLambdaAt,8000L)
+                    }
+
                     if(testWindow && knockMean!=null && ignSpread!=null) validOctaneSamples++
                     val confidence=(validOctaneSamples*2).coerceAtMost(100)
                     val measurementWindow=r!=null && l!=null && m!=null && r>=2000.0 && r<=4500.0 && l>=55.0 && m>=130.0
