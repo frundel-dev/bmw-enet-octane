@@ -217,14 +217,14 @@ internal class DmeHistoryReader(private val context:Context) {
                     }
                     progress("RAM LAB 4: подтверждение нулевой скорости…")
                     val speed=readObd(0x0D,"SPEED_BEFORE")
-                    if(speed.size!=1 || (speed[0].toInt() and 255)!=0)
+                    if(!RamMemoryProtocol.vehicleStationary(speed))
                         throw IOException("RAM read refused: vehicle speed is not zero")
                     progress("RAM LAB 4: эталон RPM по OBD…")
                     val rpmBytes=readObd(0x0C,"OBD_RPM_BEFORE")
                     if(rpmBytes.size!=2)throw IOException("Invalid OBD RPM size")
                     firstRpm=(((rpmBytes[0].toInt() and 255) shl 8) or
                         (rpmBytes[1].toInt() and 255))/4.0
-                    if(firstRpm!! !in 450.0..1800.0)
+                    if(!RamMemoryProtocol.parkedIdleRpm(firstRpm!!))
                         throw IOException("RAM test requires steady parked idle (450–1800 RPM)")
                     verifyAllowed(cancel)
                     progress("RAM LAB 4: единственное чтение RAM Nkw, 2 байта…")
@@ -246,11 +246,8 @@ internal class DmeHistoryReader(private val context:Context) {
                     if(afterBytes.size!=2)throw IOException("Invalid comparison RPM size")
                     lastRpm=(((afterBytes[0].toInt() and 255) shl 8) or
                         (afterBytes[1].toInt() and 255))/4.0
-                    val minOfTwo=minOf(firstRpm!!,lastRpm!!)
-                    val maxOfTwo=maxOf(firstRpm!!,lastRpm!!)
-                    successful=acceptedRpm!!.toDouble() in
-                        (minOfTwo-100.0)..(maxOfTwo+100.0) &&
-                        (maxOfTwo-minOfTwo)<=120.0
+                    successful=RamMemoryProtocol.matchesObdRpm(
+                        firstRpm!!,lastRpm!!,acceptedRpm!!) 
                     record("CROSS_CHECK",if(successful)"MATCH" else "MISMATCH",
                         0L,byteArrayOf(),byteArrayOf(),
                         "obd_before=${firstRpm} ram=${acceptedRpm} obd_after=${lastRpm}")
