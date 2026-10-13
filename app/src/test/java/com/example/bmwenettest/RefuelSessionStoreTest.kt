@@ -151,7 +151,9 @@ class RefuelSessionStoreTest {
     }
     @Test fun firstFuelSelectionUsesSessionOneAndSkipsMixing() {
         val p=MemoryPrefs().apply {
-            edit().putInt("fuel_session_id",1).commit()
+            // A stale level can survive migration from an older installation.
+            edit().putInt("fuel_session_id",1)
+                .putFloat("last_fuel_pct",18f).commit()
         }
         val sessions=store(p)
         assertFalse(sessions.hasCurrentFuel())
@@ -165,6 +167,8 @@ class RefuelSessionStoreTest {
         assertEquals(1,p.getInt(GuidedFuelTest.PREF_FUEL_SESSION,0))
         assertEquals("INITIAL",p.getString(RefuelSessionStore.PREF_LAST_SOURCE,""))
         assertEquals("COLLECTING",sessions.state())
+        assertFalse("Stale detector cache must be re-established",
+            p.contains("last_fuel_pct"))
         assertEquals(0f,p.getFloat("mixing_remaining_km",-1f),0f)
         assertTrue(p.getBoolean(GuidedFuelTest.PREF_ACTIVE,false))
         assertTrue(store(p).hasCurrentFuel()) // recreated activity or process
