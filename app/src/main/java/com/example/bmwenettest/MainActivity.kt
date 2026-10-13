@@ -338,7 +338,8 @@ class MainActivity : Activity() {
             "Сохранённые снимки истории DME", "Фоновый DME Monitor • журнал",
             "Обучение эталона • RPM × нагрузка", "Режим замеров AUTO / TEST",
             "История тестов топлива", "RAM LAB 1 • проверка DME",
-            "RAM LAB 2 • тест пакетного опроса")
+            "RAM LAB 2 • тест пакетного опроса",
+            "RAM LAB 3 • RAM 0x23 (офлайн)")
         AlertDialog.Builder(this)
             .setTitle("Дополнительно")
             .setItems(items) { _,which ->
@@ -369,6 +370,7 @@ class MainActivity : Activity() {
                     12 -> showGuidedFuelHistory()
                     13 -> showRamReadiness()
                     14 -> showRamBatchBenchmark()
+                    15 -> showRamMemoryOffline()
                 }
             }
             .setNegativeButton("Закрыть",null)
@@ -441,6 +443,48 @@ class MainActivity : Activity() {
         }
     }
 
+
+
+    private fun showRamMemoryOffline() {
+        AlertDialog.Builder(this)
+            .setTitle("RAM LAB 3 • протокол RAM 0x23")
+            .setMessage("Проверка настоящего формата UDS ReadMemoryByAddress (0x23) "+
+                "с синтетическим адресом и ответом. Только автономный тест: "+
+                "соединение с автомобилем НЕ открывается, RAM-запрос на DME НЕ отправляется. "+
+                "Точный RAM-адрес и идентификатор ПО нашего DME пока не подтверждены, "+
+                "поэтому доступ к автомобилю заблокирован.")
+            .setNegativeButton("Закрыть",null)
+            .setPositiveButton("Проверить офлайн") { _,_ ->
+                try {
+                    val (request,response)=RamMemoryProtocol.offlineFixture()
+                    val file=File(getExternalFilesDir(null) ?: filesDir,
+                        "bmw_ram_protocol_v3_${System.currentTimeMillis()}.csv")
+                    file.bufferedWriter().use { out ->
+                        out.appendLine("mode,status,source,ecu_software_id,request_hex,response_hex,notes")
+                        out.appendLine(DmeHistoryProtocol.csv(
+                            "OFFLINE","PASS","SYNTHETIC_FIXTURE","NOT_IDENTIFIED",
+                            DmeHistoryProtocol.hex(request),DmeHistoryProtocol.hex(response),
+                            "0x23 encoded and 0x63 decoded; NO NETWORK TRAFFIC"))
+                        out.appendLine(DmeHistoryProtocol.csv(
+                            "VEHICLE","BLOCKED","NO_VERIFIED_PROFILE","NOT_IDENTIFIED","","",
+                            "No ECU firmware-exact RAM address confirmed; nothing sent"))
+                    }
+                    AlertDialog.Builder(this)
+                        .setTitle("RAM LAB 3 • офлайн-проверка пройдена")
+                        .setMessage("Кодирование 0x23 и разбор 0x63 проверены на "+
+                            "синтетических данных. На DME ничего не отправлялось. "+
+                            "Реальное чтение RAM заблокировано до проверки версии "+
+                            "ПО ЭБУ и адреса сигнала.\n\nОтчёт: ${file.name}")
+                        .setPositiveButton("Сохранить CSV") { _,_ -> exportRamReport(file) }
+                        .setNegativeButton("Закрыть",null).show()
+                }catch(e:Exception) {
+                    AlertDialog.Builder(this)
+                        .setTitle("RAM LAB 3 • ошибка")
+                        .setMessage(e.javaClass.simpleName+": "+(e.message ?: "unknown"))
+                        .setPositiveButton("Закрыть",null).show()
+                }
+            }.show()
+    }
 
     private fun showRamBatchBenchmark() {
         if(historyBusy || logging || EnetLoggerService.isLoggerActive) {
