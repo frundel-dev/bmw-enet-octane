@@ -11,7 +11,8 @@ internal object DiagnosticResponse {
         // Retain legacy framing compatibility, but NEVER accept another PID.
         val id=pid and 0xFF
         val expected=when(id) {
-            0x0C,0x44 -> 2
+            0x03,0x0C,0x44 -> 2
+            0x20,0x24,0x34 -> 4
             0x04,0x0B,0x0D,0x0F,0x0E,0x05,0x11,0x06,0x07,0x5C,0x2F -> 1
             else -> return null
         }
