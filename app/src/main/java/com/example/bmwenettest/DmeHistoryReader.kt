@@ -326,7 +326,7 @@ internal class DmeHistoryReader(private val context:Context) {
                         RamDirectBenchmarkProtocol.MAX_RUN_MS
 
                     fun transfer(request:ByteArray,stage:String,round:Int,
-                                 block:Int,sample:Int,expected:(ByteArray)->Boolean):Reply {
+                                 block:Int,sample:Int,expected:(ByteArray)->Boolean):Pair<Reply,Long> {
                         verifyAllowed(cancel)
                         if(SystemClock.elapsedRealtime()>=deadline)
                             throw IOException("RAM LAB 6 overall time limit reached")
@@ -349,12 +349,12 @@ internal class DmeHistoryReader(private val context:Context) {
                         activeRequest=byteArrayOf()
                         if(response.status!="OK")
                             throw IOException("$stage: ECU refused request: ${response.status}")
-                        return response
+                        return response to elapsed
                     }
 
                     fun stationaryGate(round:Int) {
                         val r=transfer(speedReq,"SPEED_GATE",round,0,0,
-                            { DiagnosticResponse.obd(it,0x0D)!=null })
+                            { DiagnosticResponse.obd(it,0x0D)!=null }).first
                         val speed=DiagnosticResponse.obd(r.payload,0x0D)
                         if(speed==null || !RamMemoryProtocol.vehicleStationary(speed))
                             throw IOException("Vehicle not confirmed stationary")
@@ -363,7 +363,7 @@ internal class DmeHistoryReader(private val context:Context) {
                     stationaryGate(0)
                     progress("RAM LAB 6: проверка стабильных оборотов холостого хода…")
                     val initial=transfer(obdReq,"OBD_BASELINE",0,0,0,
-                        { DiagnosticResponse.obd(it,0x0C)!=null })
+                        { DiagnosticResponse.obd(it,0x0C)!=null }).first
                     referenceRpm=RamDirectBenchmarkProtocol.decodeRpm(
                         RamDirectBenchmarkProtocol.Source.OBD,initial.payload)
                     if(referenceRpm==null ||
@@ -385,12 +385,10 @@ internal class DmeHistoryReader(private val context:Context) {
                                 verifyAllowed(cancel)
                                 val stage=if(source==RamDirectBenchmarkProtocol.Source.DIRECT_RAM)
                                     "RAM_SAMPLE" else "OBD_SAMPLE"
-                                val started=SystemClock.elapsedRealtime()
-                                val r=transfer(request,stage,round+1,blockNo+1,index+1,
+                                val (r,duration)=transfer(request,stage,round+1,blockNo+1,index+1,
                                     { bytes ->
                                         RamDirectBenchmarkProtocol.decodeRpm(source,bytes)!=null
                                     })
-                                val duration=SystemClock.elapsedRealtime()-started
                                 val rpm=RamDirectBenchmarkProtocol.decodeRpm(source,r.payload)
                                 if(!RamDirectBenchmarkProtocol.isValidIdleSample(
                                         rpm,referenceRpm!!))
@@ -422,7 +420,7 @@ internal class DmeHistoryReader(private val context:Context) {
                     stationaryGate(RamDirectBenchmarkProtocol.ROUNDS+1)
                     val final=transfer(obdReq,"OBD_FINAL",
                         RamDirectBenchmarkProtocol.ROUNDS+1,0,0,
-                        { DiagnosticResponse.obd(it,0x0C)!=null })
+                        { DiagnosticResponse.obd(it,0x0C)!=null }).first
                     finalRpm=RamDirectBenchmarkProtocol.decodeRpm(
                         RamDirectBenchmarkProtocol.Source.OBD,final.payload)
                     if(!RamDirectBenchmarkProtocol.isValidIdleSample(
@@ -440,7 +438,8 @@ internal class DmeHistoryReader(private val context:Context) {
                 return if(stats==null)"$source: no valid samples" else
                     "$source: n=${stats.count}, med=${stats.medianMs}ms, "+
                     "p95=${stats.p95Ms}ms, paced_block_hz="+
-                    "%.2f".format(java.util.Locale.US,rates.average())
+                    if(rates.isEmpty())"n/a" else
+                        "%.2f".format(java.util.Locale.US,rates.average())
             }
             row("SUMMARY",0,0,0,if(completed)"COMPLETE" else "PARTIAL",
                 null,null,byteArrayOf(),byteArrayOf(),
