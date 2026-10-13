@@ -44,6 +44,13 @@ internal class Octane2RamPolicy(private val manuallyConfirmed:Boolean) {
         return true
     }
 
+    fun onReconnect() {
+        if(state==State.ACTIVE) {
+            state=State.NEEDS_PARKED_CHECK
+            reason="Reconnect: parked OBD check required"
+        }
+    }
+
     fun disable(why:String) {
         state=State.DISABLED_UNTIL_RESTART
         reason=why
