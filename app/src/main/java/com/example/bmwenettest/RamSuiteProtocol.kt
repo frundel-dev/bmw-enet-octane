@@ -38,7 +38,7 @@ internal object RamSuiteProtocol {
                 allowed(stage,completed) -> "Можно запускать"
                 else -> "Заблокирован предыдущим этапом"
             }
-            "LAB ${stage.number} • ${stage.label}\\n$state"
+            "LAB ${stage.number} • ${stage.label}\n$state"
         }.toTypedArray()
 
     fun nextStage(completed:Set<Int>):Stage? =
