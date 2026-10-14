@@ -1130,7 +1130,12 @@ class EnetLoggerService : Service() {
                             ramSent=System.nanoTime()
                             val ramLength=ramFrameReader.readDiagnostic(
                                 FirstByteMeasuredStream(socket!!.getInputStream(),
-                                    {time->if(ramFirst==null)ramFirst=time}))
+                                    {time->if(ramFirst==null)ramFirst=time}),
+                                expectedRequest=packet,
+                                onAlive={ response ->
+                                    socket!!.getOutputStream().write(response)
+                                    socket!!.getOutputStream().flush()
+                                })
                                 ?: throw IOException("RAM 0x23 missing HSFZ reply")
                             ramReceived=System.nanoTime()
                             if(ramFrameReader.isRamPositiveRpm()) {
