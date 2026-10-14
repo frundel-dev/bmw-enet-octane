@@ -35,14 +35,10 @@ class HsfzBoundaryRegressionTest {
     @Test fun eofAtEveryByteCannotPublishPartialFrame() {
         val frame=HsfzCodec.encode(b(0x62,0x4A,0x37,0x12,0x34))
         for(length in 0 until frame.size) {
-            if(length==0) {
-                assertTrue(HsfzCodec.readFrames(ByteArrayInputStream(byteArrayOf())).isEmpty())
-            } else {
-                try {
-                    HsfzCodec.readFrames(ByteArrayInputStream(frame.copyOf(length)))
-                    fail("truncation=$length must force reconnect")
-                } catch(_:IOException) { }
-            }
+            try {
+                HsfzCodec.readFrames(ByteArrayInputStream(frame.copyOf(length)))
+                fail("truncation=$length must force reconnect")
+            } catch(_:IOException) { }
         }
     }
 
@@ -50,7 +46,8 @@ class HsfzBoundaryRegressionTest {
         val control=b(0,0,0,2,0,2,0xF4,0x12)
         val reply=HsfzCodec.encode(b(0x62,0x4A,0x37,1,2))
         try {
-            HsfzCodec.readFrames(ByteArrayInputStream(control+reply.copyOf(9)))
+            HsfzCodec.readFrames(ByteArrayInputStream(control+reply.copyOf(9)),
+                expectedRequest=HsfzCodec.encode(b(0x22,0x4A,0x37)))
             fail("Partial diagnostic response must not be ignored")
         } catch(_:IOException) { }
     }
@@ -79,7 +76,10 @@ class HsfzBoundaryRegressionTest {
             override fun read():Int=throw SocketTimeoutException()
             override fun read(dst:ByteArray,off:Int,len:Int):Int=throw SocketTimeoutException()
         }
-        assertTrue(HsfzCodec.readFrames(idle).isEmpty())
+        try {
+            HsfzCodec.readFrames(idle)
+            fail("Timeout awaiting reply may conceal a delayed diagnostic response")
+        } catch(_:IOException) { }
         val partial=object:InputStream() {
             var first=true
             override fun read():Int=throw SocketTimeoutException()

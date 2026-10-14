@@ -60,22 +60,55 @@ internal object HsfzCodec {
      * Read at most [maxFrames] complete messages. Non-data HSFZ frames may
      * precede the diagnostic answer. Truncated messages are never returned.
      */
-    fun readFrames(input:InputStream,maxFrames:Int=2):List<ByteArray> {
+    fun readFrames(
+        input:InputStream,maxFrames:Int=2,
+        onAlive:((ByteArray)->Unit)?=null,
+        expectedRequest:ByteArray?=null
+    ):List<ByteArray> {
         require(maxFrames in 1..8)
         val frames=ArrayList<ByteArray>(maxFrames)
-        repeat(maxFrames) {
+        // Control frames do not consume the diagnostic response allowance.
+        // Still bound work to prevent an endless ACK/alive flood.
+        repeat(8) {
             try {
-                val header=exact(input,6,idleHeader=true) ?: return frames
+                val header=exact(input,6,idleHeader=true)
+                    ?: throw IOException("HSFZ EOF before diagnostic response")
                 val length=bodyLength(header)
-                if(length !in 2..MAX_FRAME_BODY_BYTES)
+                if(length !in 0..MAX_FRAME_BODY_BYTES || length==1)
                     throw IOException("Invalid HSFZ frame size: $length")
-                val body=exact(input,length) ?: return frames
-                frames.add(header+body)
-                if(isDiagnosticType(header))return frames
-            } catch(_:SocketTimeoutException) {
-                return frames
+                val body=exact(input,length) ?: throw IOException("Truncated HSFZ body")
+                val frame=header+body
+                val type=((header[4].toInt() and 255) shl 8) or
+                    (header[5].toInt() and 255)
+                when(type) {
+                    0x01 -> {
+                        if(length<2)throw IOException("HSFZ diagnostic addresses absent")
+                        frames.add(frame)
+                        if(frames.size>=maxFrames)return frames
+                        return frames // a single matched transaction owns this socket
+                    }
+                    0x02 -> {
+                        if(frame.size>13 || expectedRequest==null ||
+                            frame.size>expectedRequest.size ||
+                            (6 until frame.size).any { frame[it]!=expectedRequest[it] })
+                            throw IOException("HSFZ ACK not correlated with request")
+                    }
+                    0xFF -> throw IOException("HSFZ gateway NACK: reconnect required")
+                    0x12 -> {
+                        if(length!=2 || onAlive==null)
+                            throw IOException("HSFZ alive-check cannot be answered")
+                        // Per EdiabasLib EdInterfaceEnet TcpDiagEnetReceiver.
+                        onAlive(byteArrayOf(0,0,0,2,0,0x13,0,0xF4.toByte()))
+                    }
+                    else -> throw IOException("Unexpected HSFZ type $type")
+                }
+            } catch(e:SocketTimeoutException) {
+                // The current request may still complete later. Reusing
+                // this stream could misattribute its delayed response.
+                throw IOException("HSFZ diagnostic response timeout; reconnect",e)
             }
         }
+        throw IOException("Too many HSFZ control frames")
         return frames
     }
 
