@@ -396,6 +396,38 @@ class EnetLoggerService : Service() {
                else estimate.coerceAtMost(94)
     }
 
+
+    /** A short-lived owner result. The caller remains the only socket reader. */
+    private data class PrimaryConnection(
+        val network:Network,val transport:String,val gatewayIp:String,
+        val viaFastPath:Boolean,val tcp:Socket
+    )
+
+    /** Extracted from the giant coroutine state machine to reduce ART bytecode pressure. */
+    private fun connectPrimaryNetwork(
+        cachedIp:String?,cachedTransport:String?,lastGoodNetwork:Network?,
+        deniedNetworks:MutableMap<Network,Long>,reconnects:Int,
+        consecutiveFailures:Int,lastSelectionLog:Long,
+        onSelectionLog:(Long)->Unit,onState:(String,String,String?)->Unit
+    ):PrimaryConnection {
+        var connectionStage="NETWORK"
+                val selected=connectPrimaryNetwork(
+                    cachedIp,cachedTransport,lastGoodNetwork,deniedNetworks,
+                    reconnects,consecutiveFailures,lastSelectionLog,
+                    onSelectionLog={lastSelectionLog=it},
+                    onState={stage,kind,ip->
+                        connectionStage=stage
+                        connectionTransport=kind
+                        connectionIp=ip
+                    })
+                val activeNet=selected.network
+                val transport=selected.transport
+                val gatewayIp=selected.gatewayIp
+                val viaFastPath=selected.viaFastPath
+                socket=selected.tcp
+        return PrimaryConnection(activeNet!!,transport,gatewayIp!!,viaFastPath,selectedSocket!!)
+    }
+
     private suspend fun loop() {
         val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0
         val ramFrameReader=HsfzReusableReader()
