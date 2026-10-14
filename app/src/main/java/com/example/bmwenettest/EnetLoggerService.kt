@@ -136,7 +136,7 @@ class EnetLoggerService : Service() {
     override fun onStartCommand(intent: Intent?, flags:Int, startId:Int):Int {
         when(intent?.action) {
             ACTION_STOP -> stopLogger()
-            else -> if(!running && pollingJob?.isActive!=true) {
+            ACTION_START -> if(!running && pollingJob?.isActive!=true) {
                 // Guard the optimized coroutine Service independently from UI.
                 // Never poll/score anonymous fuel after first installation.
                 if(!RefuelSessionStore(this).hasCurrentFuel()) {
@@ -149,7 +149,10 @@ class EnetLoggerService : Service() {
                 startLogger()
             }
         }
-        return START_STICKY
+        // Never silently resume ECU polling after Android re-creates a killed Service.
+        if(intent?.action!=ACTION_START && intent?.action!=ACTION_STOP && !running)
+            stopSelfResult(startId)
+        return START_NOT_STICKY
     }
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
         .setContentTitle("BMW OCTANE 2.0 LAB").setContentText(text)
