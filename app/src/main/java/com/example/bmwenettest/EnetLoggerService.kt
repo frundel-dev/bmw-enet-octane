@@ -524,6 +524,81 @@ class EnetLoggerService : Service() {
         return PrimaryConnection(activeNet!!,transport,gatewayIp!!,viaFastPath,selectedSocket!!)
     }
 
+
+    /** Monitor is after FAST, and always uses the same primary socket. */
+    private data class MonitorOutcome(
+        val status:String,val durationMs:Long,val failure:IOException?=null
+    )
+
+    /** Separate synchronous function: keeps ART away from an oversized coroutine body. */
+    private fun executeDmeMonitorTask(
+        task:DmeMonitorPolicy.Task,monitorPolicy:DmeMonitorPolicy,
+        probeResults:MutableMap<Int,DmeReadOnlyProbe.Result>,
+        readStarted:Long,started:Long,cycleStart:Long,
+        transport:String,pollModeActive:String,
+        rpm:Double?,load:Double?,map:Double?,speed:Double?,hz:Double,
+        reconnects:Int,connectionStage:String,gatewayIp:String?
+    ):MonitorOutcome {
+        val request=task.request()
+        try {
+            val reply=readDmeMonitor(task)
+            val readDone=SystemClock.elapsedRealtime()
+            val duration=readDone-readStarted
+            val status=reply.first
+            val raw=reply.second
+            val decoded=if(status=="OK" && task.service==0x22) {
+                val spec=DmeReadOnlyProbe.specs.first{it.did==task.did}
+                val parsed=DmeReadOnlyProbe.parse(spec,listOf(raw))
+                probeResults[task.did]=parsed
+                parsed.decodedCandidate
+            } else if(status=="OK" && task.service==0x19) {
+                val parsed=DmeHistoryProtocol.parseDtcList(raw)
+                    ?: throw IOException("Malformed DTC monitor response")
+                "DTC returned=${parsed.size}; confirmed=${parsed.count{(it.status and 8)!=0}}"
+            } else ""
+            if(status=="UNSUPPORTED")monitorPolicy.unsupported(task)
+            try {
+                dmeMonitorFile?.appendText(DmeHistoryProtocol.csv(
+                    System.currentTimeMillis(),readDone-started,transport,
+                    pollModeActive,"%02X".format(task.service),task.label,
+                    DmeHistoryProtocol.hex(request),
+                    DmeHistoryProtocol.hex(raw),status,decoded,
+                    duration,readStarted-cycleStart,rpm,load,map,speed,
+                    hz,4,4,
+                    "read-only; no RON conversion; FAST read completed before this request"
+                )+"\\n")
+            } catch(_:IOException) {}
+            return MonitorOutcome(status,duration)
+        } catch(cancelled:CancellationException) {
+            throw cancelled
+        } catch(e:Exception) {
+            val duration=SystemClock.elapsedRealtime()-readStarted
+            monitorPolicy.suspend()
+            try {
+                dmeMonitorFile?.appendText(DmeHistoryProtocol.csv(
+                    System.currentTimeMillis(),SystemClock.elapsedRealtime()-started,
+                    transport,pollModeActive,
+                    "%02X".format(task.service),task.label,
+                    DmeHistoryProtocol.hex(request),"","TRANSPORT_UNCERTAIN","",
+                    duration,SystemClock.elapsedRealtime()-cycleStart,
+                    rpm,load,map,speed,hz,4,4,
+                    "${e.javaClass.simpleName}: ${e.message}; monitor disabled until LOGGER restart"
+                )+"\\n")
+            } catch(_:IOException){}
+            // Fail-closed BEFORE further reporting: no late response may leak
+            // into the next FAST request after an uncertain monitor read.
+            try{socket?.close()}catch(_:Exception){}
+            socket=null
+            try {
+                connectionEvent("DME_MONITOR_SUSPENDED",reconnects,connectionStage,
+                    transport,gatewayIp,
+                    "id=${task.label};reason=${e.javaClass.simpleName};${e.message}")
+            }catch(_:Exception){}
+            return MonitorOutcome("SUSPENDED",duration,
+                IOException("DME Monitor response uncertain; reconnect safely",e))
+        }
+    }
+
     private suspend fun loop() {
         val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0
         val ramFrameReader=HsfzReusableReader()
@@ -1702,66 +1777,20 @@ class EnetLoggerService : Service() {
                         val task=monitorPolicy.choose(SystemClock.elapsedRealtime(),
                             completedFast,cycleMs,r,l,m,speed)
                         if(task!=null) {
-                            val request=task.request()
                             val readStarted=SystemClock.elapsedRealtime()
                             monitorPolicy.issued(task,readStarted)
-                            try {
-                                val reply=readDmeMonitor(task)
-                                val readDone=SystemClock.elapsedRealtime()
-                                monitorLastDuration=readDone-readStarted
-                                monitorLastId=task.label
-                                val status=reply.first
-                                monitorState=status
-                                val raw=reply.second
-                                val decoded=if(status=="OK" && task.service==0x22) {
-                                    val spec=DmeReadOnlyProbe.specs.first{it.did==task.did}
-                                    val parsed=DmeReadOnlyProbe.parse(spec,listOf(raw))
-                                    dmeProbeResults[task.did]=parsed
-                                    parsed.decodedCandidate
-                                } else if(status=="OK" && task.service==0x19) {
-                                    val parsed=DmeHistoryProtocol.parseDtcList(raw)
-                                    if(parsed==null)throw IOException("Malformed DTC monitor response")
-                                    "DTC returned=${parsed.size}; confirmed=${parsed.count{(it.status and 8)!=0}}"
-                                } else ""
-                                if(status=="OK")monitorOk++
-                                else if(status=="UNSUPPORTED")monitorPolicy.unsupported(task)
-                                try {
-                                    dmeMonitorFile?.appendText(DmeHistoryProtocol.csv(
-                                        System.currentTimeMillis(),readDone-started,transport,
-                                        pollModeActive,"%02X".format(task.service),task.label,
-                                        DmeHistoryProtocol.hex(request),
-                                        DmeHistoryProtocol.hex(raw),status,decoded,
-                                        monitorLastDuration,readStarted-cycleStart,r,l,m,speed,
-                                        hz,4,4,
-                                        "read-only; no RON conversion; FAST read completed before this request"
-                                    )+"\n")
-                                } catch(_:IOException) { /* Keep ECU polling alive on CSV failure. */ }
-                            } catch(e:Exception) {
+                            val outcome=executeDmeMonitorTask(task,monitorPolicy,
+                                dmeProbeResults,readStarted,started,cycleStart,
+                                transport,pollModeActive,r,l,m,speed,hz,
+                                reconnects,connectionStage,gatewayIp)
+                            monitorLastDuration=outcome.durationMs
+                            monitorLastId=task.label
+                            monitorState=outcome.status
+                            if(outcome.failure!=null) {
                                 monitorErrors++
-                                monitorState="SUSPENDED"
-                                monitorLastId=task.label
-                                monitorLastDuration=SystemClock.elapsedRealtime()-readStarted
-                                monitorPolicy.suspend()
-                                try {
-                                    dmeMonitorFile?.appendText(DmeHistoryProtocol.csv(
-                                        System.currentTimeMillis(),SystemClock.elapsedRealtime()-started,
-                                        transport,pollModeActive,
-                                        "%02X".format(task.service),task.label,
-                                        DmeHistoryProtocol.hex(request),"","TRANSPORT_UNCERTAIN","",
-                                        monitorLastDuration,SystemClock.elapsedRealtime()-cycleStart,
-                                        r,l,m,speed,hz,4,4,
-                                        "${e.javaClass.simpleName}: ${e.message}; monitor disabled until LOGGER restart"
-                                    )+"\n")
-                                }catch(_:IOException){}
-                                connectionEvent("DME_MONITOR_SUSPENDED",reconnects,connectionStage,
-                                    transport,gatewayIp,
-                                    "id=${task.label};reason=${e.javaClass.simpleName};${e.message}")
-                                // An idle-header timeout can precede a late ECU
-                                // reply. Reusing this stream for FAST risks
-                                // consuming the late response: close/reconnect.
-                                try{socket?.close()}catch(_:Exception){}
-                                throw IOException("DME Monitor response uncertain; reconnect safely",e)
+                                throw outcome.failure
                             }
+                            if(outcome.status=="OK") monitorOk++
                         }
                     }
                 }
