@@ -1873,9 +1873,16 @@ class EnetLoggerService : Service() {
         val savedTimeout=s.soTimeout
         try {
             s.soTimeout=750
-            s.getOutputStream().write(hsfz(request))
+            val packet=hsfz(request)
+            s.getOutputStream().write(packet)
             s.getOutputStream().flush()
-            val response=readFrames(s.getInputStream())
+            val response=HsfzCodec.readFrames(
+                s.getInputStream(),
+                expectedRequest=packet,
+                onAlive={ reply ->
+                    s.getOutputStream().write(reply)
+                    s.getOutputStream().flush()
+                })
                 .mapNotNull { payload(it) }.firstOrNull()
                 ?: throw IOException("Monitor response timeout or empty")
             if(response.size>DmeHistoryProtocol.MAX_RESPONSE_BYTES)
