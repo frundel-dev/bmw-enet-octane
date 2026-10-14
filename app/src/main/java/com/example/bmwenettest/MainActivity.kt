@@ -522,6 +522,18 @@ class MainActivity : Activity() {
         highSpeedCard.addView(action("ПРОФИЛЬ HIGH SPEED"){showHighSpeedProfileDialog()})
         highSpeedCard.addView(action("HIGH-SPEED BENCHMARK CSV"){showHighSpeedBenchmark()})
         addCard(diagnostics,highSpeedCard)
+        val fastDidCard=card("FAST DID VALIDATION • READ-ONLY AUDIT")
+        fastDidCard.addView(smallText(
+            "BASELINE: активен • FAST_DID_TEST / FAST_BATCH_TEST: "+
+            "заблокированы до документального подтверждения DME/SWFL. "+
+            "Новые запросы к ECU не отправляются.",12f,tertiary))
+        fastDidCard.addView(action("КАНДИДАТЫ DID И KNOCK-СЕМАНТИКА"){
+            showFastDidCandidateAudit()
+        })
+        fastDidCard.addView(action("RAW FAST DID • CSV / OFFLINE"){
+            showFastDidAuditCsv()
+        })
+        addCard(diagnostics,fastDidCard)
         diagnostics.addView(dashboard)
 
         val settings=section()
@@ -2016,6 +2028,62 @@ class MainActivity : Activity() {
                         else -> "Резервный режим "+mode+" • переключение без перезапуска"
                     },Toast.LENGTH_LONG).show()
             }.setNegativeButton("Отмена",null).show()
+    }
+
+    private fun showFastDidCandidateAudit() {
+        val text=buildString {
+            append("Диагностические профили:\n")
+            for(profile in FastDidValidation.Profile.entries) {
+                append(profile.name).append(": ")
+                append(if(FastDidValidation.canActivate(profile,false,false))
+                    "BASELINE (существующие OBD/B+)" else
+                    "BLOCKED — документальный допуск отсутствует")
+                append('\n')
+            }
+            append("\nКандидаты из bootmod3 mock_channels.json:\n")
+            for(spec in FastDidValidation.candidates) {
+                append(spec.name).append(" • ").append(spec.label).append(" • ")
+                append(FastDidValidation.status(spec.did)).append('\n')
+            }
+            append("\n0x4A37–0x4A3A: SEMANTICS_UNVERIFIED. "+
+                "Текущий 4-байтный декодер не подтверждает физические единицы; "+
+                "демонстрационный 2-байтный коэффициент НЕ применяется.")
+        }
+        AlertDialog.Builder(this).setTitle("FAST DID Validation • AUDIT")
+            .setMessage(text).setPositiveButton("OK",null).show()
+    }
+
+    private fun showFastDidAuditCsv() {
+        val dir=getExternalFilesDir(null)?:filesDir
+        val file=dir.listFiles()?.filter{
+            it.isFile && it.name.startsWith("bmw_fast_did_validation_v1_") &&
+                it.name.endsWith(".csv")
+        }?.maxByOrNull{it.lastModified()}
+        if(file==null) {
+            AlertDialog.Builder(this).setTitle("FAST DID • RAW журнал")
+                .setMessage("Нет записей. Исследовательский CSV появится "+
+                    "после запуска обычного LOGGER. Новые DID не опрашиваются.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        executor.execute {
+            val report=try {
+                file.useLines { lines->
+                    val audit=FastDidAuditCsv.analyze(lines)
+                    "${file.name}\nСтрок: ${audit.total}; "+
+                    "валидных: ${audit.valid}; повреждённых: ${audit.invalid}\n"+
+                    "Топливные сессии: ${audit.fuelSessions}\n"+
+                    "DID: ${audit.dids}\n"+
+                    "Статусы: ${audit.statuses}\n"+
+                    "RAW снят только с существующих каналов."
+                }
+            }catch(e:Exception){"Не удалось проверить CSV: ${e.message}"}
+            runOnUiThread {
+                if(!isFinishing && !isDestroyed)
+                    AlertDialog.Builder(this).setTitle("FAST DID • OFFLINE")
+                        .setMessage(report).setPositiveButton("OK",null).show()
+            }
+        }
     }
 
     private fun showHighSpeedProfileDialog() {
