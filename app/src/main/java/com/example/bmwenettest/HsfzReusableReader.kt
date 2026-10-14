@@ -54,7 +54,7 @@ internal class HsfzReusableReader {
                     ((header[1].toInt() and 255) shl 16) or
                     ((header[2].toInt() and 255) shl 8) or
                     (header[3].toInt() and 255)
-                if(size !in 0..HsfzCodec.MAX_FRAME_BODY_BYTES)
+                if(size !in 0..HsfzCodec.MAX_FRAME_BODY_BYTES || size==1)
                     throw IOException("Invalid HSFZ frame length $size")
                 if(!exact(input,body,size,false))
                     throw IOException("Incomplete HSFZ body")
