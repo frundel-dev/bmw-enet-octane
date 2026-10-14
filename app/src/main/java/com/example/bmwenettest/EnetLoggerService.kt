@@ -1901,8 +1901,12 @@ class EnetLoggerService : Service() {
             s.getOutputStream().write(bytes)
             s.getOutputStream().flush()
             sentAt=System.nanoTime()
-            val received=readFrames(FirstByteMeasuredStream(
-                s.getInputStream(),{t->if(firstAt==null)firstAt=t}))
+            val received=HsfzCodec.readFrames(FirstByteMeasuredStream(
+                s.getInputStream(),{t->if(firstAt==null)firstAt=t}),
+                onAlive={ response ->
+                    s.getOutputStream().write(response)
+                    s.getOutputStream().flush()
+                },expectedRequest=bytes)
             receivedAt=System.nanoTime()
             val payloads=received.mapNotNull(::payload)
             val result=decode(payloads)
