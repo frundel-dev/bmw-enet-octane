@@ -203,8 +203,9 @@ class EnetLoggerService : Service() {
                 running=false
                 try { socket?.close() } catch(_:Exception) {}
                 socket=null
-                try { emit("LOGGER остановлен после ошибки: ${e.javaClass.simpleName}",state="ERROR") }
-                catch(_:Exception) {}
+                DiagnosticFailureBoundary.attempt {
+                    emit("LOGGER остановлен после ошибки: ${e.javaClass.simpleName}",state="ERROR")
+                }
             } finally {
                 running=false
             }
@@ -1798,8 +1799,9 @@ class EnetLoggerService : Service() {
                     running=false
                     try { socket?.close() } catch(_:Exception) {}
                     socket=null
-                    try { emit("LOGGER остановлен: ошибка восстановления",state="ERROR") }
-                    catch(_:Exception) {}
+                    DiagnosticFailureBoundary.attempt {
+                        emit("LOGGER остановлен: ошибка восстановления",state="ERROR")
+                    }
                 }
             }
         }
