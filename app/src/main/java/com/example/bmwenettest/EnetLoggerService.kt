@@ -124,6 +124,7 @@ class EnetLoggerService : Service() {
     private var logFile: File? = null
     // Accessed only by the one primary DME polling coroutine.
     private var highSpeedMetrics:HighSpeedMetrics?=null
+    private var passiveRecorder:FastDidPassiveRecorder?=null
     private val tone by lazy { ToneGenerator(AudioManager.STREAM_MUSIC, 85) }
 
     override fun onBind(intent: Intent?) = null
@@ -387,17 +388,17 @@ class EnetLoggerService : Service() {
         })
         // A new trip ID on each LOGGER start. Not equivalent to a separate day.
         val learningTripId=System.currentTimeMillis()
-        // Passive raw audit only: never sends new 0x22 requests and never
-        // alters fuel scoring or the existing CSV schema.
-        val fastDidAuditFile=File(getExternalFilesDir(null)?:filesDir,
-            "bmw_fast_did_validation_v1_${learningTripId}.csv")
-        val fastDidAuditReady=try {
-            fastDidAuditFile.writeText("# passive_only=true;"+
-                "unknown_ecu_timestamp=true;knock_semantics_unverified=true\n"+
-                FastDidAuditCsv.HEADER+"\n")
-            true
-        }catch(_:Exception){false}
-        var lastFastDidAuditMs=0L
+        passiveRecorder=try {
+            FastDidPassiveRecorder(
+                getSharedPreferences("bmw_native",MODE_PRIVATE),
+                csvWriter,File(getExternalFilesDir(null)?:filesDir,
+                    "bmw_fast_did_validation_v1_${learningTripId}.csv"),
+                learningTripId)
+        }catch(e:Exception) {
+            connectionEvent("FAST_DID_AUDIT_UNAVAILABLE",reconnects,"FILE",
+                "",null,"${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
         val highSpeedFile=File(getExternalFilesDir(null)?:filesDir,
             "bmw_highspeed_benchmark_v1_${learningTripId}.csv")
         val highSpeedFileAvailable=try {
@@ -962,10 +963,7 @@ class EnetLoggerService : Service() {
                     val combinedTrim=if(stft1!=null && ltft1!=null)
                         ((1.0+stft1/100.0)*(1.0+ltft1/100.0)-1.0)*100.0 else null
                     val fastDmeStarted=SystemClock.elapsedRealtime()
-                    val shouldSnapshotFastDid=fastDidAuditReady &&
-                        now-lastFastDidAuditMs>=5000L
-                    val knockStatusData=udsData(0x4A36)
-                    val knockStatus=knockStatusData?.firstOrNull()?.let{it.toInt() and 255}
+                    val knockStatus=udsData(0x4A36)?.firstOrNull()?.let{it.toInt() and 255}
                     val knockStatusMs=SystemClock.elapsedRealtime()-fastDmeStarted
                     val knockStarted=SystemClock.elapsedRealtime()
                     // Experimental B+: one combined 8-DID read, strict mixed-width parse.
@@ -1000,12 +998,7 @@ class EnetLoggerService : Service() {
                             } else batchOk++
                         }
                     } else null
-                    val knockObservedRaw=if(shouldSnapshotFastDid)
-                        linkedMapOf<Int,ByteArray>() else null
                     fun knock(did:Int)=(knockBatch?.get(did) ?: udsData(did))?.takeIf{it.size>=4}?.let{
-                        // Same raw bytes as the existing decoder, sampled
-                        // passively; no new ECU read or changed scale.
-                        knockObservedRaw?.put(did,it.copyOf())
                         val raw=((it[0].toLong()and 255) shl 24) or ((it[1].toLong()and 255) shl 16) or ((it[2].toLong()and 255) shl 8) or (it[3].toLong()and 255)
                         raw*0.05/65536.0
                     }
@@ -1029,17 +1022,6 @@ class EnetLoggerService : Service() {
                     val iz1=ign(0x4A49); val iz2=ign(0x4A4A); val iz3=ign(0x4A4C); val iz4=ign(0x4A4D)
                     val ignitionPhaseMs=SystemClock.elapsedRealtime()-ignitionStarted
                     val fastDmeMs=SystemClock.elapsedRealtime()-fastDmeStarted
-                    if(shouldSnapshotFastDid) {
-                        lastFastDidAuditMs=now
-                        FastDidAuditCapture.append(csvWriter,fastDidAuditFile,
-                            FastDidAuditCapture.Snapshot(
-                                System.currentTimeMillis(),learningTripId,
-                                fuelSessionId,reconnects,pollModeActive,
-                                prefs.getBoolean("octane2_swfl_confirmed",false),
-                                r,l,m,arrayOf(kz1,kz2,kz3,kz4),
-                                knockObservedRaw?:emptyMap(),knockStatusData
-                            ))
-                    }
                     val superKnock=slowSuperKnock
                     val foctanStarted=SystemClock.elapsedRealtime()
                     if(now-lastFoctan>=10000L) {
@@ -1904,6 +1886,12 @@ class EnetLoggerService : Service() {
             decodedAt=System.nanoTime()
             valid=result!=null
             if(valid)fingerprint=payloads.fold(1){a,b->31*a+b.contentHashCode()}
+            if(result!=null)try {
+                passiveRecorder?.onDecoded(channel,result,start,decodedAt,s)
+            }catch(e:Exception) {
+                connectionEvent("FAST_DID_AUDIT_ERROR",0,"FILE",
+                    "PASSIVE",null,"Audit observer: ${e.javaClass.simpleName}")
+            }
             return result
         } finally {
             val end=System.nanoTime()
