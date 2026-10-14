@@ -26,11 +26,33 @@ class HsfzReusableReaderTest {
 
     @Test fun ignoresNonDiagnosticEnvelopeAndParsesNrc() {
         val input=ByteArrayInputStream(
-            frame(byteArrayOf(1,2),type=2)+frame(byteArrayOf(0x7F,0x23,0x31)))
+            byteArrayOf(0,0,0,0,0,2)+frame(byteArrayOf(0x7F,0x23,0x31)))
         val reader=HsfzReusableReader()
-        assertEquals(3,reader.readDiagnostic(input))
+        assertEquals(3,reader.readDiagnostic(input,expectedRequest=HsfzCodec.encode(byteArrayOf(0x23,0x14))))
         assertNull(reader.rpm())
         assertEquals(0x31,reader.ramNegativeCode())
+    }
+
+    @Test fun ramNackFailsClosed() {
+        val reader=HsfzReusableReader()
+        try {
+            reader.readDiagnostic(ByteArrayInputStream(byteArrayOf(0,0,0,0,0,0xFF.toByte())),
+                expectedRequest=HsfzCodec.encode(byteArrayOf(0x23,0x14)))
+            fail("NACK must invalidate RAM stream")
+        }catch(e:IOException){assertTrue(e.message!!.contains("NACK"))}
+    }
+
+    @Test fun ramAliveGetsResponseWithoutExtraEcuRequest() {
+        val reader=HsfzReusableReader()
+        val alive=byteArrayOf(0,0,0,2,0,0x12,0x12,0xF4.toByte())
+        var response:ByteArray?=null
+        val size=reader.readDiagnostic(ByteArrayInputStream(
+            alive+frame(byteArrayOf(0x63,0xB8.toByte(),2))),
+            expectedRequest=HsfzCodec.encode(byteArrayOf(0x23,0x14)),
+            onAlive={response=it})
+        assertEquals(3,size)
+        assertEquals(696,reader.rpm())
+        assertArrayEquals(byteArrayOf(0,0,0,2,0,0x13,0,0xF4.toByte()),response)
     }
 
     @Test fun rejectsTruncatedResponse() {
