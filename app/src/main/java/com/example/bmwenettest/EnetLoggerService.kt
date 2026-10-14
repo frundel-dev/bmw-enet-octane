@@ -124,6 +124,7 @@ class EnetLoggerService : Service() {
     private var logFile: File? = null
     // Accessed only by the one primary DME polling coroutine.
     private var highSpeedMetrics:HighSpeedMetrics?=null
+    private var passiveRecorder:FastDidPassiveRecorder?=null
     private val tone by lazy { ToneGenerator(AudioManager.STREAM_MUSIC, 85) }
 
     override fun onBind(intent: Intent?) = null
@@ -387,6 +388,7 @@ class EnetLoggerService : Service() {
         })
         // A new trip ID on each LOGGER start. Not equivalent to a separate day.
         val learningTripId=System.currentTimeMillis()
+        passiveRecorder=openFastDidAudit(csvWriter,learningTripId,reconnects)
         val highSpeedFile=File(getExternalFilesDir(null)?:filesDir,
             "bmw_highspeed_benchmark_v1_${learningTripId}.csv")
         val highSpeedFileAvailable=try {
@@ -1605,35 +1607,15 @@ class EnetLoggerService : Service() {
                     if(highSpeedFileAvailable &&
                         benchmarkNow-lastHighSpeedExport>=5000L) {
                         lastHighSpeedExport=benchmarkNow
-                        val writerSnapshot=csvWriter.snapshot()
-                        val summaries=highspeed.snapshot()
-                        for(item in summaries) {
-                            csvWriter.append(highSpeedFile,HighSpeedBenchmark.encode(
-                                HighSpeedBenchmark.Sample(
-                                    System.currentTimeMillis(),learningTripId,
-                                    fuelSessionId,reconnects,
-                                    highSpeedProfile.name,effectiveMode,item,
-                                    writerSnapshot,cycleMs,hz,
-                                    listOf(kz1,kz2,kz3,kz4).count{it!=null},
-                                    listOf(iz1,iz2,iz3,iz4).count{it!=null}
-                                )))
-                        }
-                        val core=summaries.filter{it.channel in listOf(
-                            "OBD_0C","OBD_04","OBD_0B","DID_BATCH_8",
-                            "DID_BATCH_4","DID_4A37","DID_4A49")}
-                        val errors=core.sumOf{it.errors}
-                        val minCompleteness=core.minOfOrNull{it.completeness}
-                        val summary="Профиль ${highSpeedProfile.name} • "+
-                            "${"%.1f".format(java.util.Locale.US,hz)} цикла/с"+
-                            " • каналов ${summaries.size}"+
-                            " • p95 OBD RPM ${core.firstOrNull{it.channel=="OBD_0C"}
-                                ?.firstByteP95Ms?.toString()?:"—"} мс"+
-                            " • полнота ключевых ${minCompleteness?.let{
-                                "%.0f".format(java.util.Locale.US,it*100)
-                            }?:"—"}%"+
-                            " • ошибок ${errors}"+
-                            " • CSV очередь ${writerSnapshot.depth}"+
-                            " / потерь ${writerSnapshot.lost}"
+                        val summary=HighSpeedStatusWriter.appendAndSummarize(
+                            csvWriter,highSpeedFile,HighSpeedStatusWriter.Snapshot(
+                                System.currentTimeMillis(),learningTripId,
+                                fuelSessionId,reconnects,highSpeedProfile.name,
+                                effectiveMode,cycleMs,hz,
+                                listOf(kz1,kz2,kz3,kz4).count{it!=null},
+                                listOf(iz1,iz2,iz3,iz4).count{it!=null},
+                                highspeed.snapshot(),csvWriter.snapshot()
+                            ))
                         sendBroadcast(Intent(ACTION_HIGH_SPEED_STATUS).setPackage(packageName)
                             .putExtra(EXTRA_HIGH_SPEED_STATUS,summary))
                     }
@@ -1868,6 +1850,19 @@ class EnetLoggerService : Service() {
      * transaction on the single socket; the wrapper does not read ahead.
      * Null/negative/malformed responses are never marked successful.
      */
+    private fun openFastDidAudit(writer:AsyncCsvWriter,tripId:Long,
+                                 connectionEpoch:Int):FastDidPassiveRecorder? =
+        try {
+            FastDidPassiveRecorder(
+                getSharedPreferences("bmw_native",MODE_PRIVATE),writer,
+                File(getExternalFilesDir(null)?:filesDir,
+                    "bmw_fast_did_validation_v1_${tripId}.csv"),tripId)
+        }catch(e:Exception) {
+            connectionEvent("FAST_DID_AUDIT_UNAVAILABLE",connectionEpoch,
+                "FILE","",null,"${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
+
     private fun <T> measuredDiagnostic(
         channel:String,build:()->ByteArray,decode:(List<ByteArray>)->T?
     ):T? {
@@ -1894,6 +1889,17 @@ class EnetLoggerService : Service() {
             decodedAt=System.nanoTime()
             valid=result!=null
             if(valid)fingerprint=payloads.fold(1){a,b->31*a+b.contentHashCode()}
+            if(result!=null)try {
+                passiveRecorder?.onDecoded(channel,result,start,decodedAt,s)
+            }catch(_:Exception) {
+                // A research-only observer must not delay or invalidate an
+                // accepted ECU response. Count failures in High-Speed metrics;
+                // never invoke synchronous file I/O from this catch path.
+                try {
+                    highSpeedMetrics?.record("FAST_DID_AUDIT_ERROR",start,
+                        HighSpeedMetrics.Request(0L,0L,null,null,0L,false,null))
+                }catch(_:Exception){}
+            }
             return result
         } finally {
             val end=System.nanoTime()
