@@ -1,11 +1,10 @@
 package com.example.bmwenettest
 
+import com.example.bmwenettest.Octane2UiState.Connection as C
 import org.junit.Assert.*
 import org.junit.Test
 
 class Octane2HeaderStatusTest {
-    private val C=Octane2UiState.Connection
-
     @Test fun stoppedLoggerCannotDisplayStaleConnectedDme() {
         val labels=Octane2HeaderStatus.labels(false,C.CONNECTED)
         assertEquals("● DME: нет связи",labels.dme)
