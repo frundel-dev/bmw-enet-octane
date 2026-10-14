@@ -16,7 +16,7 @@ android {
         applicationId = "com.example.bmwenettest.octane2"
         minSdk = 26
         targetSdk = 35
-        versionCode = 205
+        versionCode = 206
         versionName = "2.0.1-experimental"
     }
     testOptions {
