@@ -1729,7 +1729,6 @@ class EnetLoggerService : Service() {
             } catch(e:Exception) {
                 if(e is CancellationException)throw e
                 if(!running) break
-                try {
                 val failureAt=SystemClock.elapsedRealtime()
                 recentPollFailures.addLast(failureAt)
                 while(recentPollFailures.isNotEmpty() &&
@@ -1791,36 +1790,18 @@ class EnetLoggerService : Service() {
                 connectionEvent("RETRY",reconnects,"BACKOFF",connectionTransport,connectionIp,
                     "delay_ms=$retryMs;wifi_blocked=$vxscanWifiBlocked;failures=$consecutiveFailures")
                 if(running) delay(retryMs)
-                } catch(recoveryError:CancellationException) {
-                    throw recoveryError
-                } catch(recoveryError:Exception) {
-                    // A failed error-reporting path must not escape launch.
-                    // Fail closed rather than risking a desynchronized socket.
-                    running=false
-                    try { socket?.close() } catch(_:Exception) {}
-                    socket=null
-                    DiagnosticFailureBoundary.attempt {
-                        emit("LOGGER остановлен: ошибка восстановления",state="ERROR")
-                    }
-                }
             }
         }
         } finally {
-        running=false
         highSpeedMetrics=null
-        try { socket?.close() } catch(_:Exception) {}
-        socket=null
-        // Independent best-effort closing: one damaged journal must not
-        // prevent draining the primary CSV queue.
+        // Drain/flush even when the Service is cancelled during a reconnect.
         withContext(NonCancellable) {
-            try { observationJournal?.close() } catch(_:Exception) {}
-            try { compareWriter?.flush();compareWriter?.close() } catch(_:Exception) {}
-            try { csvWriter.closeAndJoin() } catch(_:Exception) {}
-            if(observationJournal?.failed==true && !journalFailureNoted) {
-                try { connectionEvent("OBSERVATION_JOURNAL_FAILED",reconnects,
-                    "FILE",connectionTransport,null,"Journal close/flush failed") }
-                catch(_:Exception) {}
-            }
+        observationJournal?.close()
+        try{compareWriter?.flush();compareWriter?.close()}catch(_:Exception){}
+        csvWriter.closeAndJoin()
+        if(observationJournal?.failed==true && !journalFailureNoted)
+            connectionEvent("OBSERVATION_JOURNAL_FAILED",reconnects,
+                "FILE",connectionTransport,null,"Journal close/flush failed")
         }
         }
     }
