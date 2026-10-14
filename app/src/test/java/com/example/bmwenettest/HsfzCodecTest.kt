@@ -36,10 +36,48 @@ class HsfzCodecTest {
     @Test fun skipsNonDataFrameBeforeDataReply() {
         val control=bytes(0,0,0,2,0,2,0xF4,0x12)
         val reply=HsfzCodec.encode(bytes(0x41,0x0C,0x0C,0x80))
-        val frames=HsfzCodec.readFrames(ByteArrayInputStream(control+reply))
-        assertEquals(2,frames.size)
-        assertNull(HsfzCodec.payload(frames[0]))
-        assertArrayEquals(bytes(0x41,0x0C,0x0C,0x80),HsfzCodec.payload(frames[1]))
+        val frames=HsfzCodec.readFrames(ByteArrayInputStream(control+reply),
+            expectedRequest=HsfzCodec.encode(bytes(0x01,0x0C)))
+        assertEquals(1,frames.size)
+        assertArrayEquals(bytes(0x41,0x0C,0x0C,0x80),HsfzCodec.payload(frames[0]))
+    }
+
+    @Test fun aliveCheckIsAnsweredBeforeDiagnosticResponse() {
+        val alive=bytes(0,0,0,2,0,0x12,0x12,0xF4)
+        val reply=HsfzCodec.encode(bytes(0x62,0x4A,0x37,1))
+        val writes=mutableListOf<ByteArray>()
+        val frames=HsfzCodec.readFrames(ByteArrayInputStream(alive+reply),
+            onAlive={writes.add(it)},expectedRequest=HsfzCodec.encode(bytes(0x22,0x4A,0x37)))
+        assertEquals(1,frames.size)
+        assertArrayEquals(bytes(0,0,0,2,0,0x13,0,0xF4),writes.single())
+    }
+
+    @Test fun nackForcesReconnectInsteadOfAcceptingLaterData() {
+        val nack=bytes(0,0,0,0,0,0xFF)
+        val data=HsfzCodec.encode(bytes(0x62,0x4A,0x37,1))
+        try {
+            HsfzCodec.readFrames(ByteArrayInputStream(nack+data),
+                expectedRequest=HsfzCodec.encode(bytes(0x22,0x4A,0x37)))
+            fail("NACK must invalidate transaction")
+        }catch(_:IOException){}
+    }
+
+    @Test fun unrelatedAckCannotConfirmTransaction() {
+        val ack=bytes(0,0,0,2,0,2,0xAA,0xBB)
+        try {
+            HsfzCodec.readFrames(ByteArrayInputStream(ack),
+                expectedRequest=HsfzCodec.encode(bytes(0x22,0x4A,0x37)))
+            fail("ACK must correlate to current request")
+        }catch(_:IOException){}
+    }
+
+    @Test fun missingResponseAfterAckIsNotSuccessful() {
+        val ack=bytes(0,0,0,0,0,2)
+        try {
+            HsfzCodec.readFrames(ByteArrayInputStream(ack),
+                expectedRequest=HsfzCodec.encode(bytes(0x22,0x4A,0x37)))
+            fail("EOF after ACK must not be treated as a diagnostic result")
+        }catch(_:IOException){}
     }
 
     @Test fun neverPublishesTruncatedFrame() {
