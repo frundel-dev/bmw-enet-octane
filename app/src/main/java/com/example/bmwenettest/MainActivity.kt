@@ -2075,7 +2075,23 @@ class MainActivity : Activity() {
                     "Топливные сессии: ${audit.fuelSessions}\n"+
                     "DID: ${audit.dids}\n"+
                     "Статусы: ${audit.statuses}\n"+
-                    "RAW снят только с существующих каналов."
+                    "RAW снят только с существующих каналов."+
+                    "\n\nПоследние RAW/статус по каждому DID:\n"+
+                    file.useLines { rawLines->
+                        val latest=FastDidAuditCsv.latestSamples(rawLines)
+                        FastDidValidation.candidates.joinToString("\n") { c ->
+                            val id="%04X".format(java.util.Locale.US,c.did)
+                            val row=latest[id]
+                            if(row==null) "$id — нет записей"
+                            else "$id • ${row.status} • ${row.source}"+
+                                "\n  RAW: ${row.rawHex.ifEmpty{"отсутствует"}}"+
+                                " | delay: ${row.durationMs.ifEmpty{"—"}} мс"+
+                                " | OBD age: ${row.ageMs.ifEmpty{"—"}} мс"+
+                                if(row.legacyValue.isNotEmpty())
+                                    "\n  legacy: ${row.legacyValue} "+
+                                        "(SEMANTICS_UNVERIFIED)" else ""
+                        }
+                    }
                 }
             }catch(e:Exception){"Не удалось проверить CSV: ${e.message}"}
             runOnUiThread {
