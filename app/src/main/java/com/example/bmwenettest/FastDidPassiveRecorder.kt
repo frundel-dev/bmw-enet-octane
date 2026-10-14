@@ -92,7 +92,7 @@ internal class FastDidPassiveRecorder(
         send(FastDidAuditCsv.Row(
             System.currentTimeMillis(),tripId,fuelSession(),epoch,
             "2.0.1-lab/205","DME8FF_R",swflEvidence(),
-            FastDidValidation.Profile.BASELINE,"EXISTING_BPLUS_OR_FALLBACK",
+            FastDidValidation.Profile.BASELINE,"UNKNOWN_PASSIVE",
             origin,did,FastDidValidation.status(did),
             if(did in 0x4A37..0x4A3A)
                 "SEMANTICS_UNVERIFIED" else "NOT_VALIDATED",
