@@ -71,7 +71,8 @@ internal object HsfzCodec {
         // Still bound work to prevent an endless ACK/alive flood.
         repeat(8) {
             try {
-                val header=exact(input,6,idleHeader=true) ?: return frames
+                val header=exact(input,6,idleHeader=true)
+                    ?: throw IOException("HSFZ EOF before diagnostic response")
                 val length=bodyLength(header)
                 if(length !in 0..MAX_FRAME_BODY_BYTES)
                     throw IOException("Invalid HSFZ frame size: $length")
