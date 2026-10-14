@@ -1031,38 +1031,14 @@ class EnetLoggerService : Service() {
                     val fastDmeMs=SystemClock.elapsedRealtime()-fastDmeStarted
                     if(shouldSnapshotFastDid) {
                         lastFastDidAuditMs=now
-                        val snapshotWall=System.currentTimeMillis()
-                        val legacyKnock=mapOf(0x4A37 to kz1,0x4A38 to kz2,
-                            0x4A39 to kz3,0x4A3A to kz4)
-                        for(did in listOf(0x5819,0x5804,0x4A2D,
-                            0x4A37,0x4A38,0x4A39,0x4A3A,0x4A36,
-                            0x5883,0x5885,0x5886,0x5888,0x554A)) {
-                            val observed=if(did==0x4A36)knockStatusData
-                                else knockObservedRaw?.get(did)
-                            val source=if(observed!=null)"EXISTING_READ"
-                                else "NO_ADDITIONAL_QUERY"
-                            val referenceOnly=did in listOf(0x4A37,0x4A38,
-                                0x4A39,0x4A3A)
-                            val status=FastDidValidation.status(did)
-                            csvWriter.append(fastDidAuditFile,FastDidAuditCsv.encode(
-                                FastDidAuditCsv.Row(
-                                    snapshotWall,learningTripId,fuelSessionId,
-                                    reconnects,"2.0.1-lab/205","DME8FF_R",
-                                    if(prefs.getBoolean("octane2_swfl_confirmed",false))
-                                        "USER_ACK_ONLY" else "UNCONFIRMED",
-                                    FastDidValidation.Profile.BASELINE,
-                                    pollModeActive,source,did,status,
-                                    if(referenceOnly)"SEMANTICS_UNVERIFIED"
-                                    else "NOT_VALIDATED",
-                                    observed,legacyKnock[did],
-                                    if(referenceOnly)"legacy_knock_z_vms_UNVERIFIED"
-                                    else "",
-                                    r,l,m,null,null,null,null,
-                                    if(observed==null)
-                                        "No new UDS query; demo DID not approved"
-                                    else "PASSIVE_EXISTING_FAST; no ECU timestamp"
-                                )))
-                        }
+                        FastDidAuditCapture.append(csvWriter,fastDidAuditFile,
+                            FastDidAuditCapture.Snapshot(
+                                System.currentTimeMillis(),learningTripId,
+                                fuelSessionId,reconnects,pollModeActive,
+                                prefs.getBoolean("octane2_swfl_confirmed",false),
+                                r,l,m,arrayOf(kz1,kz2,kz3,kz4),
+                                knockObservedRaw?:emptyMap(),knockStatusData
+                            ))
                     }
                     val superKnock=slowSuperKnock
                     val foctanStarted=SystemClock.elapsedRealtime()
