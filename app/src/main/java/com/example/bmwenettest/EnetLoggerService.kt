@@ -1635,35 +1635,15 @@ class EnetLoggerService : Service() {
                     if(highSpeedFileAvailable &&
                         benchmarkNow-lastHighSpeedExport>=5000L) {
                         lastHighSpeedExport=benchmarkNow
-                        val writerSnapshot=csvWriter.snapshot()
-                        val summaries=highspeed.snapshot()
-                        for(item in summaries) {
-                            csvWriter.append(highSpeedFile,HighSpeedBenchmark.encode(
-                                HighSpeedBenchmark.Sample(
-                                    System.currentTimeMillis(),learningTripId,
-                                    fuelSessionId,reconnects,
-                                    highSpeedProfile.name,effectiveMode,item,
-                                    writerSnapshot,cycleMs,hz,
-                                    listOf(kz1,kz2,kz3,kz4).count{it!=null},
-                                    listOf(iz1,iz2,iz3,iz4).count{it!=null}
-                                )))
-                        }
-                        val core=summaries.filter{it.channel in listOf(
-                            "OBD_0C","OBD_04","OBD_0B","DID_BATCH_8",
-                            "DID_BATCH_4","DID_4A37","DID_4A49")}
-                        val errors=core.sumOf{it.errors}
-                        val minCompleteness=core.minOfOrNull{it.completeness}
-                        val summary="Профиль ${highSpeedProfile.name} • "+
-                            "${"%.1f".format(java.util.Locale.US,hz)} цикла/с"+
-                            " • каналов ${summaries.size}"+
-                            " • p95 OBD RPM ${core.firstOrNull{it.channel=="OBD_0C"}
-                                ?.firstByteP95Ms?.toString()?:"—"} мс"+
-                            " • полнота ключевых ${minCompleteness?.let{
-                                "%.0f".format(java.util.Locale.US,it*100)
-                            }?:"—"}%"+
-                            " • ошибок ${errors}"+
-                            " • CSV очередь ${writerSnapshot.depth}"+
-                            " / потерь ${writerSnapshot.lost}"
+                        val summary=HighSpeedStatusWriter.appendAndSummarize(
+                            csvWriter,highSpeedFile,HighSpeedStatusWriter.Snapshot(
+                                System.currentTimeMillis(),learningTripId,
+                                fuelSessionId,reconnects,highSpeedProfile.name,
+                                effectiveMode,cycleMs,hz,
+                                listOf(kz1,kz2,kz3,kz4).count{it!=null},
+                                listOf(iz1,iz2,iz3,iz4).count{it!=null},
+                                highspeed.snapshot(),csvWriter.snapshot()
+                            ))
                         sendBroadcast(Intent(ACTION_HIGH_SPEED_STATUS).setPackage(packageName)
                             .putExtra(EXTRA_HIGH_SPEED_STATUS,summary))
                     }
