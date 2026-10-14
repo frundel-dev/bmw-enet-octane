@@ -20,9 +20,9 @@ The upstream receive state machine accumulates the 6-byte HSFZ header and length
 - No empty/partial response after ACK is reported as success. Missing diagnostic frame is failure; socket must not be reused after timeout.
 - Bounded number of control frames; no new DIDs or rate increases.
 
-## Limits and validation
+## RAM 0x23 reusable reader extension\n- Updated the zero-copy `HsfzReusableReader` receive path to classify ACK/NACK, answer gateway alive-check via the same socket, and close/reconnect on uncertain failures. Existing RAM payload buffer is reused.\n- Added RAM-specific synthetic ACK, NACK and alive-check tests; there is no new RAM address or diagnostic request.\n\n## Limits and validation
 - This fixes framing/transaction failure classification, **not** proof of source/target address validity for all ECU profiles nor a way to identify stale same-DID replies on an already desynchronized socket. After uncertain outcomes the correct policy remains socket retirement and new connection.
-- `HsfzReusableReader` (RAM 0x23) and other direct stream reads require their own separate conformance review; this change covers the shared HSFZ codec and `measuredDiagnostic`, not every path.
+- Other direct transport readers outside the common codec and the RAM reusable reader remain outside this PR; on-device validation is required.
 - Upstream supports additional control replies; OCTANE intentionally fails closed on unknown ones instead of inventing behavior.
 - JVM synthetic fragmentation, ACK/NACK, keepalive and incomplete-response tests are software evidence only. On-car VXSCAN 30-minute/STOP-reconnect validation remains necessary.
 - Beware that EdiabasLib uses independent asynchronous read and queueing. OCTANE intentionally keeps one socket owner, no concurrent input reader.
