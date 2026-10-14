@@ -116,9 +116,10 @@ internal class AsyncCsvWriter(
         val result=queue.trySend(Entry(file,line,System.nanoTime()))
         if(!result.isSuccess) {
             pending.decrementAndGet()
+            // Do not invoke the onFailure callback on the DME polling
+            // thread: it may synchronously write a log/broadcast. Loss is
+            // visible via snapshot().lost and the High-Speed benchmark.
             lost.incrementAndGet()
-            try { onFailure(file,IllegalStateException(
-                "FAST DID audit queue full or closed; explicit loss")) } catch(_:Exception) {}
             return false
         }
         maximum.accumulateAndGet(depth){a,b->maxOf(a,b)}
