@@ -102,6 +102,30 @@ internal class AsyncCsvWriter(
      * Suspends on a full queue. Never silently drops a record for throughput.
      * Failure after enqueue is reported through onFailure.
      */
+    /**
+     * Best-effort, bounded research telemetry. It MUST NOT stall FAST polling.
+     * A full/closed queue is explicitly counted and reported, not ignored.
+     * Essential primary rows continue to use suspending append(backpressure).
+     */
+    fun offerAudit(file:File,line:String):Boolean {
+        if(file.absolutePath in failed) {
+            lost.incrementAndGet()
+            return false
+        }
+        val depth=pending.incrementAndGet()
+        val result=queue.trySend(Entry(file,line,System.nanoTime()))
+        if(!result.isSuccess) {
+            pending.decrementAndGet()
+            lost.incrementAndGet()
+            try { onFailure(file,IllegalStateException(
+                "FAST DID audit queue full or closed; explicit loss")) } catch(_:Exception) {}
+            return false
+        }
+        maximum.accumulateAndGet(depth){a,b->maxOf(a,b)}
+        offered.incrementAndGet()
+        return true
+    }
+
     suspend fun append(file:File,line:String):Boolean {
         if(file.absolutePath in failed) {
             lost.incrementAndGet()
