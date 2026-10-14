@@ -74,7 +74,7 @@ internal object HsfzCodec {
                 val header=exact(input,6,idleHeader=true)
                     ?: throw IOException("HSFZ EOF before diagnostic response")
                 val length=bodyLength(header)
-                if(length !in 0..MAX_FRAME_BODY_BYTES)
+                if(length !in 0..MAX_FRAME_BODY_BYTES || length==1)
                     throw IOException("Invalid HSFZ frame size: $length")
                 val body=exact(input,length) ?: throw IOException("Truncated HSFZ body")
                 val frame=header+body
