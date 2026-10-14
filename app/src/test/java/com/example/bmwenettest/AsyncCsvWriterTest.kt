@@ -51,4 +51,21 @@ class AsyncCsvWriterTest {
         dir.deleteRecursively()
         Unit
     }
+    @Test fun auditOfferKeepsOrderAndReportsClosedQueue()=runBlocking {
+        val dir=Files.createTempDirectory("octane-audit-offer").toFile()
+        val file=File(dir,"audit.csv")
+        val errors=CopyOnWriteArrayList<String>()
+        val writer=AsyncCsvWriter({_,e->errors.add(e.message?:"error")},capacity=4)
+        assertTrue(writer.offerAudit(file,"passive-1"))
+        assertTrue(writer.append(file,"primary-2"))
+        assertTrue(writer.offerAudit(file,"passive-3"))
+        writer.closeAndJoin()
+        assertEquals(listOf("passive-1","primary-2","passive-3"),file.readLines())
+        assertFalse(writer.offerAudit(file,"after-close"))
+        assertEquals(1L,writer.snapshot().lost)
+        assertTrue(errors.single().contains("queue full or closed"))
+        dir.deleteRecursively()
+        Unit
+    }
+
 }
