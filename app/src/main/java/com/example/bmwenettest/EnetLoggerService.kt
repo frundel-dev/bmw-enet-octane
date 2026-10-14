@@ -387,6 +387,17 @@ class EnetLoggerService : Service() {
         })
         // A new trip ID on each LOGGER start. Not equivalent to a separate day.
         val learningTripId=System.currentTimeMillis()
+        // Passive raw audit only: never sends new 0x22 requests and never
+        // alters fuel scoring or the existing CSV schema.
+        val fastDidAuditFile=File(getExternalFilesDir(null)?:filesDir,
+            "bmw_fast_did_validation_v1_${learningTripId}.csv")
+        val fastDidAuditReady=try {
+            fastDidAuditFile.writeText("# passive_only=true;"+
+                "unknown_ecu_timestamp=true;knock_semantics_unverified=true\n"+
+                FastDidAuditCsv.HEADER+"\n")
+            true
+        }catch(_:Exception){false}
+        var lastFastDidAuditMs=0L
         val highSpeedFile=File(getExternalFilesDir(null)?:filesDir,
             "bmw_highspeed_benchmark_v1_${learningTripId}.csv")
         val highSpeedFileAvailable=try {
@@ -951,7 +962,8 @@ class EnetLoggerService : Service() {
                     val combinedTrim=if(stft1!=null && ltft1!=null)
                         ((1.0+stft1/100.0)*(1.0+ltft1/100.0)-1.0)*100.0 else null
                     val fastDmeStarted=SystemClock.elapsedRealtime()
-                    val knockStatus=udsData(0x4A36)?.firstOrNull()?.let{it.toInt() and 255}
+                    val knockStatusData=udsData(0x4A36)
+                    val knockStatus=knockStatusData?.firstOrNull()?.let{it.toInt() and 255}
                     val knockStatusMs=SystemClock.elapsedRealtime()-fastDmeStarted
                     val knockStarted=SystemClock.elapsedRealtime()
                     // Experimental B+: one combined 8-DID read, strict mixed-width parse.
@@ -986,7 +998,11 @@ class EnetLoggerService : Service() {
                             } else batchOk++
                         }
                     } else null
+                    val knockObservedRaw=linkedMapOf<Int,ByteArray>()
                     fun knock(did:Int)=(knockBatch?.get(did) ?: udsData(did))?.takeIf{it.size>=4}?.let{
+                        // Same raw bytes as the existing decoder, sampled
+                        // passively; no new ECU read or changed scale.
+                        knockObservedRaw[did]=it.copyOf()
                         val raw=((it[0].toLong()and 255) shl 24) or ((it[1].toLong()and 255) shl 16) or ((it[2].toLong()and 255) shl 8) or (it[3].toLong()and 255)
                         raw*0.05/65536.0
                     }
@@ -1010,6 +1026,41 @@ class EnetLoggerService : Service() {
                     val iz1=ign(0x4A49); val iz2=ign(0x4A4A); val iz3=ign(0x4A4C); val iz4=ign(0x4A4D)
                     val ignitionPhaseMs=SystemClock.elapsedRealtime()-ignitionStarted
                     val fastDmeMs=SystemClock.elapsedRealtime()-fastDmeStarted
+                    if(fastDidAuditReady && now-lastFastDidAuditMs>=5000L) {
+                        lastFastDidAuditMs=now
+                        val snapshotWall=System.currentTimeMillis()
+                        val legacyKnock=mapOf(0x4A37 to kz1,0x4A38 to kz2,
+                            0x4A39 to kz3,0x4A3A to kz4)
+                        for(did in listOf(0x5819,0x5804,0x4A2D,
+                            0x4A37,0x4A38,0x4A39,0x4A3A,0x4A36,
+                            0x5883,0x5885,0x5886,0x5888,0x554A)) {
+                            val observed=if(did==0x4A36)knockStatusData
+                                else knockObservedRaw[did]
+                            val source=if(observed!=null)"EXISTING_READ"
+                                else "NO_ADDITIONAL_QUERY"
+                            val referenceOnly=did in listOf(0x4A37,0x4A38,
+                                0x4A39,0x4A3A)
+                            val status=FastDidValidation.status(did)
+                            csvWriter.append(fastDidAuditFile,FastDidAuditCsv.encode(
+                                FastDidAuditCsv.Row(
+                                    snapshotWall,learningTripId,fuelSessionId,
+                                    reconnects,"2.0.1-lab/205","DME8FF_R",
+                                    if(prefs.getBoolean("octane2_swfl_confirmed",false))
+                                        "USER_ACK_ONLY" else "UNCONFIRMED",
+                                    FastDidValidation.Profile.BASELINE,
+                                    pollModeActive,source,did,status,
+                                    if(referenceOnly)"SEMANTICS_UNVERIFIED"
+                                    else "NOT_VALIDATED",
+                                    observed,legacyKnock[did],
+                                    if(referenceOnly)"legacy_knock_z_vms_UNVERIFIED"
+                                    else "",
+                                    r,l,m,null,null,null,null,
+                                    if(observed==null)
+                                        "No new UDS query; demo DID not approved"
+                                    else "PASSIVE_EXISTING_FAST; no ECU timestamp"
+                                )))
+                        }
+                    }
                     val superKnock=slowSuperKnock
                     val foctanStarted=SystemClock.elapsedRealtime()
                     if(now-lastFoctan>=10000L) {
