@@ -1891,9 +1891,14 @@ class EnetLoggerService : Service() {
             if(valid)fingerprint=payloads.fold(1){a,b->31*a+b.contentHashCode()}
             if(result!=null)try {
                 passiveRecorder?.onDecoded(channel,result,start,decodedAt,s)
-            }catch(e:Exception) {
-                connectionEvent("FAST_DID_AUDIT_ERROR",0,"FILE",
-                    "PASSIVE",null,"Audit observer: ${e.javaClass.simpleName}")
+            }catch(_:Exception) {
+                // A research-only observer must not delay or invalidate an
+                // accepted ECU response. Count failures in High-Speed metrics;
+                // never invoke synchronous file I/O from this catch path.
+                try {
+                    highSpeedMetrics?.record("FAST_DID_AUDIT_ERROR",start,
+                        HighSpeedMetrics.Request(0L,0L,null,null,0L,false,null))
+                }catch(_:Exception){}
             }
             return result
         } finally {
