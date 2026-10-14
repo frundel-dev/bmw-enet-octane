@@ -441,6 +441,9 @@ class MainActivity : Activity() {
         fuelCard.addView(action("НОВАЯ ЗАПРАВКА"){showNewFuelTestDialog()})
         fuelCard.addView(action("ИЗМЕНИТЬ ТОПЛИВО"){editCurrentFuel()})
         addCard(home,fuelCard)
+        // Keep the existing LOGGER START/STOP control visible near the top.
+        // This reuses the same button and listener, without duplicate actions.
+        addCard(home,controls)
 
         val networkCard=card("СВЯЗЬ С DME И СБОР")
         homeConnection=smallText("Отключено • ENET / VXSCAN",13f,accentBlue)
@@ -476,7 +479,6 @@ class MainActivity : Activity() {
         guidance.addView(homeNextMode)
         addCard(home,guidance)
         addCard(home,quickPanel)
-        addCard(home,controls)
 
         val refuels=section()
         val refuelCard=card("ЗАПРАВКИ")
