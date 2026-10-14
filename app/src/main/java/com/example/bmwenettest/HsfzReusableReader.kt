@@ -39,30 +39,53 @@ internal class HsfzReusableReader {
         return true
     }
 
-    /** Returns payload length, or null after a clean idle EOF/timeout. */
-    fun readDiagnostic(input:InputStream,maxFrames:Int=2):Int? {
+    /** Single-owner RAM receive path. No concurrent read or allocated body copies. */
+    fun readDiagnostic(
+        input:InputStream,maxFrames:Int=2,
+        expectedRequest:ByteArray?=null,
+        onAlive:((ByteArray)->Unit)?=null
+    ):Int? {
         require(maxFrames in 1..8)
         lastPayloadSize=0
-        repeat(maxFrames) {
+        repeat(8) {
             try {
                 if(!exact(input,header,6,true))return null
                 val size=((header[0].toInt() and 255) shl 24) or
                     ((header[1].toInt() and 255) shl 16) or
                     ((header[2].toInt() and 255) shl 8) or
                     (header[3].toInt() and 255)
-                if(size !in 2..HsfzCodec.MAX_FRAME_BODY_BYTES)
+                if(size !in 0..HsfzCodec.MAX_FRAME_BODY_BYTES)
                     throw IOException("Invalid HSFZ frame length $size")
                 if(!exact(input,body,size,false))
                     throw IOException("Incomplete HSFZ body")
-                if(header[4].toInt()==0 && header[5].toInt()==1) {
-                    lastPayloadSize=size-2
-                    return lastPayloadSize
+                val type=((header[4].toInt() and 255) shl 8) or
+                    (header[5].toInt() and 255)
+                when(type) {
+                    0x01 -> {
+                        if(size<2)throw IOException("Diagnostic addresses missing")
+                        lastPayloadSize=size-2
+                        return lastPayloadSize
+                    }
+                    0x02 -> {
+                        if(size+6>13 || expectedRequest==null ||
+                            size+6>expectedRequest.size ||
+                            (0 until size).any { body[it]!=expectedRequest[it+6] })
+                            throw IOException("RAM HSFZ ACK mismatch")
+                    }
+                    0xFF -> throw IOException("RAM HSFZ NACK; reconnect")
+                    0x12 -> {
+                        if(size!=2 || onAlive==null)
+                            throw IOException("RAM HSFZ alive-check cannot be answered")
+                        onAlive(byteArrayOf(0,0,0,2,0,0x13,0,0xF4.toByte()))
+                    }
+                    else -> throw IOException("Unexpected RAM HSFZ frame type $type")
                 }
-            } catch(_:SocketTimeoutException) {
-                return null
+            } catch(e:SocketTimeoutException) {
+                // A late RAM reply would corrupt transaction attribution.
+                throw IOException("RAM HSFZ response timeout; reconnect",e)
             }
         }
-        return null
+        throw IOException("Too many RAM HSFZ control frames")
     }
 
     fun unsigned(index:Int):Int {
