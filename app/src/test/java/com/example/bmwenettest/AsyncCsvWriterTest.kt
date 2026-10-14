@@ -63,7 +63,9 @@ class AsyncCsvWriterTest {
         assertEquals(listOf("passive-1","primary-2","passive-3"),file.readLines())
         assertFalse(writer.offerAudit(file,"after-close"))
         assertEquals(1L,writer.snapshot().lost)
-        assertTrue(errors.single().contains("queue full or closed"))
+        // Queue exhaustion is counted, never synchronously routed through
+        // onFailure() on the DME socket owner's thread.
+        assertTrue(errors.isEmpty())
         dir.deleteRecursively()
         Unit
     }
