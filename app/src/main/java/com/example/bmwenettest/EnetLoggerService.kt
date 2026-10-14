@@ -962,6 +962,8 @@ class EnetLoggerService : Service() {
                     val combinedTrim=if(stft1!=null && ltft1!=null)
                         ((1.0+stft1/100.0)*(1.0+ltft1/100.0)-1.0)*100.0 else null
                     val fastDmeStarted=SystemClock.elapsedRealtime()
+                    val shouldSnapshotFastDid=fastDidAuditReady &&
+                        now-lastFastDidAuditMs>=5000L
                     val knockStatusData=udsData(0x4A36)
                     val knockStatus=knockStatusData?.firstOrNull()?.let{it.toInt() and 255}
                     val knockStatusMs=SystemClock.elapsedRealtime()-fastDmeStarted
@@ -998,11 +1000,12 @@ class EnetLoggerService : Service() {
                             } else batchOk++
                         }
                     } else null
-                    val knockObservedRaw=linkedMapOf<Int,ByteArray>()
+                    val knockObservedRaw=if(shouldSnapshotFastDid)
+                        linkedMapOf<Int,ByteArray>() else null
                     fun knock(did:Int)=(knockBatch?.get(did) ?: udsData(did))?.takeIf{it.size>=4}?.let{
                         // Same raw bytes as the existing decoder, sampled
                         // passively; no new ECU read or changed scale.
-                        knockObservedRaw[did]=it.copyOf()
+                        knockObservedRaw?.put(did,it.copyOf())
                         val raw=((it[0].toLong()and 255) shl 24) or ((it[1].toLong()and 255) shl 16) or ((it[2].toLong()and 255) shl 8) or (it[3].toLong()and 255)
                         raw*0.05/65536.0
                     }
@@ -1026,7 +1029,7 @@ class EnetLoggerService : Service() {
                     val iz1=ign(0x4A49); val iz2=ign(0x4A4A); val iz3=ign(0x4A4C); val iz4=ign(0x4A4D)
                     val ignitionPhaseMs=SystemClock.elapsedRealtime()-ignitionStarted
                     val fastDmeMs=SystemClock.elapsedRealtime()-fastDmeStarted
-                    if(fastDidAuditReady && now-lastFastDidAuditMs>=5000L) {
+                    if(shouldSnapshotFastDid) {
                         lastFastDidAuditMs=now
                         val snapshotWall=System.currentTimeMillis()
                         val legacyKnock=mapOf(0x4A37 to kz1,0x4A38 to kz2,
@@ -1035,7 +1038,7 @@ class EnetLoggerService : Service() {
                             0x4A37,0x4A38,0x4A39,0x4A3A,0x4A36,
                             0x5883,0x5885,0x5886,0x5888,0x554A)) {
                             val observed=if(did==0x4A36)knockStatusData
-                                else knockObservedRaw[did]
+                                else knockObservedRaw?.get(did)
                             val source=if(observed!=null)"EXISTING_READ"
                                 else "NO_ADDITIONAL_QUERY"
                             val referenceOnly=did in listOf(0x4A37,0x4A38,
