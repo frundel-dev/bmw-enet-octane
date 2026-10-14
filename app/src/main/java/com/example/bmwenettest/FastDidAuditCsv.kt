@@ -62,6 +62,24 @@ internal object FastDidAuditCsv {
         return true
     }
 
+    data class Latest(
+        val did:String,val source:String,val status:String,
+        val semanticStatus:String,val rawHex:String,
+        val legacyValue:String,val ageMs:String,val durationMs:String
+    )
+    /** Bounded offline summary. No ECU calls; O(number of candidate DIDs) RAM. */
+    fun latestSamples(lines:Sequence<String>):Map<String,Latest> {
+        val latest=linkedMapOf<String,Latest>()
+        for(line in lines) {
+            if(!validateLine(line))continue
+            val c=line.split(",")
+            if(c[10].isBlank())continue
+            latest[c[10]]=Latest(
+                c[10],c[9],c[11],c[12],c[13],c[15],c[20],c[23])
+        }
+        return latest
+    }
+
     data class Report(val total:Int,val valid:Int,val invalid:Int,
                       val fuelSessions:Set<Int>,val dids:Set<String>,
                       val statuses:Set<String>)
