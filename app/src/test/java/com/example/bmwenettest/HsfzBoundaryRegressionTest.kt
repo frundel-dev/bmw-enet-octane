@@ -46,7 +46,8 @@ class HsfzBoundaryRegressionTest {
         val control=b(0,0,0,2,0,2,0xF4,0x12)
         val reply=HsfzCodec.encode(b(0x62,0x4A,0x37,1,2))
         try {
-            HsfzCodec.readFrames(ByteArrayInputStream(control+reply.copyOf(9)))
+            HsfzCodec.readFrames(ByteArrayInputStream(control+reply.copyOf(9)),
+                expectedRequest=HsfzCodec.encode(b(0x22,0x4A,0x37)))
             fail("Partial diagnostic response must not be ignored")
         } catch(_:IOException) { }
     }
