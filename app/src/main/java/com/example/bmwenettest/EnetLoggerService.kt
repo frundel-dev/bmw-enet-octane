@@ -136,7 +136,7 @@ class EnetLoggerService : Service() {
     override fun onStartCommand(intent: Intent?, flags:Int, startId:Int):Int {
         when(intent?.action) {
             ACTION_STOP -> stopLogger()
-            else -> if(!running) {
+            else -> if(!running && pollingJob?.isActive!=true) {
                 // Guard the optimized coroutine Service independently from UI.
                 // Never poll/score anonymous fuel after first installation.
                 if(!RefuelSessionStore(this).hasCurrentFuel()) {
@@ -192,7 +192,23 @@ class EnetLoggerService : Service() {
                 "fast_sample_age_ms,rpm,load_pct,map_kpa_abs,speed_kmh,"+
                 "fast_hz,knock_valid,ignition_valid,note\n")
         }
-        pollingJob=pollingScope.launch { loop() }.also { job ->
+        pollingJob=pollingScope.launch {
+            try {
+                loop()
+            } catch(e:CancellationException) {
+                throw e
+            } catch(e:Exception) {
+                // Last-resort Service boundary: never crash AndroidRuntime because
+                // a telemetry/setup/cleanup handler itself failed.
+                running=false
+                try { socket?.close() } catch(_:Exception) {}
+                socket=null
+                try { emit("LOGGER остановлен после ошибки: ${e.javaClass.simpleName}",state="ERROR") }
+                catch(_:Exception) {}
+            } finally {
+                running=false
+            }
+        }.also { job ->
             // Completion runs only after loop() has drained all queued CSV
             // writes. Also handles STOP before the coroutine gets scheduled.
             job.invokeOnCompletion {
@@ -1712,6 +1728,7 @@ class EnetLoggerService : Service() {
             } catch(e:Exception) {
                 if(e is CancellationException)throw e
                 if(!running) break
+                try {
                 val failureAt=SystemClock.elapsedRealtime()
                 recentPollFailures.addLast(failureAt)
                 while(recentPollFailures.isNotEmpty() &&
@@ -1773,18 +1790,35 @@ class EnetLoggerService : Service() {
                 connectionEvent("RETRY",reconnects,"BACKOFF",connectionTransport,connectionIp,
                     "delay_ms=$retryMs;wifi_blocked=$vxscanWifiBlocked;failures=$consecutiveFailures")
                 if(running) delay(retryMs)
+                } catch(recoveryError:CancellationException) {
+                    throw recoveryError
+                } catch(recoveryError:Exception) {
+                    // A failed error-reporting path must not escape launch.
+                    // Fail closed rather than risking a desynchronized socket.
+                    running=false
+                    try { socket?.close() } catch(_:Exception) {}
+                    socket=null
+                    try { emit("LOGGER остановлен: ошибка восстановления",state="ERROR") }
+                    catch(_:Exception) {}
+                }
             }
         }
         } finally {
+        running=false
         highSpeedMetrics=null
-        // Drain/flush even when the Service is cancelled during a reconnect.
+        try { socket?.close() } catch(_:Exception) {}
+        socket=null
+        // Independent best-effort closing: one damaged journal must not
+        // prevent draining the primary CSV queue.
         withContext(NonCancellable) {
-        observationJournal?.close()
-        try{compareWriter?.flush();compareWriter?.close()}catch(_:Exception){}
-        csvWriter.closeAndJoin()
-        if(observationJournal?.failed==true && !journalFailureNoted)
-            connectionEvent("OBSERVATION_JOURNAL_FAILED",reconnects,
-                "FILE",connectionTransport,null,"Journal close/flush failed")
+            try { observationJournal?.close() } catch(_:Exception) {}
+            try { compareWriter?.flush();compareWriter?.close() } catch(_:Exception) {}
+            try { csvWriter.closeAndJoin() } catch(_:Exception) {}
+            if(observationJournal?.failed==true && !journalFailureNoted) {
+                try { connectionEvent("OBSERVATION_JOURNAL_FAILED",reconnects,
+                    "FILE",connectionTransport,null,"Journal close/flush failed") }
+                catch(_:Exception) {}
+            }
         }
         }
     }
