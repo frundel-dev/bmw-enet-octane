@@ -49,4 +49,17 @@ class FastDidAuditCsvTest {
         assertEquals(setOf("4A37"),audit.dids)
         assertEquals(setOf("NOT_VERIFIED"),audit.statuses)
     }
+    @Test fun latestRawViewerShowsOnlyValidatedCsvRowsAndLastAcceptedSnapshot() {
+        val raw1=FastDidAuditCsv.encode(row(2,byteArrayOf(0,0,1,1)))
+        val raw2=FastDidAuditCsv.encode(row(2,byteArrayOf(0,0,1,2)))
+        val result=FastDidAuditCsv.latestSamples(sequenceOf(
+            FastDidAuditCsv.HEADER,raw1,"broken,row",raw2))
+        assertEquals(1,result.size)
+        assertEquals("00000102",result["4A37"]?.rawHex)
+        assertEquals("NOT_VERIFIED",result["4A37"]?.status)
+        assertEquals("SEMANTICS_UNVERIFIED",result["4A37"]?.semanticStatus)
+        assertEquals("EXISTING_READ",result["4A37"]?.source)
+        assertEquals("",result["4A37"]?.durationMs)
+    }
+
 }
