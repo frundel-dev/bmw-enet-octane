@@ -150,8 +150,30 @@ class MainActivity : Activity() {
             text="G20 / B48   •   USB ENET / VXSCAN"
             textSize=12f
             setTextColor(muted)
-            setPadding(0,dp(5),0,dp(14))
+            setPadding(0,dp(5),0,dp(5))
         })
+        // Outside every ScrollView: DME and LOGGER are visible on all tabs.
+        val headerStatus=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.CENTER_VERTICAL
+            setPadding(0,0,0,dp(11))
+        }
+        homeConnection=TextView(this).apply {
+            textSize=11f
+            setTextColor(muted)
+            includeFontPadding=false
+        }
+        headerStatus.addView(homeConnection,
+            LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
+        homeCaptureState=TextView(this).apply {
+            textSize=11f
+            setTextColor(muted)
+            gravity=Gravity.END
+            includeFontPadding=false
+        }
+        headerStatus.addView(homeCaptureState,
+            LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
+        root.addView(headerStatus)
         val controls=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
             gravity=Gravity.CENTER_VERTICAL
@@ -445,12 +467,6 @@ class MainActivity : Activity() {
         // This reuses the same button and listener, without duplicate actions.
         addCard(home,controls)
 
-        val networkCard=card("СВЯЗЬ С DME И СБОР")
-        homeConnection=smallText("Отключено • ENET / VXSCAN",13f,accentBlue)
-        homeCaptureState=smallText("Диагностика остановлена",12f,tertiary)
-        networkCard.addView(homeConnection)
-        networkCard.addView(homeCaptureState)
-        addCard(home,networkCard)
         val pendingCard=card("ВОЗМОЖНАЯ НОВАЯ ЗАПРАВКА")
         pendingRefuelBanner=smallText("Ожидает подтверждения",13f,Color.rgb(255,194,102))
         pendingCard.addView(pendingRefuelBanner)
@@ -763,26 +779,20 @@ class MainActivity : Activity() {
                 "Сессия #"+pref.getInt("fuel_session_id",1))
                 .filterNotNull().joinToString("  •  ")
             else "Создай заправку для независимого исследования"
-        homeConnection.text=when(connection) {
-            Octane2UiState.Connection.CONNECTED -> "● Подключено • $transportLabel"
-            Octane2UiState.Connection.RECONNECTING -> "● Переподключение • $transportLabel"
-            Octane2UiState.Connection.CONNECTING -> "● Ожидание DME • $transportLabel"
-            Octane2UiState.Connection.ERROR -> "● Ошибка подключения • $transportLabel"
-            else -> "● Отключено • ENET / VXSCAN"
-        }
-        homeConnection.setTextColor(when(connection) {
+        val headerLabels=Octane2HeaderStatus.labels(logging,connection)
+        homeConnection.text=headerLabels.dme
+        homeCaptureState.text=headerLabels.logger
+        homeConnection.setTextColor(when(headerLabels.effectiveConnection) {
             Octane2UiState.Connection.CONNECTED -> accentGreen
             Octane2UiState.Connection.ERROR -> Color.rgb(255,134,117)
+            Octane2UiState.Connection.DISCONNECTED -> tertiary
             else -> accentBlue
         })
+        homeCaptureState.setTextColor(
+            if(headerLabels.effectiveConnection==Octane2UiState.Connection.ERROR)
+                Color.rgb(255,134,117) else tertiary)
         val paused=hasFuel && !pref.getBoolean(GuidedFuelTest.PREF_ACTIVE,false)
             && !pref.getBoolean(GuidedFuelTest.PREF_DONE,false)
-        homeCaptureState.text=if(refuelStore.hasPending())
-            "Ожидается подтверждение топлива • измерения для оценки исключены"
-            else if(pref.getFloat("mixing_remaining_km",0f)>0f)
-            "MIXING • переходный период, оценка приостановлена"
-            else Octane2UiState.stateText(
-                logging,connection,hasFuel,firstTarget,secondTarget,paused)
         if(::pendingRefuelBanner.isInitialized) {
             val pending=refuelStore.pending()
             (pendingRefuelBanner.tag as? android.view.View)?.visibility=
