@@ -388,17 +388,7 @@ class EnetLoggerService : Service() {
         })
         // A new trip ID on each LOGGER start. Not equivalent to a separate day.
         val learningTripId=System.currentTimeMillis()
-        passiveRecorder=try {
-            FastDidPassiveRecorder(
-                getSharedPreferences("bmw_native",MODE_PRIVATE),
-                csvWriter,File(getExternalFilesDir(null)?:filesDir,
-                    "bmw_fast_did_validation_v1_${learningTripId}.csv"),
-                learningTripId)
-        }catch(e:Exception) {
-            connectionEvent("FAST_DID_AUDIT_UNAVAILABLE",reconnects,"FILE",
-                "",null,"${e.javaClass.simpleName}: ${e.message}")
-            null
-        }
+        passiveRecorder=openFastDidAudit(csvWriter,learningTripId,reconnects)
         val highSpeedFile=File(getExternalFilesDir(null)?:filesDir,
             "bmw_highspeed_benchmark_v1_${learningTripId}.csv")
         val highSpeedFileAvailable=try {
@@ -1860,6 +1850,19 @@ class EnetLoggerService : Service() {
      * transaction on the single socket; the wrapper does not read ahead.
      * Null/negative/malformed responses are never marked successful.
      */
+    private fun openFastDidAudit(writer:AsyncCsvWriter,tripId:Long,
+                                 connectionEpoch:Int):FastDidPassiveRecorder? =
+        try {
+            FastDidPassiveRecorder(
+                getSharedPreferences("bmw_native",MODE_PRIVATE),writer,
+                File(getExternalFilesDir(null)?:filesDir,
+                    "bmw_fast_did_validation_v1_${tripId}.csv"),tripId)
+        }catch(e:Exception) {
+            connectionEvent("FAST_DID_AUDIT_UNAVAILABLE",connectionEpoch,
+                "FILE","",null,"${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
+
     private fun <T> measuredDiagnostic(
         channel:String,build:()->ByteArray,decode:(List<ByteArray>)->T?
     ):T? {
