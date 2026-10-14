@@ -396,6 +396,209 @@ class EnetLoggerService : Service() {
                else estimate.coerceAtMost(94)
     }
 
+
+    private data class PrimaryConnection(
+        val network:Network,val transport:String,val gatewayIp:String,
+        val viaFastPath:Boolean,val tcp:Socket
+    )
+    /** Network selection extracted from the large diagnostic coroutine state machine. */
+    private fun connectPrimaryNetwork(
+        cachedIp:String?,cachedTransport:String?,lastGoodNetwork:Network?,
+        deniedNetworks:MutableMap<Network,Long>,reconnects:Int,
+        consecutiveFailures:Int,lastSelectionLog:Long,
+        onSelectionLog:(Long)->Unit,onState:(String,String,String?)->Unit
+    ):PrimaryConnection {
+        var connectionStage="NETWORK"
+                val cm=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+                val selectionTime=SystemClock.elapsedRealtime()
+                deniedNetworks.entries.removeAll { it.value<=selectionTime }
+                val vpnNetworks=cm.allNetworks.filter { n ->
+                    cm.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN)==true
+                }
+                val candidates=cm.allNetworks.mapNotNull { n ->
+                    val caps=cm.getNetworkCapabilities(n) ?: return@mapNotNull null
+                    if(caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@mapNotNull null
+                    val kind=when {
+                        caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ETHERNET"
+                        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WIFI"
+                        else -> return@mapNotNull null
+                    }
+                    val lp=cm.getLinkProperties(n) ?: return@mapNotNull null
+                    val addresses=lp.linkAddresses.mapNotNull { it.address as? Inet4Address }
+                    if(addresses.isEmpty())return@mapNotNull null
+                    val linkLocal=addresses.any { it.isLinkLocalAddress }
+                    val priority=when {
+                        n==lastGoodNetwork -> 0
+                        kind=="ETHERNET" && linkLocal -> 1
+                        kind=="WIFI" && linkLocal -> 2
+                        kind=="ETHERNET" -> 3
+                        else -> 4
+                    }
+                    Triple(n,kind,priority)
+                }.sortedBy { it.third }
+                if(selectionTime-lastSelectionLog>15000L || reconnects==0 && lastSelectionLog==0L) {
+                    connectionEvent("NETWORK_SELECTION",reconnects,"NETWORK","ANDROID",null,
+                        "vpn_active=${vpnNetworks.isNotEmpty()};default=${cm.activeNetwork};"+
+                        "candidates=${candidates.joinToString("|") { "${it.first}:${it.second}:rank${it.third}" }};"+
+                        "denied=${deniedNetworks.keys.joinToString("|")}")
+                    onSelectionLog(selectionTime)
+                }
+                if(candidates.isEmpty()) throw IOException("No usable physical Ethernet/Wi-Fi network with IPv4 address")
+                var activeNet:Network?=null; var transport=""; var gatewayIp:String?=null; var viaFastPath=false
+                var selectedSocket:Socket?=null
+                for(candidate in candidates) {
+                    val network=candidate.first
+                    val kind=candidate.second
+                    if(deniedNetworks[network]?.let { it>SystemClock.elapsedRealtime() } == true) {
+                        connectionEvent("NETWORK_SKIPPED",reconnects+1,"NETWORK",kind,null,
+                            "network=$network;reason=previous_EPERM;retry_after_ms=${deniedNetworks[network]!!-SystemClock.elapsedRealtime()}")
+                        continue
+                    }
+                    onState(connectionStage,kind,null)
+                    fun rejectIfDenied(e:Exception,stage:String):Boolean {
+                        if(!isNetworkPermissionDenied(e))return false
+                        deniedNetworks[network]=SystemClock.elapsedRealtime()+12000L
+                        connectionEvent("NETWORK_DENIED",reconnects+1,stage,kind,null,
+                            "network=$network;type=${e.javaClass.simpleName};error=${e.message?:"unknown"};"+
+                            "vpn_active=${vpnNetworks.isNotEmpty()}")
+                        return true
+                    }
+                    val rememberedIp=cachedIp
+                    // Cached TCP is fastest after call-related interruption.
+                    if(rememberedIp!=null && kind==cachedTransport) {
+                        connectionStage="FAST_TCP"; onState(connectionStage,kind,rememberedIp)
+                        try {
+                            val quick=network.socketFactory.createSocket()
+                            try {
+                                quick.tcpNoDelay=true
+                                quick.soTimeout=1800
+                                quick.connect(InetSocketAddress(rememberedIp,6801),1300)
+                                selectedSocket=quick; activeNet=network; transport=kind; gatewayIp=rememberedIp
+                                viaFastPath=true
+                                break
+                            } catch(e:Exception) {
+                                try{quick.close()}catch(_:Exception){}
+                                throw e
+                            }
+                        } catch(e:Exception) {
+                            connectionEvent("FAST_RETRY_FAILED",reconnects+1,connectionStage,kind,rememberedIp,
+                                "network=$network;${e.javaClass.simpleName}: ${e.message?:"no details"}")
+                            if(rejectIfDenied(e,connectionStage)) continue
+                            if(consecutiveFailures<2) continue
+                        }
+                    }
+                    // Discovery may fail when Android denies Network.bindSocket under VPN.
+                    // Handle that per candidate, not by aborting the entire connection attempt.
+                    connectionStage="DISCOVERY"; onState(connectionStage,kind,null)
+                    val broadcasts=ipv4Broadcasts(cm.getLinkProperties(network))
+                    if(broadcasts.isEmpty())continue
+                    val found=try {
+                        emit("DISCOVERY $kind network=$network • UDP 6811 • attempt ${reconnects+1}")
+                        discover(network,broadcasts)
+                    } catch(e:Exception) {
+                        if(!rejectIfDenied(e,connectionStage)) {
+                            connectionEvent("DISCOVERY_FAILED",reconnects+1,connectionStage,kind,null,
+                                "network=$network;${e.javaClass.simpleName}: ${e.message?:"no details"}")
+                        }
+                        null
+                    } ?: continue
+                    connectionStage="TCP"; onState(connectionStage,kind,found.ip)
+                    onState(connectionStage,kind,found.ip)
+                    emit("GATEWAY $kind ${found.ip}:6801 • network=$network")
+                    var candidateSocket:Socket?=null
+                    try {
+                        candidateSocket=network.socketFactory.createSocket()
+                        candidateSocket.tcpNoDelay=true
+                        candidateSocket.soTimeout=1800
+                        candidateSocket.connect(InetSocketAddress(found.ip,6801),2000)
+                        selectedSocket=candidateSocket; activeNet=network; transport=kind; gatewayIp=found.ip
+                        break
+                    } catch(e:Exception) {
+                        try{candidateSocket?.close()}catch(_:Exception){}
+                        connectionEvent("TCP_FAILED",reconnects+1,connectionStage,kind,found.ip,
+                            "network=$network;${e.javaClass.simpleName}: ${e.message?:"no details"}")
+                        rejectIfDenied(e,connectionStage)
+                    }
+                }
+                if(activeNet==null || gatewayIp==null) throw IOException("HSFZ gateway unavailable after cached TCP and UDP discovery")
+        return PrimaryConnection(activeNet!!,transport,gatewayIp!!,viaFastPath,selectedSocket!!)
+    }
+
+
+    /** Monitor is after FAST, and always uses the same primary socket. */
+    private data class MonitorOutcome(
+        val status:String,val durationMs:Long,val failure:IOException?=null
+    )
+
+    /** Separate synchronous function: keeps ART away from an oversized coroutine body. */
+    private fun executeDmeMonitorTask(
+        task:DmeMonitorPolicy.Task,monitorPolicy:DmeMonitorPolicy,
+        probeResults:MutableMap<Int,DmeReadOnlyProbe.Result>,
+        readStarted:Long,started:Long,cycleStart:Long,
+        transport:String,pollModeActive:String,
+        rpm:Double?,load:Double?,map:Double?,speed:Double?,hz:Double,
+        reconnects:Int,connectionStage:String,gatewayIp:String?
+    ):MonitorOutcome {
+        val request=task.request()
+        try {
+            val reply=readDmeMonitor(task)
+            val readDone=SystemClock.elapsedRealtime()
+            val duration=readDone-readStarted
+            val status=reply.first
+            val raw=reply.second
+            val decoded=if(status=="OK" && task.service==0x22) {
+                val spec=DmeReadOnlyProbe.specs.first{it.did==task.did}
+                val parsed=DmeReadOnlyProbe.parse(spec,listOf(raw))
+                probeResults[task.did]=parsed
+                parsed.decodedCandidate
+            } else if(status=="OK" && task.service==0x19) {
+                val parsed=DmeHistoryProtocol.parseDtcList(raw)
+                    ?: throw IOException("Malformed DTC monitor response")
+                "DTC returned=${parsed.size}; confirmed=${parsed.count{(it.status and 8)!=0}}"
+            } else ""
+            if(status=="UNSUPPORTED")monitorPolicy.unsupported(task)
+            try {
+                dmeMonitorFile?.appendText(DmeHistoryProtocol.csv(
+                    System.currentTimeMillis(),readDone-started,transport,
+                    pollModeActive,"%02X".format(task.service),task.label,
+                    DmeHistoryProtocol.hex(request),
+                    DmeHistoryProtocol.hex(raw),status,decoded,
+                    duration,readStarted-cycleStart,rpm,load,map,speed,
+                    hz,4,4,
+                    "read-only; no RON conversion; FAST read completed before this request"
+                )+"\\n")
+            } catch(_:IOException) {}
+            return MonitorOutcome(status,duration)
+        } catch(cancelled:CancellationException) {
+            throw cancelled
+        } catch(e:Exception) {
+            val duration=SystemClock.elapsedRealtime()-readStarted
+            monitorPolicy.suspend()
+            try {
+                dmeMonitorFile?.appendText(DmeHistoryProtocol.csv(
+                    System.currentTimeMillis(),SystemClock.elapsedRealtime()-started,
+                    transport,pollModeActive,
+                    "%02X".format(task.service),task.label,
+                    DmeHistoryProtocol.hex(request),"","TRANSPORT_UNCERTAIN","",
+                    duration,SystemClock.elapsedRealtime()-cycleStart,
+                    rpm,load,map,speed,hz,4,4,
+                    "${e.javaClass.simpleName}: ${e.message}; monitor disabled until LOGGER restart"
+                )+"\\n")
+            } catch(_:IOException){}
+            // Fail-closed BEFORE further reporting: no late response may leak
+            // into the next FAST request after an uncertain monitor read.
+            try{socket?.close()}catch(_:Exception){}
+            socket=null
+            try {
+                connectionEvent("DME_MONITOR_SUSPENDED",reconnects,connectionStage,
+                    transport,gatewayIp,
+                    "id=${task.label};reason=${e.javaClass.simpleName};${e.message}")
+            }catch(_:Exception){}
+            return MonitorOutcome("SUSPENDED",duration,
+                IOException("DME Monitor response uncertain; reconnect safely",e))
+        }
+    }
+
     private suspend fun loop() {
         val started=SystemClock.elapsedRealtime(); var samples=0; var reconnects=0
         val ramFrameReader=HsfzReusableReader()
@@ -624,117 +827,20 @@ class EnetLoggerService : Service() {
         while(running) {
             try {
                 connectionStage="NETWORK"; connectionTransport=""; connectionIp=null
-                val cm=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-                val selectionTime=SystemClock.elapsedRealtime()
-                deniedNetworks.entries.removeAll { it.value<=selectionTime }
-                val vpnNetworks=cm.allNetworks.filter { n ->
-                    cm.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN)==true
-                }
-                val candidates=cm.allNetworks.mapNotNull { n ->
-                    val caps=cm.getNetworkCapabilities(n) ?: return@mapNotNull null
-                    if(caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@mapNotNull null
-                    val kind=when {
-                        caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ETHERNET"
-                        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "WIFI"
-                        else -> return@mapNotNull null
-                    }
-                    val lp=cm.getLinkProperties(n) ?: return@mapNotNull null
-                    val addresses=lp.linkAddresses.mapNotNull { it.address as? Inet4Address }
-                    if(addresses.isEmpty())return@mapNotNull null
-                    val linkLocal=addresses.any { it.isLinkLocalAddress }
-                    val priority=when {
-                        n==lastGoodNetwork -> 0
-                        kind=="ETHERNET" && linkLocal -> 1
-                        kind=="WIFI" && linkLocal -> 2
-                        kind=="ETHERNET" -> 3
-                        else -> 4
-                    }
-                    Triple(n,kind,priority)
-                }.sortedBy { it.third }
-                if(selectionTime-lastSelectionLog>15000L || reconnects==0 && lastSelectionLog==0L) {
-                    connectionEvent("NETWORK_SELECTION",reconnects,"NETWORK","ANDROID",null,
-                        "vpn_active=${vpnNetworks.isNotEmpty()};default=${cm.activeNetwork};"+
-                        "candidates=${candidates.joinToString("|") { "${it.first}:${it.second}:rank${it.third}" }};"+
-                        "denied=${deniedNetworks.keys.joinToString("|")}")
-                    lastSelectionLog=selectionTime
-                }
-                if(candidates.isEmpty()) throw IOException("No usable physical Ethernet/Wi-Fi network with IPv4 address")
-                var activeNet:Network?=null; var transport=""; var gatewayIp:String?=null; var viaFastPath=false
-                for(candidate in candidates) {
-                    val network=candidate.first
-                    val kind=candidate.second
-                    if(deniedNetworks[network]?.let { it>SystemClock.elapsedRealtime() } == true) {
-                        connectionEvent("NETWORK_SKIPPED",reconnects+1,"NETWORK",kind,null,
-                            "network=$network;reason=previous_EPERM;retry_after_ms=${deniedNetworks[network]!!-SystemClock.elapsedRealtime()}")
-                        continue
-                    }
-                    connectionTransport=kind
-                    fun rejectIfDenied(e:Exception,stage:String):Boolean {
-                        if(!isNetworkPermissionDenied(e))return false
-                        deniedNetworks[network]=SystemClock.elapsedRealtime()+12000L
-                        connectionEvent("NETWORK_DENIED",reconnects+1,stage,kind,null,
-                            "network=$network;type=${e.javaClass.simpleName};error=${e.message?:"unknown"};"+
-                            "vpn_active=${vpnNetworks.isNotEmpty()}")
-                        return true
-                    }
-                    val rememberedIp=cachedIp
-                    // Cached TCP is fastest after call-related interruption.
-                    if(rememberedIp!=null && kind==cachedTransport) {
-                        connectionStage="FAST_TCP"
-                        try {
-                            val quick=network.socketFactory.createSocket()
-                            try {
-                                quick.tcpNoDelay=true
-                                quick.soTimeout=1800
-                                quick.connect(InetSocketAddress(rememberedIp,6801),1300)
-                                socket=quick; activeNet=network; transport=kind; gatewayIp=rememberedIp
-                                viaFastPath=true
-                                break
-                            } catch(e:Exception) {
-                                try{quick.close()}catch(_:Exception){}
-                                throw e
-                            }
-                        } catch(e:Exception) {
-                            connectionEvent("FAST_RETRY_FAILED",reconnects+1,connectionStage,kind,rememberedIp,
-                                "network=$network;${e.javaClass.simpleName}: ${e.message?:"no details"}")
-                            if(rejectIfDenied(e,connectionStage)) continue
-                            if(consecutiveFailures<2) continue
-                        }
-                    }
-                    // Discovery may fail when Android denies Network.bindSocket under VPN.
-                    // Handle that per candidate, not by aborting the entire connection attempt.
-                    connectionStage="DISCOVERY"
-                    val broadcasts=ipv4Broadcasts(cm.getLinkProperties(network))
-                    if(broadcasts.isEmpty())continue
-                    val found=try {
-                        emit("DISCOVERY $kind network=$network • UDP 6811 • attempt ${reconnects+1}")
-                        discover(network,broadcasts)
-                    } catch(e:Exception) {
-                        if(!rejectIfDenied(e,connectionStage)) {
-                            connectionEvent("DISCOVERY_FAILED",reconnects+1,connectionStage,kind,null,
-                                "network=$network;${e.javaClass.simpleName}: ${e.message?:"no details"}")
-                        }
-                        null
-                    } ?: continue
-                    connectionStage="TCP"
-                    connectionIp=found.ip
-                    emit("GATEWAY $kind ${found.ip}:6801 • network=$network")
-                    var candidateSocket:Socket?=null
-                    try {
-                        candidateSocket=network.socketFactory.createSocket()
-                        candidateSocket.tcpNoDelay=true
-                        candidateSocket.soTimeout=1800
-                        candidateSocket.connect(InetSocketAddress(found.ip,6801),2000)
-                        socket=candidateSocket; activeNet=network; transport=kind; gatewayIp=found.ip
-                        break
-                    } catch(e:Exception) {
-                        try{candidateSocket?.close()}catch(_:Exception){}
-                        connectionEvent("TCP_FAILED",reconnects+1,connectionStage,kind,found.ip,
-                            "network=$network;${e.javaClass.simpleName}: ${e.message?:"no details"}")
-                        rejectIfDenied(e,connectionStage)
-                    }
-                }
-                if(activeNet==null || gatewayIp==null) throw IOException("HSFZ gateway unavailable after cached TCP and UDP discovery")
+                val selected=connectPrimaryNetwork(
+                    cachedIp,cachedTransport,lastGoodNetwork,deniedNetworks,
+                    reconnects,consecutiveFailures,lastSelectionLog,
+                    onSelectionLog={lastSelectionLog=it},
+                    onState={stage,kind,ip->
+                        connectionStage=stage
+                        connectionTransport=kind
+                        connectionIp=ip
+                    })
+                val activeNet=selected.network
+                val transport=selected.transport
+                val gatewayIp=selected.gatewayIp
+                val viaFastPath=selected.viaFastPath
+                socket=selected.tcp
                 cachedIp=gatewayIp; cachedTransport=transport; connectionIp=gatewayIp
                 lastGoodNetwork=activeNet
                 deniedNetworks.remove(activeNet)
@@ -1671,66 +1777,20 @@ class EnetLoggerService : Service() {
                         val task=monitorPolicy.choose(SystemClock.elapsedRealtime(),
                             completedFast,cycleMs,r,l,m,speed)
                         if(task!=null) {
-                            val request=task.request()
                             val readStarted=SystemClock.elapsedRealtime()
                             monitorPolicy.issued(task,readStarted)
-                            try {
-                                val reply=readDmeMonitor(task)
-                                val readDone=SystemClock.elapsedRealtime()
-                                monitorLastDuration=readDone-readStarted
-                                monitorLastId=task.label
-                                val status=reply.first
-                                monitorState=status
-                                val raw=reply.second
-                                val decoded=if(status=="OK" && task.service==0x22) {
-                                    val spec=DmeReadOnlyProbe.specs.first{it.did==task.did}
-                                    val parsed=DmeReadOnlyProbe.parse(spec,listOf(raw))
-                                    dmeProbeResults[task.did]=parsed
-                                    parsed.decodedCandidate
-                                } else if(status=="OK" && task.service==0x19) {
-                                    val parsed=DmeHistoryProtocol.parseDtcList(raw)
-                                    if(parsed==null)throw IOException("Malformed DTC monitor response")
-                                    "DTC returned=${parsed.size}; confirmed=${parsed.count{(it.status and 8)!=0}}"
-                                } else ""
-                                if(status=="OK")monitorOk++
-                                else if(status=="UNSUPPORTED")monitorPolicy.unsupported(task)
-                                try {
-                                    dmeMonitorFile?.appendText(DmeHistoryProtocol.csv(
-                                        System.currentTimeMillis(),readDone-started,transport,
-                                        pollModeActive,"%02X".format(task.service),task.label,
-                                        DmeHistoryProtocol.hex(request),
-                                        DmeHistoryProtocol.hex(raw),status,decoded,
-                                        monitorLastDuration,readStarted-cycleStart,r,l,m,speed,
-                                        hz,4,4,
-                                        "read-only; no RON conversion; FAST read completed before this request"
-                                    )+"\n")
-                                } catch(_:IOException) { /* Keep ECU polling alive on CSV failure. */ }
-                            } catch(e:Exception) {
+                            val outcome=executeDmeMonitorTask(task,monitorPolicy,
+                                dmeProbeResults,readStarted,started,cycleStart,
+                                transport,pollModeActive,r,l,m,speed,hz,
+                                reconnects,connectionStage,gatewayIp)
+                            monitorLastDuration=outcome.durationMs
+                            monitorLastId=task.label
+                            monitorState=outcome.status
+                            if(outcome.failure!=null) {
                                 monitorErrors++
-                                monitorState="SUSPENDED"
-                                monitorLastId=task.label
-                                monitorLastDuration=SystemClock.elapsedRealtime()-readStarted
-                                monitorPolicy.suspend()
-                                try {
-                                    dmeMonitorFile?.appendText(DmeHistoryProtocol.csv(
-                                        System.currentTimeMillis(),SystemClock.elapsedRealtime()-started,
-                                        transport,pollModeActive,
-                                        "%02X".format(task.service),task.label,
-                                        DmeHistoryProtocol.hex(request),"","TRANSPORT_UNCERTAIN","",
-                                        monitorLastDuration,SystemClock.elapsedRealtime()-cycleStart,
-                                        r,l,m,speed,hz,4,4,
-                                        "${e.javaClass.simpleName}: ${e.message}; monitor disabled until LOGGER restart"
-                                    )+"\n")
-                                }catch(_:IOException){}
-                                connectionEvent("DME_MONITOR_SUSPENDED",reconnects,connectionStage,
-                                    transport,gatewayIp,
-                                    "id=${task.label};reason=${e.javaClass.simpleName};${e.message}")
-                                // An idle-header timeout can precede a late ECU
-                                // reply. Reusing this stream for FAST risks
-                                // consuming the late response: close/reconnect.
-                                try{socket?.close()}catch(_:Exception){}
-                                throw IOException("DME Monitor response uncertain; reconnect safely",e)
+                                throw outcome.failure
                             }
+                            if(outcome.status=="OK") monitorOk++
                         }
                     }
                 }
@@ -1842,9 +1902,16 @@ class EnetLoggerService : Service() {
         val savedTimeout=s.soTimeout
         try {
             s.soTimeout=750
-            s.getOutputStream().write(hsfz(request))
+            val packet=hsfz(request)
+            s.getOutputStream().write(packet)
             s.getOutputStream().flush()
-            val response=readFrames(s.getInputStream())
+            val response=HsfzCodec.readFrames(
+                s.getInputStream(),
+                expectedRequest=packet,
+                onAlive={ reply ->
+                    s.getOutputStream().write(reply)
+                    s.getOutputStream().flush()
+                })
                 .mapNotNull { payload(it) }.firstOrNull()
                 ?: throw IOException("Monitor response timeout or empty")
             if(response.size>DmeHistoryProtocol.MAX_RESPONSE_BYTES)
