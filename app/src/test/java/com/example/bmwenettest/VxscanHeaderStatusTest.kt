@@ -26,7 +26,7 @@ class VxscanHeaderStatusTest {
 
     @Test fun disconnectedLostAndUnavailableAreDistinct() {
         assertEquals(T.OFF,VxscanHeaderStatus.label(P.OFF).tone)
-        assertTrue(VxscanHeaderStatus.label(P.OFF).text.contains("выключен"))
+        assertTrue(VxscanHeaderStatus.label(P.OFF).text.contains("режим выкл."))
         assertTrue(VxscanHeaderStatus.label(P.LOST).text.contains("потеряна"))
         assertTrue(VxscanHeaderStatus.label(P.UNAVAILABLE).text.contains("недоступно"))
         for(phase in listOf(P.LOST,P.UNAVAILABLE,P.ERROR))
