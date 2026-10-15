@@ -8,11 +8,13 @@ internal object Octane2HeaderStatus {
         val effectiveConnection:Octane2UiState.Connection
     )
 
-    fun labels(logging:Boolean,connection:Octane2UiState.Connection):Labels {
+    fun labels(logging:Boolean,connection:Octane2UiState.Connection,
+               freshDme:Boolean=true):Labels {
         // The live ENET socket belongs to LOGGER. A cached CONNECTED value
         // cannot survive a stopped Service.
         val state=if(logging)connection else Octane2UiState.Connection.DISCONNECTED
-        val dme=when(state) {
+        val stale=logging && state==Octane2UiState.Connection.CONNECTED && !freshDme
+        val dme=if(stale) "● DME: нет свежих данных" else when(state) {
             Octane2UiState.Connection.CONNECTED -> "● DME: подключено"
             Octane2UiState.Connection.CONNECTING -> "● DME: подключение"
             Octane2UiState.Connection.RECONNECTING -> "● DME: переподключение"
@@ -21,6 +23,7 @@ internal object Octane2HeaderStatus {
         }
         val logger=when {
             !logging -> "LOGGER: остановлен"
+            stale -> "LOGGER: нет данных"
             state==Octane2UiState.Connection.CONNECTED -> "LOGGER: сбор"
             state==Octane2UiState.Connection.RECONNECTING -> "LOGGER: восстановление"
             state==Octane2UiState.Connection.ERROR -> "LOGGER: ошибка"

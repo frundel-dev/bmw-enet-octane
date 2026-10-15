@@ -38,4 +38,15 @@ class Octane2HeaderStatusTest {
         assertEquals("● DME: нет связи",disconnected.dme)
         assertEquals("LOGGER: ожидание",disconnected.logger)
     }
+    @Test fun staleDataIsNotReportedAsActiveDmeCollection() {
+        val labels=Octane2HeaderStatus.labels(true,C.CONNECTED,freshDme=false)
+        assertEquals("● DME: нет свежих данных",labels.dme)
+        assertEquals("LOGGER: нет данных",labels.logger)
+        val recovered=Octane2HeaderStatus.labels(true,C.CONNECTED,freshDme=true)
+        assertEquals("● DME: подключено",recovered.dme)
+        assertEquals("LOGGER: сбор",recovered.logger)
+        val awaiting=Octane2HeaderStatus.labels(true,C.CONNECTING,freshDme=false)
+        assertEquals("LOGGER: ожидание",awaiting.logger)
+    }
+
 }

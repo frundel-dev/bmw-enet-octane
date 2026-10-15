@@ -185,6 +185,11 @@ internal object VxscanLocalOnlyPolicy {
     }
     fun shouldAutoRequest(optedIn:Boolean,activeRequest:Boolean):Boolean =
         optedIn && !activeRequest
+
+    fun needsForegroundRerequest(phase:VxscanLocalOnlyWifi.Phase):Boolean =
+        phase==VxscanLocalOnlyWifi.Phase.LOST ||
+        phase==VxscanLocalOnlyWifi.Phase.UNAVAILABLE ||
+        phase==VxscanLocalOnlyWifi.Phase.ERROR
     fun validate(ssid:String,password:String):String? {
         if(ssid.isBlank() || ssid.toByteArray(Charsets.UTF_8).size>32 ||
             ssid.any { it.isISOControl() })

@@ -20,4 +20,24 @@ class VxscanLocalOnlyLifecycleTest {
         assertTrue(VxscanLocalOnlyPolicy.shouldBlockWithoutReady(false,true,false))
         assertFalse(VxscanLocalOnlyPolicy.shouldBlockWithoutReady(false,false,false))
     }
+    @Test fun foregroundReRequestOnlyIfApprovedWifiRequestIsTerminal() {
+        val terminal=listOf(
+            VxscanLocalOnlyWifi.Phase.LOST,
+            VxscanLocalOnlyWifi.Phase.UNAVAILABLE,
+            VxscanLocalOnlyWifi.Phase.ERROR
+        )
+        val ongoing=listOf(
+            VxscanLocalOnlyWifi.Phase.OFF,
+            VxscanLocalOnlyWifi.Phase.REQUESTING,
+            VxscanLocalOnlyWifi.Phase.WAITING_IP,
+            VxscanLocalOnlyWifi.Phase.READY
+        )
+        terminal.forEach {
+            assertTrue(VxscanLocalOnlyPolicy.needsForegroundRerequest(it))
+        }
+        ongoing.forEach {
+            assertFalse(VxscanLocalOnlyPolicy.needsForegroundRerequest(it))
+        }
+    }
+
 }

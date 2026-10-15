@@ -21,6 +21,8 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 
 class EnetLoggerService : Service() {
     companion object {
@@ -104,6 +106,9 @@ class EnetLoggerService : Service() {
         // competing second TCP connection while the live logger is active.
         @Volatile var isLoggerActive:Boolean = false
             private set
+        @Volatile private var lastFreshDmeAtMs=0L
+        fun hasFreshDme(nowMs:Long=SystemClock.elapsedRealtime()):Boolean =
+            LoggerHealthPolicy.freshness(isLoggerActive,lastFreshDmeAtMs,nowMs)
     }
     // One coroutine owns the primary TCP socket; never run overlapping UDS reads.
     private val pollingDispatcher=Executors.newSingleThreadExecutor().asCoroutineDispatcher()
@@ -120,7 +125,11 @@ class EnetLoggerService : Service() {
     private var dmeMonitorFile: File? = null
     @Volatile private var steadyTargetSnapshot:SteadyTargets.Snapshot?=null
     private val connectionLogLock = Any()
-    private var socket: Socket? = null
+    @Volatile private var socket: Socket? = null
+    @Volatile private var healthState=LoggerHealthPolicy.start(0L)
+    @Volatile private var healthGeneration=0
+    private val healthScope=CoroutineScope(SupervisorJob()+Dispatchers.Default)
+    private var healthJob:Job?=null
     private var logFile: File? = null
     // Accessed only by the one primary DME polling coroutine.
     private var highSpeedMetrics:HighSpeedMetrics?=null
@@ -135,7 +144,11 @@ class EnetLoggerService : Service() {
     }
     override fun onStartCommand(intent: Intent?, flags:Int, startId:Int):Int {
         when(intent?.action) {
-            ACTION_STOP -> stopLogger()
+            ACTION_STOP -> {
+                connectionEvent("LOGGER_STOP_REQUEST",0,"LIFECYCLE","ANDROID",null,
+                    "stop requested by app UI or Service intent")
+                stopLogger()
+            }
             ACTION_START -> if(!running && pollingJob?.isActive!=true) {
                 val reservation=VxscanLocalOnlyWifi.snapshot()
                 if(VxscanLocalOnlyWifi.reservationRequired(this) &&
@@ -167,7 +180,62 @@ class EnetLoggerService : Service() {
         .setContentTitle("BMW OCTANE 2.0 LAB").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
 
+    /**
+     * Independent watchdog: never performs UDS, HSFZ, reads or reconnects.
+     * Closing the CURRENT socket interrupts the single owning poll coroutine,
+     * which uses its existing serialized disconnect/reconnect and CSV cleanup.
+     */
+    private fun startHealthWatch() {
+        val generation=healthGeneration
+        healthJob?.cancel()
+        healthJob=healthScope.launch {
+            var warnedPhase:LoggerHealthPolicy.Snapshot?=null
+            var closedPhase:LoggerHealthPolicy.Snapshot?=null
+            while(isActive && running && healthGeneration==generation) {
+                delay(1000L)
+                if(!running || healthGeneration!=generation)break
+                val snapshot=healthState
+                val now=SystemClock.elapsedRealtime()
+                val age=(now-snapshot.phaseSinceMs).coerceAtLeast(0L)
+                when(LoggerHealthPolicy.action(snapshot,now)) {
+                    LoggerHealthPolicy.Action.NONE -> Unit
+                    LoggerHealthPolicy.Action.WARN -> {
+                        if(warnedPhase!==snapshot) {
+                            warnedPhase=snapshot
+                            connectionEvent("LOGGER_HEALTH_STALL",snapshot.epoch,
+                                snapshot.phase.name,"WATCHDOG",null,
+                                "phase_age_ms=$age;last_cycle_ms=${snapshot.lastCycleAtMs};"+
+                                "last_valid_ms=${snapshot.lastValidAtMs}")
+                        }
+                    }
+                    LoggerHealthPolicy.Action.CLOSE_SOCKET -> {
+                        if(closedPhase!==snapshot) {
+                            closedPhase=snapshot
+                            val active=socket
+                            connectionEvent("LOGGER_HEALTH_RECOVERY",snapshot.epoch,
+                                snapshot.phase.name,"WATCHDOG",null,
+                                "phase_age_ms=$age;socket_present=${active!=null};"+
+                                "socket_open=${active?.isClosed==false};phase_only=true")
+                            if(active!=null && !active.isClosed && running &&
+                                healthGeneration==generation &&
+                                healthState===snapshot && socket===active) {
+                                // Socket.close interrupts a blocked read without
+                                // ever creating a competing socket reader.
+                                try{active.close()}catch(_:Exception){}
+                            }
+                            sendBroadcast(Intent(ACTION_STATUS).setPackage(packageName)
+                                .putExtra(EXTRA_STATUS,"LOGGER_HEALTH_STALE: reconnect pending"))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private fun startLogger() {
+        healthGeneration++
+        healthState=LoggerHealthPolicy.start(SystemClock.elapsedRealtime())
+        lastFreshDmeAtMs=0L
         isLoggerActive=true
         running=true
         startForeground(7,notification("Connecting…"))
@@ -204,6 +272,7 @@ class EnetLoggerService : Service() {
                 "fast_sample_age_ms,rpm,load_pct,map_kpa_abs,speed_kmh,"+
                 "fast_hz,knock_valid,ignition_valid,note\n")
         }
+        startHealthWatch()
         pollingJob=pollingScope.launch {
             try {
                 loop()
@@ -226,6 +295,10 @@ class EnetLoggerService : Service() {
             // writes. Also handles STOP before the coroutine gets scheduled.
             job.invokeOnCompletion {
                 if(!running) {
+                    healthJob?.cancel()
+                    healthGeneration++
+                    lastFreshDmeAtMs=0L
+                    healthState=LoggerHealthPolicy.start(0L)
                     isLoggerActive=false
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
@@ -263,6 +336,10 @@ class EnetLoggerService : Service() {
 
     private fun stopLogger() {
         running=false
+        healthGeneration++
+        healthJob?.cancel()
+        lastFreshDmeAtMs=0L
+        healthState=LoggerHealthPolicy.start(0L)
         // Preserve an approved local-only Wi-Fi session while UI is visible:
         // STOP followed by START must not silently fall back to normal Wi-Fi.
         VxscanLocalOnlyWifi.releaseUnlessUiVisible(this)
@@ -273,6 +350,13 @@ class EnetLoggerService : Service() {
         // loop() releases the foreground service only after all writers close.
     }
     override fun onDestroy() {
+        connectionEvent("LOGGER_SERVICE_DESTROY",0,"LIFECYCLE","ANDROID",null,
+            "running=$running;active=$isLoggerActive;job_active=${pollingJob?.isActive}")
+        healthGeneration++
+        healthJob?.cancel()
+        healthScope.cancel()
+        lastFreshDmeAtMs=0L
+        healthState=LoggerHealthPolicy.start(0L)
         VxscanLocalOnlyWifi.releaseUnlessUiVisible(this)
         androidNetworkMonitor?.stop(); androidNetworkMonitor=null
         running=false;try{socket?.close()}catch(_:Exception){}
@@ -876,6 +960,8 @@ class EnetLoggerService : Service() {
                 lastGoodNetwork=activeNet
                 deniedNetworks.remove(activeNet)
                 connectionTransport=transport; connectionStage="POLL"; emptyPolls=0
+                healthState=LoggerHealthPolicy.connected(healthState,
+                    SystemClock.elapsedRealtime(),reconnects)
                 consecutiveFailures=0
                 pollModeActive=if(experimentalRollback)"A" else requestedPollMode
                 activatePollingMode(pollModeActive,activeNet!!,gatewayIp!!,
@@ -926,6 +1012,7 @@ class EnetLoggerService : Service() {
                             transport,gatewayIp,"profile=${highSpeedProfile.name}")
                     }
                     val cycleStart=SystemClock.elapsedRealtime()
+                    healthState=LoggerHealthPolicy.cycleStarted(healthState,cycleStart)
                     highSpeedCycle++
                     var slowRequestCount=0
                     val obdStarted=SystemClock.elapsedRealtime()
@@ -1710,6 +1797,10 @@ class EnetLoggerService : Service() {
                         steadyTargetTracker.progress(now).dwellMs,
                         sessionScore,sessionConfidence
                     ))
+                    healthState=LoggerHealthPolicy.cycleFinished(healthState,
+                        SystemClock.elapsedRealtime(),r!=null && m!=null)
+                    if(r!=null && m!=null)
+                        lastFreshDmeAtMs=healthState.lastValidAtMs
                     emitOctane2(obdRpm,ramRpm,ramPolicy.state.name,
                         freshActualLambda?.lambda,freshActualLambda?.sourcePid)
                     // Record all completed FAST cycles, regardless of CAPTURE,
@@ -1829,6 +1920,8 @@ class EnetLoggerService : Service() {
                 if(e is CancellationException)throw e
                 if(!running) break
                 val failureAt=SystemClock.elapsedRealtime()
+                lastFreshDmeAtMs=0L
+                healthState=LoggerHealthPolicy.reconnecting(healthState,failureAt)
                 // A failure BEFORE reaching the POLL state is discovery /
                 // network provisioning, not proof of a broken FAST poll.
                 // Do not silently downgrade B+ merely because Wi-Fi was absent.
