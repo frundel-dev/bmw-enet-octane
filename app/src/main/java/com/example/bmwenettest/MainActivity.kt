@@ -112,6 +112,12 @@ class MainActivity : Activity() {
     private val accentBlue=Color.rgb(89,171,255)
     private val accentGreen=Color.rgb(75,219,183)
     private val tertiary=Color.rgb(158,175,196)
+    private val healthHeaderTick=object:Runnable {
+        override fun run() {
+            if(::homeFuelTitle.isInitialized)renderHomeState()
+            main.postDelayed(this,2000L)
+        }
+    }
     private val fastStaleClear=Runnable {
         showFastTelemetry(null,null,null,-1,0L)
         lastActualLambda=null
@@ -694,7 +700,7 @@ class MainActivity : Activity() {
                     val r=intent.getDoubleExtra(EnetLoggerService.EXTRA_RPM,Double.NaN)
                     val m=intent.getDoubleExtra(EnetLoggerService.EXTRA_MAP,Double.NaN)
                     val l=intent.getDoubleExtra(EnetLoggerService.EXTRA_LOAD,Double.NaN)
-                    if(logging && (r.isFinite() || m.isFinite()))
+                    if(logging && r.isFinite() && m.isFinite())
                         connection=Octane2UiState.Connection.CONNECTED
                     lastFastReceivedAt=SystemClock.elapsedRealtime()
                     latestRpm=r.takeIf{it.isFinite()}
@@ -740,7 +746,9 @@ class MainActivity : Activity() {
                     message.startsWith("ENET reconnect",true) ->
                         connection=Octane2UiState.Connection.RECONNECTING
                     message.startsWith("CONNECTED ",true) ->
-                        connection=Octane2UiState.Connection.CONNECTED
+                        connection=Octane2UiState.Connection.CONNECTING
+                    message.startsWith("LOGGER_HEALTH_STALE",true) ->
+                        connection=Octane2UiState.Connection.RECONNECTING
                     message.startsWith("DISCOVERY ",true) ||
                     message.startsWith("GATEWAY ",true) ->
                         connection=Octane2UiState.Connection.CONNECTING
@@ -843,7 +851,8 @@ class MainActivity : Activity() {
                 "Сессия #"+pref.getInt("fuel_session_id",1))
                 .filterNotNull().joinToString("  •  ")
             else "Создай заправку для независимого исследования"
-        val headerLabels=Octane2HeaderStatus.labels(logging,connection)
+        val headerLabels=Octane2HeaderStatus.labels(logging,connection,
+            EnetLoggerService.hasFreshDme())
         homeConnection.text=headerLabels.dme
         homeCaptureState.text=headerLabels.logger
         homeConnection.setTextColor(when(headerLabels.effectiveConnection) {
@@ -918,6 +927,8 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        main.removeCallbacks(healthHeaderTick)
+        main.post(healthHeaderTick)
         autoStartLocalOnlyWifiIfEnabled()
         refreshHeaderWifiStatus(VxscanLocalOnlyWifi.snapshot().phase)
         if(::homeFuelTitle.isInitialized) {
@@ -938,6 +949,11 @@ class MainActivity : Activity() {
             refreshGuidedPanel()
             if(refuelStore.hasPending())maybeOfferStationaryRefuel()
         }
+    }
+
+    override fun onPause() {
+        main.removeCallbacks(healthHeaderTick)
+        super.onPause()
     }
 
     // Android < 13 has no RECEIVER_NOT_EXPORTED overload. The only caller
@@ -2792,6 +2808,7 @@ class MainActivity : Activity() {
     // Legacy bmw_fuel_events.csv is a read-only archive. All new
     // confirmations are durable RefuelSessionStore transitions.
     override fun onDestroy() {
+        main.removeCallbacks(healthHeaderTick)
         main.removeCallbacks(fastStaleClear)
         guidedUiRefresh?.let { main.removeCallbacks(it) }
         guidedUiRefresh=null
