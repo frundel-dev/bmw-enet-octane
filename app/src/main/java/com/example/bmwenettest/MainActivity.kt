@@ -13,6 +13,8 @@ import android.os.Build
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
+import android.location.LocationManager
 import android.os.Bundle
 import android.os.SystemClock
 import java.io.File
@@ -43,6 +45,9 @@ class MainActivity : Activity() {
     private var pendingLocalOnlySsid:String?=null
     private var pendingLocalOnlyPassword:String?=null
     private var pendingLocalOnlyBssid:String?=null
+    private var pendingWifiScanSsidInput:EditText?=null
+    private var pendingWifiScanBssidInput:EditText?=null
+    private val WIFI_SCAN_PERMISSION_REQUEST=6213
     private val LOCAL_ONLY_WIFI_PERMISSION_REQUEST=6212
     private var liveLearningRpm:Double? = null
     private var liveLearningLoad:Double? = null
@@ -215,7 +220,14 @@ class MainActivity : Activity() {
                         return@setOnClickListener
                     }
                     val localOnly=VxscanLocalOnlyWifi.snapshot()
-                    if(localOnly.enabled && localOnly.phase!=VxscanLocalOnlyWifi.Phase.READY) {
+                    if(VxscanLocalOnlyWifi.reservationRequired(this@MainActivity) &&
+                        localOnly.phase!=VxscanLocalOnlyWifi.Phase.READY) {
+                        if(VxscanWifiCredentials.enabled(this@MainActivity) &&
+                            localOnly.phase!=VxscanLocalOnlyWifi.Phase.REQUESTING &&
+                            localOnly.phase!=VxscanLocalOnlyWifi.Phase.WAITING_IP) {
+                            VxscanLocalOnlyWifi.stop(this@MainActivity)
+                            autoStartLocalOnlyWifiIfEnabled()
+                        }
                         Toast.makeText(this@MainActivity,
                             "Local-only VXSCAN: сначала дождись статуса READY или отключи режим",
                             Toast.LENGTH_LONG).show()
@@ -872,6 +884,11 @@ class MainActivity : Activity() {
         super.onSaveInstanceState(outState)
     }
 
+    override fun onStart() {
+        super.onStart()
+        VxscanLocalOnlyWifi.setUiVisible(true)
+    }
+
     override fun onResume() {
         super.onResume()
         autoStartLocalOnlyWifiIfEnabled()
@@ -983,6 +1000,14 @@ class MainActivity : Activity() {
             text="Автоподключение при запуске BMW OCTANE"
             isChecked=true
         }
+        val findWifiButton=Button(this).apply {
+            text="Найти Wi-Fi рядом"
+            isAllCaps=false
+            setOnClickListener {
+                requestNearbyWifiSelection(ssidInput,bssidInput)
+            }
+        }
+        body.addView(findWifiButton)
         body.addView(ssidInput)
         body.addView(passwordInput)
         body.addView(bssidInput)
@@ -1064,6 +1089,20 @@ class MainActivity : Activity() {
         requestCode:Int,permissions:Array<out String>,grantResults:IntArray
     ) {
         super.onRequestPermissionsResult(requestCode,permissions,grantResults)
+        if(requestCode==WIFI_SCAN_PERMISSION_REQUEST) {
+            val ssidInput=pendingWifiScanSsidInput
+            val bssidInput=pendingWifiScanBssidInput
+            pendingWifiScanSsidInput=null
+            pendingWifiScanBssidInput=null
+            if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
+                PackageManager.PERMISSION_GRANTED &&
+                ssidInput!=null && bssidInput!=null)
+                showNearbyWifiResults(ssidInput,bssidInput)
+            else Toast.makeText(this,
+                "Поиск Wi-Fi требует точного местоположения. Можно ввести SSID вручную.",
+                Toast.LENGTH_LONG).show()
+            return
+        }
         if(requestCode!=LOCAL_ONLY_WIFI_PERMISSION_REQUEST)return
         val ssid=pendingLocalOnlySsid
         val password=pendingLocalOnlyPassword
@@ -2587,6 +2626,7 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
+        VxscanLocalOnlyWifi.setUiVisible(false)
         super.onStop()
         // A Wi-Fi approval sheet can temporarily hide this Activity during
         // REQUESTING/WAITING_IP. Never tear it down before user approval.
@@ -2604,7 +2644,7 @@ class MainActivity : Activity() {
         guidedUiRefresh=null
         historyCancel=true
         if(!logging && !EnetLoggerService.isLoggerActive)
-            VxscanLocalOnlyWifi.stop(this)
+            VxscanLocalOnlyWifi.releaseUnlessUiVisible(this)
         statusReceiver?.let{try{unregisterReceiver(it)}catch(_:Exception){}}
         statusReceiver=null
         super.onDestroy()
