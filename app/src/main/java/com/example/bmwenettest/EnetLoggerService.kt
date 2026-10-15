@@ -137,6 +137,8 @@ class EnetLoggerService : Service() {
     // Accessed only by the one primary DME polling coroutine.
     private var highSpeedMetrics:HighSpeedMetrics?=null
     private var passiveRecorder:FastDidPassiveRecorder?=null
+    // Only the primary single-owner diagnostic coroutine accesses this.
+    private var fastTimingTrace:FastTimingTrace?=null
     private val tone by lazy { ToneGenerator(AudioManager.STREAM_MUSIC, 85) }
 
     override fun onBind(intent: Intent?) = null
@@ -847,6 +849,32 @@ class EnetLoggerService : Service() {
         })
         // A new trip ID on each LOGGER start. Not equivalent to a separate day.
         val learningTripId=System.currentTimeMillis()
+        // Research-only best-effort logs; preserve old CSV schemas and
+        // prevent timing telemetry from blocking a single ECU read.
+        val timingFiles=try {
+            val dir=getExternalFilesDir(null)?:filesDir
+            val tx=File(dir,"bmw_fast_tx_timing_v1_${learningTripId}.csv")
+            val signal=File(dir,"bmw_fast_signal_timing_v1_${learningTripId}.csv")
+            val cycle=File(dir,"bmw_fast_cycle_timing_v1_${learningTripId}.csv")
+            val note="# host_monotonic_ns=true;ecu_sample_clock=unknown;"+
+                "same_uds_reply_does_not_prove_simultaneous_acquisition=true;"+
+                "dynamic_limits=research_only\\n"
+            tx.writeText(note+FastTimingTrace.TX_HEADER+"\n")
+            signal.writeText(note+FastTimingTrace.SIGNAL_HEADER+"\n")
+            cycle.writeText(note+FastTimingTrace.CYCLE_HEADER+"\n")
+            Triple(tx,signal,cycle)
+        }catch(e:Exception) {
+            connectionEvent("FAST_TIMING_UNAVAILABLE",reconnects,"FILE","AUDIT",
+                null,e.javaClass.simpleName)
+            null
+        }
+        fastTimingTrace=timingFiles?.let { files ->
+            FastTimingTrace(
+                onTransactions={lines->csvWriter.offerAudit(files.first,lines)},
+                onSignals={lines->csvWriter.offerAudit(files.second,lines)},
+                onCycle={line->csvWriter.offerAudit(files.third,line)}
+            )
+        }
         passiveRecorder=openFastDidAudit(csvWriter,learningTripId,reconnects)
         val highSpeedFile=File(getExternalFilesDir(null)?:filesDir,
             "bmw_highspeed_benchmark_v1_${learningTripId}.csv")
@@ -1135,10 +1163,13 @@ class EnetLoggerService : Service() {
                     val cycleStart=SystemClock.elapsedRealtime()
                     healthState=LoggerHealthPolicy.cycleStarted(healthState,cycleStart)
                     highSpeedCycle++
+                    fastTimingTrace?.begin(learningTripId,fuelSessionId,reconnects,
+                        highSpeedCycle,highSpeedProfile.name,pollModeActive,
+                        System.nanoTime())
                     var slowRequestCount=0
                     val obdStarted=SystemClock.elapsedRealtime()
                     fun pid(id:Int):ByteArray? =
-                        measuredDiagnostic("OBD_%02X".format(java.util.Locale.US,id), {
+                        measuredDiagnostic("OBD_%02X".format(java.util.Locale.US,id),listOf(id), {
                             hsfz(byteArrayOf(0x01,id.toByte()))
                         }) { replies ->
                             replies.firstOrNull { DiagnosticResponse.obd(it,id)!=null }
@@ -1894,6 +1925,12 @@ class EnetLoggerService : Service() {
                         else -> "A"
                     }
                     val benchmarkNow=SystemClock.elapsedRealtime()
+                    fastTimingTrace?.finish(System.nanoTime(),mapOf(
+                        0x0C to (r!=null),0x04 to (l!=null),0x0B to (m!=null),
+                        0x4A37 to (kz1!=null),0x4A38 to (kz2!=null),
+                        0x4A39 to (kz3!=null),0x4A3A to (kz4!=null),
+                        0x4A49 to (iz1!=null),0x4A4A to (iz2!=null),
+                        0x4A4C to (iz3!=null),0x4A4D to (iz4!=null)))
                     // Side-by-side 2.0/1.7 reading metrics, not a RON score.
                     val cycleGap=if(lastCycleComplete>0L)
                         (cycleStart-lastCycleComplete).coerceAtLeast(0L) else null
@@ -2038,6 +2075,8 @@ class EnetLoggerService : Service() {
                     }
                 }
             } catch(e:Exception) {
+                fastTimingTrace?.abort(System.nanoTime(),
+                    "cycle_interrupted:"+e.javaClass.simpleName)
                 if(e is CancellationException)throw e
                 if(!running) break
                 val failureAt=SystemClock.elapsedRealtime()
@@ -2111,6 +2150,8 @@ class EnetLoggerService : Service() {
             }
         }
         } finally {
+        fastTimingTrace?.abort(System.nanoTime(),"poll_job_finally")
+        fastTimingTrace=null
         highSpeedMetrics=null
         // Drain/flush even when the Service is cancelled during a reconnect.
         withContext(NonCancellable) {
@@ -2206,7 +2247,8 @@ class EnetLoggerService : Service() {
         }
 
     private fun <T> measuredDiagnostic(
-        channel:String,build:()->ByteArray,decode:(List<ByteArray>)->T?
+        channel:String,members:List<Int>,
+        build:()->ByteArray,decode:(List<ByteArray>)->T?
     ):T? {
         val s=socket?:return null
         val start=System.nanoTime()
@@ -2217,6 +2259,7 @@ class EnetLoggerService : Service() {
         var decodedAt=start
         var valid=false
         var fingerprint:Int?=null
+        var failure=""
         try {
             val bytes=build()
             builtAt=System.nanoTime()
@@ -2247,8 +2290,20 @@ class EnetLoggerService : Service() {
                 }catch(_:Exception){}
             }
             return result
+        } catch(t:Throwable) {
+            failure=t.javaClass.simpleName
+            throw t
         } finally {
             val end=System.nanoTime()
+            try {
+                fastTimingTrace?.transaction(channel,members,
+                    System.currentTimeMillis(),FastTimingTrace.Timing(
+                        requestStartNs=start,sendStartNs=builtAt,
+                        sendEndNs=sentAt,firstByteNs=firstAt,
+                        responseCompleteNs=if(firstAt!=null)receivedAt else null,
+                        decodeEndNs=if(firstAt!=null)decodedAt else null,
+                        valid=valid,error=failure))
+            }catch(_:Exception){} 
             // Instrumentation must never suppress the original read/parse
             // exception, including HSFZ timeout and truncated responses.
             try {
@@ -2264,19 +2319,19 @@ class EnetLoggerService : Service() {
     }
 
     private fun udsMixedBatch():Map<Int,ByteArray>? =
-        measuredDiagnostic("DID_BATCH_8", { hsfz(MixedDidBatch.request()) }) {
+        measuredDiagnostic("DID_BATCH_8",MixedDidBatch.dids, { hsfz(MixedDidBatch.request()) }) {
             replies->replies.firstNotNullOfOrNull { MixedDidBatch.parse(it) }
         }
 
     private fun udsBatch(dids:List<Int>,dataBytes:Int):Map<Int,ByteArray>? =
-        measuredDiagnostic("DID_BATCH_${dids.size}", {
+        measuredDiagnostic("DID_BATCH_${dids.size}",dids, {
             hsfz(DmeBatchParser.request(dids))
         }) { replies ->
             replies.firstNotNullOfOrNull { DmeBatchParser.parse(it,dids,dataBytes) }
         }
 
     private fun udsData(did:Int):ByteArray? =
-        measuredDiagnostic("DID_%04X".format(java.util.Locale.US,did), {
+        measuredDiagnostic("DID_%04X".format(java.util.Locale.US,did),listOf(did), {
             hsfz(byteArrayOf(0x22,(did ushr 8).toByte(),did.toByte()))
         }) { replies ->
             replies.firstNotNullOfOrNull { DiagnosticResponse.uds(it,did) }
