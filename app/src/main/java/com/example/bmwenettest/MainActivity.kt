@@ -160,28 +160,37 @@ class MainActivity : Activity() {
             setTextColor(sky)
         })
         root.addView(heading)
-        root.addView(TextView(this).apply {
-            text="G20 / B48   •   USB ENET / VXSCAN"
+        // Both lines stay in the fixed header, above the scrollable tabs.
+        // Keep Wi-Fi readiness separate from real DME and LOGGER states.
+        val vehicleAndWifi=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.CENTER_VERTICAL
+            setPadding(0,dp(5),0,dp(5))
+        }
+        vehicleAndWifi.addView(TextView(this).apply {
+            text="B48 · USB ENET/VXSCAN"
             textSize=12f
             setTextColor(muted)
-            setPadding(0,dp(5),0,dp(5))
-        })
-        // Local-only Wi-Fi readiness is separate from DME and fresh LOGGER data.
-        // Keep all three indicators outside ScrollViews, visible on every tab.
+            isSingleLine=true
+            ellipsize=android.text.TextUtils.TruncateAt.END
+        },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         headerWifiStatus=TextView(this).apply {
             textSize=11f
             setTextColor(muted)
             includeFontPadding=false
-            gravity=Gravity.CENTER_VERTICAL
-            minHeight=dp(25)
-            setPadding(0,0,0,dp(3))
+            gravity=Gravity.END or Gravity.CENTER_VERTICAL
+            isSingleLine=true
+            ellipsize=android.text.TextUtils.TruncateAt.END
+            setPadding(dp(6),0,0,0)
             isClickable=true
             isFocusable=true
             setOnClickListener {
                 if(::tabPages.isInitialized) selectTab(tabPages.lastIndex)
             }
         }
-        root.addView(headerWifiStatus)
+        vehicleAndWifi.addView(headerWifiStatus,
+            LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
+        root.addView(vehicleAndWifi)
         refreshHeaderWifiStatus(VxscanLocalOnlyWifi.snapshot().phase)
         val headerStatus=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
