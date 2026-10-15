@@ -41,7 +41,7 @@ internal object VxscanLocalOnlyWifi {
 
     fun setUiVisible(visible:Boolean) { uiVisible=visible }
     fun releaseUnlessUiVisible(context:Context) {
-        if(!uiVisible)stop(context)
+        if(VxscanLocalOnlyPolicy.releaseAfterStop(uiVisible))stop(context)
     }
     // Prevent fallback to ordinary Wi-Fi during a STOP/START transition,
     // even when the request callback has temporarily been released.
@@ -196,6 +196,8 @@ internal object VxscanLocalOnlyPolicy {
     }
 
     fun releaseAfterStop(uiVisible:Boolean):Boolean = !uiVisible
+    /** Missing Wi-Fi/UDP discovery must never downgrade B+ as a TCP polling fault. */
+    fun countsAsPollFailure(stage:String):Boolean=stage=="POLL"
     fun shouldBlockWithoutReady(autoProfile:Boolean,requestActive:Boolean,ready:Boolean):Boolean =
         (autoProfile || requestActive) && !ready
 
