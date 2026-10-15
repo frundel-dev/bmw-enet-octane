@@ -84,6 +84,7 @@ class MainActivity : Activity() {
     private var presentedRefuelId=0L
     private lateinit var homeFuelTitle:TextView
     private lateinit var homeFuelMeta:TextView
+    private lateinit var headerWifiStatus:TextView
     private lateinit var homeConnection:TextView
     private lateinit var homeCaptureState:TextView
     private lateinit var homeNextMode:TextView
@@ -165,7 +166,23 @@ class MainActivity : Activity() {
             setTextColor(muted)
             setPadding(0,dp(5),0,dp(5))
         })
-        // Outside every ScrollView: DME and LOGGER are visible on all tabs.
+        // Local-only Wi-Fi readiness is separate from DME and fresh LOGGER data.
+        // Keep all three indicators outside ScrollViews, visible on every tab.
+        headerWifiStatus=TextView(this).apply {
+            textSize=11f
+            setTextColor(muted)
+            includeFontPadding=false
+            gravity=Gravity.CENTER_VERTICAL
+            minHeight=dp(25)
+            setPadding(0,0,0,dp(3))
+            isClickable=true
+            isFocusable=true
+            setOnClickListener {
+                if(::tabPages.isInitialized) selectTab(tabPages.lastIndex)
+            }
+        }
+        root.addView(headerWifiStatus)
+        refreshHeaderWifiStatus(VxscanLocalOnlyWifi.snapshot().phase)
         val headerStatus=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
             gravity=Gravity.CENTER_VERTICAL
@@ -893,6 +910,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         autoStartLocalOnlyWifiIfEnabled()
+        refreshHeaderWifiStatus(VxscanLocalOnlyWifi.snapshot().phase)
         if(::homeFuelTitle.isInitialized) {
             logging=EnetLoggerService.isLoggerActive
             if(!logging) {
@@ -928,8 +946,24 @@ class MainActivity : Activity() {
      * invoke Service, send UDS requests or alter a fuel-session baseline.
      */
 
+    /** The same Android NetworkCallback drives header and Settings statuses. */
+    private fun refreshHeaderWifiStatus(phase:VxscanLocalOnlyWifi.Phase) {
+        if(!::headerWifiStatus.isInitialized)return
+        val label=VxscanHeaderStatus.label(phase)
+        headerWifiStatus.text=label.text
+        headerWifiStatus.setTextColor(when(label.tone) {
+            VxscanHeaderStatus.Tone.READY -> accentGreen
+            VxscanHeaderStatus.Tone.WAITING -> accentBlue
+            VxscanHeaderStatus.Tone.FAILED -> Color.rgb(255,134,117)
+            VxscanHeaderStatus.Tone.OFF -> tertiary
+        })
+        headerWifiStatus.contentDescription=label.text+
+            ". Нажмите, чтобы открыть настройки VXSCAN"
+    }
+
     private fun refreshLocalOnlyWifiStatus() {
         val status=VxscanLocalOnlyWifi.snapshot()
+        refreshHeaderWifiStatus(status.phase)
         val cm=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
         val caps=cm.getNetworkCapabilities(cm.activeNetwork)
         val primary=when {
