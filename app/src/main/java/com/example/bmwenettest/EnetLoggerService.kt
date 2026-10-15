@@ -254,6 +254,7 @@ class EnetLoggerService : Service() {
 
     private fun stopLogger() {
         running=false
+        VxscanLocalOnlyWifi.stop(this)
         androidNetworkMonitor?.stop(); androidNetworkMonitor=null
         try{socket?.close()}catch(_:Exception){}
         pollingJob?.cancel()
@@ -261,6 +262,7 @@ class EnetLoggerService : Service() {
         // loop() releases the foreground service only after all writers close.
     }
     override fun onDestroy() {
+        VxscanLocalOnlyWifi.stop(this)
         androidNetworkMonitor?.stop(); androidNetworkMonitor=null
         running=false;try{socket?.close()}catch(_:Exception){}
         isLoggerActive=false
@@ -415,7 +417,25 @@ class EnetLoggerService : Service() {
                 val vpnNetworks=cm.allNetworks.filter { n ->
                     cm.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN)==true
                 }
-                val candidates=cm.allNetworks.mapNotNull { n ->
+                val localOnly=VxscanLocalOnlyWifi.snapshot()
+                // A local-only reservation MUST NOT fall back to the system's
+                // regular Wi-Fi. Another AP could accidentally receive HSFZ.
+                val candidates=if(localOnly.enabled) {
+                    val reserved=localOnly.network
+                    if(VxscanLocalOnlyPolicy.choice(true,
+                            localOnly.phase==VxscanLocalOnlyWifi.Phase.READY &&
+                            reserved!=null)==VxscanLocalOnlyPolicy.Choice.BLOCKED)
+                        throw IOException("VXSCAN local-only not ready: "+localOnly.phase)
+                    val n=reserved!!
+                    val caps=cm.getNetworkCapabilities(n)
+                    val lp=cm.getLinkProperties(n)
+                    if(caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)!=true ||
+                        caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) ||
+                        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+                        lp?.linkAddresses?.none { it.address is Inet4Address }!=false)
+                        throw IOException("Reserved VXSCAN network not a valid local-only IPv4 link")
+                    listOf(Triple(n,"WIFI",0))
+                } else cm.allNetworks.mapNotNull { n ->
                     val caps=cm.getNetworkCapabilities(n) ?: return@mapNotNull null
                     if(caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return@mapNotNull null
                     val kind=when {
