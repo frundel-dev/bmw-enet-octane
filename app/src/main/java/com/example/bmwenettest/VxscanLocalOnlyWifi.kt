@@ -7,6 +7,8 @@ import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.MacAddress
+import android.net.wifi.WifiInfo
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
 import java.net.Inet4Address
@@ -15,7 +17,7 @@ import java.net.Inet4Address
  * Opt-in Android local-only Wi-Fi network reservation for VXSCAN.
  *
  * Never binds the process to Wi-Fi, never changes default routing, never
- * stores credentials. Only the diagnostic owner may use the returned Network.
+ * places raw credentials in state. Only the diagnostic owner uses this Network.
  * The lifetime is explicitly ended at LOGGER STOP / Service destruction.
  */
 internal object VxscanLocalOnlyWifi {
@@ -55,20 +57,23 @@ internal object VxscanLocalOnlyWifi {
     }
 
     /**
-     * Called only from an explicit UI gesture. A saved SSID is allowed, but
-     * the password is passed to Android and NEVER persisted by this app.
+     * Called from an explicit user gesture or an opt-in stored profile after
+     * the user launches the application. This object never persists secrets.
      */
-    fun start(context:Context,ssid:String,password:String):String? {
+    fun start(context:Context,ssid:String,password:String,bssid:String?=null):String? {
         if(Build.VERSION.SDK_INT<Build.VERSION_CODES.Q)
             return "Local-only Wi-Fi требует Android 10 или новее"
         val name=ssid.trim()
         val error=VxscanLocalOnlyPolicy.validate(name,password)
         if(error!=null)return error
+        val bssidError=VxscanLocalOnlyPolicy.validateBssid(bssid)
+        if(bssidError!=null)return bssidError
         val app=context.applicationContext
         val manager=app.getSystemService(Context.CONNECTIVITY_SERVICE)
             as? ConnectivityManager ?: return "ConnectivityManager недоступен"
         val request=try {
             val builder=WifiNetworkSpecifier.Builder().setSsid(name)
+            if(bssid!=null) builder.setBssid(MacAddress.fromString(bssid))
             if(password.isNotEmpty()) builder.setWpa2Passphrase(password)
             NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
@@ -92,6 +97,11 @@ internal object VxscanLocalOnlyWifi {
                         "Wi-Fi найден, ожидается IPv4 адрес"))
                 }
                 override fun onCapabilitiesChanged(network:Network,caps:NetworkCapabilities) {
+                    val info=caps.transportInfo as? WifiInfo
+                    val observed=info?.bssid
+                    if(observed!=null &&
+                        VxscanLocalOnlyPolicy.validateBssid(observed)==null)
+                        VxscanWifiCredentials.rememberBssid(app,name,observed)
                     if(!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
                         caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
                         publish(app,token,Snapshot(Phase.ERROR,name,null,
@@ -154,6 +164,16 @@ internal object VxscanLocalOnlyWifi {
 
 /** Deterministic validation and fail-closed routing decision, JVM-testable. */
 internal object VxscanLocalOnlyPolicy {
+    fun validateBssid(bssid:String?):String? {
+        if(bssid==null)return null
+        val known=Regex("(?i)^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
+        if(!known.matches(bssid) || bssid.equals("02:00:00:00:00:00",true) ||
+            bssid.equals("00:00:00:00:00:00",true))
+            return "BSSID должен быть точным MAC-адресом точки доступа (XX:XX:XX:XX:XX:XX)"
+        return null
+    }
+    fun shouldAutoRequest(optedIn:Boolean,activeRequest:Boolean):Boolean =
+        optedIn && !activeRequest
     fun validate(ssid:String,password:String):String? {
         if(ssid.isBlank() || ssid.toByteArray(Charsets.UTF_8).size>32 ||
             ssid.any { it.isISOControl() })
