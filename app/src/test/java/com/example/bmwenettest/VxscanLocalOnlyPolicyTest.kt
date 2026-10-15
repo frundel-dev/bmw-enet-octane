@@ -22,6 +22,21 @@ class VxscanLocalOnlyPolicyTest {
         assertNull(VxscanLocalOnlyPolicy.validate("BMW-ENET","x".repeat(63)))
     }
 
+    @Test fun optionalBssidIsExactMacAndRejectsRedactedOrMalformed() {
+        assertNull(VxscanLocalOnlyPolicy.validateBssid(null))
+        assertNull(VxscanLocalOnlyPolicy.validateBssid("A2:BC:34:0D:56:EF"))
+        assertNotNull(VxscanLocalOnlyPolicy.validateBssid("02:00:00:00:00:00"))
+        assertNotNull(VxscanLocalOnlyPolicy.validateBssid("00:00:00:00:00:00"))
+        assertNotNull(VxscanLocalOnlyPolicy.validateBssid("12:34:56"))
+    }
+
+    @Test fun autoRequestOnlyRunsWhenUserOptedInAndNoRequestActive() {
+        assertTrue(VxscanLocalOnlyPolicy.shouldAutoRequest(true,false))
+        assertFalse(VxscanLocalOnlyPolicy.shouldAutoRequest(true,true))
+        assertFalse(VxscanLocalOnlyPolicy.shouldAutoRequest(false,false))
+        assertFalse(VxscanLocalOnlyPolicy.shouldAutoRequest(false,true))
+    }
+
     @Test fun reservedModeNeverFallsBackToDefaultWifiDuringHandshakeOrLoss() {
         assertEquals(VxscanLocalOnlyPolicy.Choice.NORMAL,
             VxscanLocalOnlyPolicy.choice(false,false))
