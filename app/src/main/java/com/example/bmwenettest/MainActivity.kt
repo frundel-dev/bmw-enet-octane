@@ -1,5 +1,7 @@
 package com.example.bmwenettest
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.res.ColorStateList
@@ -37,6 +39,10 @@ class MainActivity : Activity() {
     private var logFile: File? = null
     private var supportedPids: Set<Int> = emptySet()
     private var statusReceiver: BroadcastReceiver? = null
+    private var localOnlyStatus:TextView?=null
+    private var pendingLocalOnlySsid:String?=null
+    private var pendingLocalOnlyPassword:String?=null
+    private val LOCAL_ONLY_WIFI_PERMISSION_REQUEST=6212
     private var liveLearningRpm:Double? = null
     private var liveLearningLoad:Double? = null
     private var loggerControl:Button? = null
@@ -205,6 +211,13 @@ class MainActivity : Activity() {
                     if(historyBusy) {
                         Toast.makeText(this@MainActivity,
                             "Сначала заверши чтение истории DME",Toast.LENGTH_LONG).show()
+                        return@setOnClickListener
+                    }
+                    val localOnly=VxscanLocalOnlyWifi.snapshot()
+                    if(localOnly.enabled && localOnly.phase!=VxscanLocalOnlyWifi.Phase.READY) {
+                        Toast.makeText(this@MainActivity,
+                            "Local-only VXSCAN: сначала дождись статуса READY или отключи режим",
+                            Toast.LENGTH_LONG).show()
                         return@setOnClickListener
                     }
                     // An initial session must have operator-confirmed fuel.
@@ -559,6 +572,11 @@ class MainActivity : Activity() {
         settingsCard.addView(smallText(
             "Параметры диагностики и резервные режимы. Изменения RAM/SWFL применяются после остановки сбора.",
             12f,tertiary))
+        localOnlyStatus=smallText("Local-only VXSCAN: выключено",12f,tertiary)
+        settingsCard.addView(localOnlyStatus)
+        settingsCard.addView(action("VXSCAN + 4G/5G • LOCAL-ONLY WI-FI") {
+            showLocalOnlyWifiDialog()
+        })
         settingsCard.addView(action("RAM / SWFL • ПРОФИЛЬ"){showOctane2RamProfile()})
         settingsCard.addView(action("РЕЖИМ ОПРОСА DME"){showPollingModeDialog()})
         settingsCard.addView(action("HIGH-SPEED ПРОФИЛЬ"){showHighSpeedProfileDialog()})
@@ -608,6 +626,10 @@ class MainActivity : Activity() {
         renderHomeState()
         statusReceiver=object:BroadcastReceiver() {
             override fun onReceive(context:Context?,intent:Intent?) {
+                if(intent?.action==VxscanLocalOnlyWifi.ACTION_STATUS) {
+                    refreshLocalOnlyWifiStatus()
+                    return
+                }
                 if(intent?.action==EnetLoggerService.ACTION_OCTANE2) {
                     val state=intent.getStringExtra(EnetLoggerService.EXTRA_RAM_STATUS)
                         ?: "LOCKED"
@@ -864,6 +886,7 @@ class MainActivity : Activity() {
                     if(logging)Color.rgb(255,179,126) else accentBlue)
             }
             renderHomeState()
+            refreshLocalOnlyWifiStatus()
             refreshGuidedPanel()
             if(refuelStore.hasPending())maybeOfferStationaryRefuel()
         }
@@ -2394,6 +2417,7 @@ class MainActivity : Activity() {
         guidedUiRefresh?.let { main.removeCallbacks(it) }
         guidedUiRefresh=null
         historyCancel=true
+        if(!EnetLoggerService.isLoggerActive) VxscanLocalOnlyWifi.stop(this)
         statusReceiver?.let{try{unregisterReceiver(it)}catch(_:Exception){}}
         statusReceiver=null
         super.onDestroy()
