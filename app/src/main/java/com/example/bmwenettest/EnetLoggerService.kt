@@ -137,6 +137,15 @@ class EnetLoggerService : Service() {
         when(intent?.action) {
             ACTION_STOP -> stopLogger()
             ACTION_START -> if(!running && pollingJob?.isActive!=true) {
+                val reservation=VxscanLocalOnlyWifi.snapshot()
+                if(reservation.enabled &&
+                    reservation.phase!=VxscanLocalOnlyWifi.Phase.READY) {
+                    sendBroadcast(Intent(ACTION_STATUS).setPackage(packageName)
+                        .putExtra(EXTRA_STATUS,
+                            "Local-only VXSCAN is not ready: "+reservation.phase))
+                    stopSelfResult(startId)
+                    return START_NOT_STICKY
+                }
                 // Guard the optimized coroutine Service independently from UI.
                 // Never poll/score anonymous fuel after first installation.
                 if(!RefuelSessionStore(this).hasCurrentFuel()) {
