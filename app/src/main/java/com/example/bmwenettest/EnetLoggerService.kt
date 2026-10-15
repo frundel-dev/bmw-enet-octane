@@ -1165,7 +1165,7 @@ class EnetLoggerService : Service() {
                     highSpeedCycle++
                     fastTimingTrace?.begin(learningTripId,fuelSessionId,reconnects,
                         highSpeedCycle,highSpeedProfile.name,pollModeActive,
-                        System.nanoTime())
+                        System.nanoTime(),transport=transport)
                     var slowRequestCount=0
                     val obdStarted=SystemClock.elapsedRealtime()
                     fun pid(id:Int):ByteArray? =
