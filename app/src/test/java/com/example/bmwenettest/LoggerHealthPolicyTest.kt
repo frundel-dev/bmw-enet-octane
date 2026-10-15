@@ -1,10 +1,10 @@
 package com.example.bmwenettest
 
+import com.example.bmwenettest.LoggerHealthPolicy as P
 import org.junit.Assert.*
 import org.junit.Test
 
 class LoggerHealthPolicyTest {
-    private val P=LoggerHealthPolicy
     @Test fun freshDmeRequiresRealValidCompletedCycle() {
         val started=P.start(1000)
         assertFalse(P.freshness(true,started.lastValidAtMs,1100))
