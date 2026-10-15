@@ -1,5 +1,7 @@
 package com.example.bmwenettest
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.res.ColorStateList
@@ -37,6 +39,11 @@ class MainActivity : Activity() {
     private var logFile: File? = null
     private var supportedPids: Set<Int> = emptySet()
     private var statusReceiver: BroadcastReceiver? = null
+    private var localOnlyStatus:TextView?=null
+    private var pendingLocalOnlySsid:String?=null
+    private var pendingLocalOnlyPassword:String?=null
+    private var pendingLocalOnlyBssid:String?=null
+    private val LOCAL_ONLY_WIFI_PERMISSION_REQUEST=6212
     private var liveLearningRpm:Double? = null
     private var liveLearningLoad:Double? = null
     private var loggerControl:Button? = null
@@ -205,6 +212,13 @@ class MainActivity : Activity() {
                     if(historyBusy) {
                         Toast.makeText(this@MainActivity,
                             "Сначала заверши чтение истории DME",Toast.LENGTH_LONG).show()
+                        return@setOnClickListener
+                    }
+                    val localOnly=VxscanLocalOnlyWifi.snapshot()
+                    if(localOnly.enabled && localOnly.phase!=VxscanLocalOnlyWifi.Phase.READY) {
+                        Toast.makeText(this@MainActivity,
+                            "Local-only VXSCAN: сначала дождись статуса READY или отключи режим",
+                            Toast.LENGTH_LONG).show()
                         return@setOnClickListener
                     }
                     // An initial session must have operator-confirmed fuel.
@@ -559,6 +573,11 @@ class MainActivity : Activity() {
         settingsCard.addView(smallText(
             "Параметры диагностики и резервные режимы. Изменения RAM/SWFL применяются после остановки сбора.",
             12f,tertiary))
+        localOnlyStatus=smallText("Local-only VXSCAN: выключено",12f,tertiary)
+        settingsCard.addView(localOnlyStatus)
+        settingsCard.addView(action("VXSCAN + 4G/5G • LOCAL-ONLY WI-FI") {
+            showLocalOnlyWifiDialog()
+        })
         settingsCard.addView(action("RAM / SWFL • ПРОФИЛЬ"){showOctane2RamProfile()})
         settingsCard.addView(action("РЕЖИМ ОПРОСА DME"){showPollingModeDialog()})
         settingsCard.addView(action("HIGH-SPEED ПРОФИЛЬ"){showHighSpeedProfileDialog()})
@@ -608,6 +627,10 @@ class MainActivity : Activity() {
         renderHomeState()
         statusReceiver=object:BroadcastReceiver() {
             override fun onReceive(context:Context?,intent:Intent?) {
+                if(intent?.action==VxscanLocalOnlyWifi.ACTION_STATUS) {
+                    refreshLocalOnlyWifiStatus()
+                    return
+                }
                 if(intent?.action==EnetLoggerService.ACTION_OCTANE2) {
                     val state=intent.getStringExtra(EnetLoggerService.EXTRA_RAM_STATUS)
                         ?: "LOCKED"
@@ -708,6 +731,7 @@ class MainActivity : Activity() {
             addAction(EnetLoggerService.ACTION_OCTANE2)
             addAction(EnetLoggerService.ACTION_FAST_TELEMETRY)
             addAction(EnetLoggerService.ACTION_HIGH_SPEED_STATUS)
+            addAction(VxscanLocalOnlyWifi.ACTION_STATUS)
         }
         if(Build.VERSION.SDK_INT>=33) {
             registerReceiver(statusReceiver,filter,RECEIVER_NOT_EXPORTED)
@@ -850,6 +874,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        autoStartLocalOnlyWifiIfEnabled()
         if(::homeFuelTitle.isInitialized) {
             logging=EnetLoggerService.isLoggerActive
             if(!logging) {
@@ -864,6 +889,7 @@ class MainActivity : Activity() {
                     if(logging)Color.rgb(255,179,126) else accentBlue)
             }
             renderHomeState()
+            refreshLocalOnlyWifiStatus()
             refreshGuidedPanel()
             if(refuelStore.hasPending())maybeOfferStationaryRefuel()
         }
@@ -883,6 +909,179 @@ class MainActivity : Activity() {
      * PRG Signal Lab is an offline view only. It cannot acquire a TCP socket,
      * invoke Service, send UDS requests or alter a fuel-session baseline.
      */
+
+    private fun refreshLocalOnlyWifiStatus() {
+        val status=VxscanLocalOnlyWifi.snapshot()
+        val cm=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+        val caps=cm.getNetworkCapabilities(cm.activeNetwork)
+        val primary=when {
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)==true ->
+                "системная сеть: мобильная"
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN)==true ->
+                "системная сеть: VPN"
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)==true ->
+                "системная сеть: Wi-Fi"
+            else -> "системная сеть: неизвестна"
+        }
+        localOnlyStatus?.text="VXSCAN local-only: "+status.phase.name+
+            (status.ssid?.let { " • "+it } ?: "")+
+            "\n"+status.detail+"\n"+primary+
+            " (интернет остальных приложений проверяется на телефоне)"
+        localOnlyStatus?.setTextColor(when(status.phase) {
+            VxscanLocalOnlyWifi.Phase.READY -> accentGreen
+            VxscanLocalOnlyWifi.Phase.ERROR,
+            VxscanLocalOnlyWifi.Phase.LOST,
+            VxscanLocalOnlyWifi.Phase.UNAVAILABLE -> Color.rgb(255,134,117)
+            else -> tertiary
+        })
+    }
+
+    private fun showLocalOnlyWifiDialog() {
+        if(logging || EnetLoggerService.isLoggerActive) {
+            AlertDialog.Builder(this).setTitle("Останови LOGGER")
+                .setMessage("Изменение маршрута разрешено только после STOP. " +
+                    "Это защищает текущую HSFZ-транзакцию от смены сетевого интерфейса.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        val active=VxscanLocalOnlyWifi.snapshot()
+        if(active.enabled) {
+            AlertDialog.Builder(this)
+                .setTitle("VXSCAN • local-only: "+active.phase.name)
+                .setMessage(active.detail+"\n\nОтключение удалит профиль автоподключения и зашифрованный пароль.")
+                .setPositiveButton("Отключить и забыть") { _,_ ->
+                    VxscanWifiCredentials.clear(this)
+                    VxscanLocalOnlyWifi.stop(this)
+                    refreshLocalOnlyWifiStatus()
+                }
+                .setNegativeButton("Отмена",null).show()
+            return
+        }
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        val body=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(30,14,30,4)
+        }
+        val ssidInput=EditText(this).apply {
+            hint="SSID адаптера (любое имя, без префикса)"
+            setSingleLine(true)
+            setText(VxscanWifiCredentials.lastSsid(this@MainActivity) ?:
+                prefs.getString("vxscan_local_only_ssid",""))
+        }
+        val passwordInput=EditText(this).apply {
+            hint="Пароль WPA2, пусто для открытой сети"
+            setSingleLine(true)
+            inputType=android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val bssidInput=EditText(this).apply {
+            hint="BSSID / MAC точки (необязательно)"
+            setSingleLine(true)
+            setText(VxscanWifiCredentials.lastBssid(this@MainActivity).orEmpty())
+        }
+        val autoSave=CheckBox(this).apply {
+            text="Автоподключение при запуске BMW OCTANE"
+            isChecked=true
+        }
+        body.addView(ssidInput)
+        body.addView(passwordInput)
+        body.addView(bssidInput)
+        body.addView(autoSave)
+        AlertDialog.Builder(this)
+            .setTitle("VXSCAN + мобильный интернет • эксперимент")
+            .setMessage("Укажи точное имя Wi-Fi своего адаптера — у разных VXSCAN SSID отличаются. "+
+                "Android может запросить подтверждение. При автоподключении пароль шифруется Android Keystore. "+
+                "После READY запусти LOGGER: VXSCAN останется только на выбранном Wi-Fi. "+
+                "Интернет других приложений зависит от One UI и проверяется отдельно.")
+            .setView(body)
+            .setPositiveButton("Подключить") { _,_ ->
+                val ssid=ssidInput.text?.toString()?.trim().orEmpty()
+                val password=passwordInput.text?.toString().orEmpty()
+                val bssid=bssidInput.text?.toString()?.trim()?.ifBlank { null }
+                val error=VxscanLocalOnlyPolicy.validate(ssid,password)
+                    ?:VxscanLocalOnlyPolicy.validateBssid(bssid)
+                if(error!=null) {
+                    Toast.makeText(this,error,Toast.LENGTH_LONG).show()
+                } else {
+                    prefs.edit().putString("vxscan_local_only_ssid",ssid).apply()
+                    if(autoSave.isChecked) {
+                        if(!VxscanWifiCredentials.save(this,ssid,password,bssid)) {
+                            Toast.makeText(this,
+                                "Android Keystore недоступен; профиль не сохранён",
+                                Toast.LENGTH_LONG).show()
+                            return@setPositiveButton
+                        }
+                    } else {
+                        VxscanWifiCredentials.clear(this)
+                    }
+                    if(!hasLocalOnlyWifiPermission()) {
+                        pendingLocalOnlySsid=ssid
+                        pendingLocalOnlyPassword=password
+                        pendingLocalOnlyBssid=bssid
+                        val permission=if(Build.VERSION.SDK_INT>=33)
+                            Manifest.permission.NEARBY_WIFI_DEVICES
+                        else Manifest.permission.ACCESS_FINE_LOCATION
+                        requestPermissions(arrayOf(permission),
+                            LOCAL_ONLY_WIFI_PERMISSION_REQUEST)
+                    } else {
+                        startLocalOnlyWifi(ssid,password,bssid)
+                    }
+                }
+            }
+            .setNegativeButton("Отмена",null).show()
+    }
+
+    private fun hasLocalOnlyWifiPermission():Boolean {
+        val permission=if(Build.VERSION.SDK_INT>=33)
+            Manifest.permission.NEARBY_WIFI_DEVICES
+        else Manifest.permission.ACCESS_FINE_LOCATION
+        return checkSelfPermission(permission)==PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun startLocalOnlyWifi(ssid:String,password:String,bssid:String?=null) {
+        val error=VxscanLocalOnlyWifi.start(this,ssid,password,bssid)
+        if(error!=null) Toast.makeText(this,error,Toast.LENGTH_LONG).show()
+        refreshLocalOnlyWifiStatus()
+    }
+
+    /** The user has explicitly opted in to auto-connect on app launch. */
+    private fun autoStartLocalOnlyWifiIfEnabled() {
+        if(pendingLocalOnlySsid!=null || !hasLocalOnlyWifiPermission())return
+        if(!VxscanLocalOnlyPolicy.shouldAutoRequest(
+                VxscanWifiCredentials.enabled(this),
+                VxscanLocalOnlyWifi.snapshot().enabled))return
+        val profile=VxscanWifiCredentials.load(this)
+        if(profile==null) {
+            Toast.makeText(this,
+                "Пароль VXSCAN недоступен в Android Keystore; введи его повторно",
+                Toast.LENGTH_LONG).show()
+            return
+        }
+        startLocalOnlyWifi(profile.ssid,profile.password,profile.bssid)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode:Int,permissions:Array<out String>,grantResults:IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode,permissions,grantResults)
+        if(requestCode!=LOCAL_ONLY_WIFI_PERMISSION_REQUEST)return
+        val ssid=pendingLocalOnlySsid
+        val password=pendingLocalOnlyPassword
+        val bssid=pendingLocalOnlyBssid
+        pendingLocalOnlySsid=null
+        pendingLocalOnlyPassword=null
+        pendingLocalOnlyBssid=null
+        if(grantResults.isNotEmpty() &&
+            grantResults[0]==PackageManager.PERMISSION_GRANTED &&
+            ssid!=null && password!=null) {
+            startLocalOnlyWifi(ssid,password,bssid)
+        } else {
+            Toast.makeText(this,
+                "Без разрешения «Устройства поблизости» local-only Wi-Fi недоступен",
+                Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun showPrgOfflineLab() {
         val entries=DmePrgEvidenceLab.specs
         val names=entries.map { spec ->
@@ -2387,6 +2586,16 @@ class MainActivity : Activity() {
         }
     }
 
+    override fun onStop() {
+        super.onStop()
+        // A Wi-Fi approval sheet can temporarily hide this Activity during
+        // REQUESTING/WAITING_IP. Never tear it down before user approval.
+        // When the UI is left without LOGGER, release READY local-only Wi-Fi.
+        if(!logging && !EnetLoggerService.isLoggerActive &&
+            VxscanLocalOnlyWifi.snapshot().phase==VxscanLocalOnlyWifi.Phase.READY)
+            VxscanLocalOnlyWifi.stop(this)
+    }
+
     // Legacy bmw_fuel_events.csv is a read-only archive. All new
     // confirmations are durable RefuelSessionStore transitions.
     override fun onDestroy() {
@@ -2394,6 +2603,8 @@ class MainActivity : Activity() {
         guidedUiRefresh?.let { main.removeCallbacks(it) }
         guidedUiRefresh=null
         historyCancel=true
+        if(!logging && !EnetLoggerService.isLoggerActive)
+            VxscanLocalOnlyWifi.stop(this)
         statusReceiver?.let{try{unregisterReceiver(it)}catch(_:Exception){}}
         statusReceiver=null
         super.onDestroy()
