@@ -171,7 +171,7 @@ class MainActivity : Activity() {
             text="B48 · USB ENET/VXSCAN"
             textSize=12f
             setTextColor(muted)
-            isSingleLine=true
+            setSingleLine(true)
             ellipsize=android.text.TextUtils.TruncateAt.END
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         headerWifiStatus=TextView(this).apply {
@@ -179,7 +179,7 @@ class MainActivity : Activity() {
             setTextColor(muted)
             includeFontPadding=false
             gravity=Gravity.END or Gravity.CENTER_VERTICAL
-            isSingleLine=true
+            setSingleLine(true)
             ellipsize=android.text.TextUtils.TruncateAt.END
             setPadding(dp(6),0,0,0)
             isClickable=true
