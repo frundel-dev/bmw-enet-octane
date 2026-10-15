@@ -13,9 +13,9 @@ internal class FastTimingTrace(
     private val onCycle:(String)->Unit
 ) {
     companion object {
-        const val TX_HEADER="wall_time_ms,trip_id,fuel_session_id,epoch,cycle_id,profile,poll_mode,tx_id,channel,ids,request_start_ns,send_start_ns,send_end_ns,first_byte_ns,response_complete_ns,decode_end_ns,include_ns,valid,error"
-        const val SIGNAL_HEADER="wall_time_ms,trip_id,fuel_session_id,epoch,cycle_id,profile,poll_mode,signal,id,status,source_tx_id,request_start_ns,response_complete_ns,decode_end_ns,include_ns,age_ms,reused_previous_cycle,ecu_sample_time_known"
-        const val CYCLE_HEADER="wall_time_ms,trip_id,fuel_session_id,epoch,cycle_id,profile,poll_mode,cycle_start_ns,cycle_end_ns,complete_count,expected_count,complete_set,steady_candidate,dynamic_candidate,host_window_ms,latest_age_ms,host_skew_ms,obd_complete,knock_complete,ign_complete,aborted,notes"
+        const val TX_HEADER="wall_time_ms,trip_id,fuel_session_id,epoch,cycle_id,profile,poll_mode,tx_id,channel,ids,request_start_ns,send_start_ns,send_end_ns,first_byte_ns,response_complete_ns,decode_end_ns,include_ns,valid,error,transport"
+        const val SIGNAL_HEADER="wall_time_ms,trip_id,fuel_session_id,epoch,cycle_id,profile,poll_mode,signal,id,status,source_tx_id,request_start_ns,response_complete_ns,decode_end_ns,include_ns,age_ms,reused_previous_cycle,ecu_sample_time_known,transport"
+        const val CYCLE_HEADER="wall_time_ms,trip_id,fuel_session_id,epoch,cycle_id,profile,poll_mode,cycle_start_ns,cycle_end_ns,complete_count,expected_count,complete_set,steady_candidate,dynamic_candidate,host_window_ms,latest_age_ms,host_skew_ms,obd_complete,knock_complete,ign_complete,aborted,notes,transport"
         // STEADY/DYNAMIC limits are explicit *research heuristics*, NOT verified physics.
         const val STEADY_WINDOW_MS=750L
         const val DYNAMIC_WINDOW_MS=150L
@@ -44,7 +44,7 @@ internal class FastTimingTrace(
     private data class Transaction(val wall:Long,val id:Long,val channel:String,
                                    val dids:List<Int>,val time:Timing)
     private data class Context(val trip:Long,val fuel:Int,val epoch:Int,
-                               val cycle:Long,val profile:String,val mode:String,
+                               val cycle:Long,val profile:String,val mode:String,val transport:String,
                                val startedNs:Long,val txs:MutableList<Transaction>)
     private var ctx:Context?=null
     private var nextTx=0L
@@ -52,9 +52,9 @@ internal class FastTimingTrace(
     private var droppedDueToCycleLimit=0
 
     fun begin(trip:Long,fuel:Int,epoch:Int,cycle:Long,profile:String,
-              mode:String,atNs:Long) {
+              mode:String,atNs:Long,transport:String="UNKNOWN") {
         if(ctx!=null)abort(atNs,"implicit_cycle_reset")
-        ctx=Context(trip,fuel,epoch,cycle,profile,mode,atNs,ArrayList(24))
+        ctx=Context(trip,fuel,epoch,cycle,profile,mode,transport,atNs,ArrayList(24))
         // A previous epoch cannot supply current valid FAST measurements.
         lastValidById.keys.toList().forEach { key ->
             if(lastValidById[key]?.first!=epoch)lastValidById.remove(key)
@@ -91,7 +91,7 @@ internal class FastTimingTrace(
                 number(t.time.firstByteNs),number(t.time.responseCompleteNs),
                 number(t.time.decodeEndNs),
                 if(aborted)"" else atNs.toString(),
-                t.time.valid,clean(t.time.error))).joinToString(",")
+                t.time.valid,clean(t.time.error),clean(c.transport))).joinToString(",")
         }
         val accepted=ArrayList<Transaction>()
         var completed=0
@@ -119,7 +119,7 @@ internal class FastTimingTrace(
                 number(provenance?.time?.requestStartNs),
                 number(provenance?.time?.responseCompleteNs),
                 number(provenance?.time?.decodeEndNs),atNs,
-                number(age),false,false)).joinToString(",")
+                number(age),false,false,clean(c.transport))).joinToString(",")
         }
         val minRequest=accepted.minOfOrNull{it.time.requestStartNs}
         val maxResponse=accepted.mapNotNull{it.time.responseCompleteNs}.maxOrNull()
@@ -148,7 +148,7 @@ internal class FastTimingTrace(
                 ids.drop(3).take(4).all{actual[it]==true},
                 ids.takeLast(4).all{actual[it]==true},
                 aborted,clean(reason+(if(droppedDueToCycleLimit>0)
-                    ";trace_limit_dropped="+droppedDueToCycleLimit else "")))).joinToString(","))
+                    ";trace_limit_dropped="+droppedDueToCycleLimit else "")),clean(c.transport))).joinToString(","))
         }catch(_:Exception){}
         droppedDueToCycleLimit=0
         return result
