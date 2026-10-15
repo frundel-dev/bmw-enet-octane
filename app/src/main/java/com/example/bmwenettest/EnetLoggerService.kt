@@ -11,6 +11,7 @@ import java.io.*
 import java.net.*
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
@@ -114,6 +115,8 @@ class EnetLoggerService : Service() {
     private val pollingDispatcher=Executors.newSingleThreadExecutor().asCoroutineDispatcher()
     private val pollingScope=CoroutineScope(SupervisorJob()+pollingDispatcher)
     private var pollingJob:Job?=null
+    @Volatile private var pollStopOrigin=PollingExitEvidence.StopOrigin.NONE
+    @Volatile private var pollJobRunId=0L
     @Volatile private var running = false
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -145,8 +148,10 @@ class EnetLoggerService : Service() {
     override fun onStartCommand(intent: Intent?, flags:Int, startId:Int):Int {
         when(intent?.action) {
             ACTION_STOP -> {
+                pollStopOrigin=PollingExitEvidence.StopOrigin.USER_STOP
                 connectionEvent("LOGGER_STOP_REQUEST",0,"LIFECYCLE","ANDROID",null,
-                    "stop requested by app UI or Service intent")
+                    "run=${pollJobRunId};origin=USER_STOP;"+
+                    "job_active=${pollingJob?.isActive};job_cancelled=${pollingJob?.isCancelled}")
                 stopLogger()
             }
             ACTION_START -> if(!running && pollingJob?.isActive!=true) {
@@ -232,7 +237,15 @@ class EnetLoggerService : Service() {
         }
     }
 
+    private fun pollProfileForLog():String = try {
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        HighSpeedProfilePolicy.resolve(
+            prefs.getString(HighSpeedProfilePolicy.PREF_PROFILE,null)).name
+    }catch(_:Exception){"UNKNOWN"}
+
     private fun startLogger() {
+        pollStopOrigin=PollingExitEvidence.StopOrigin.NONE
+        pollJobRunId=System.currentTimeMillis()
         healthGeneration++
         healthState=LoggerHealthPolicy.start(SystemClock.elapsedRealtime())
         lastFreshDmeAtMs=0L
@@ -272,28 +285,85 @@ class EnetLoggerService : Service() {
                 "fast_sample_age_ms,rpm,load_pct,map_kpa_abs,speed_kmh,"+
                 "fast_hz,knock_valid,ignition_valid,note\n")
         }
+        // Capture the outcome BEFORE a handled exception can appear as a
+        // normal Job completion. One run ID ties these rows to system logs.
+        val runId=pollJobRunId
+        val outcome=AtomicReference(PollingExitEvidence.EndKind.UNSET)
+        val originalFailure=AtomicReference<Throwable?>(null)
+        val originalClassification=AtomicReference("UNSET")
+        connectionEvent("POLL_JOB_LAUNCH",0,"LIFECYCLE","COROUTINE",null,
+            "run=$runId;profile="+pollProfileForLog()+";dispatcher=single_owner")
         startHealthWatch()
         pollingJob=pollingScope.launch {
+            var endKind=PollingExitEvidence.EndKind.NORMAL_RETURN
+            var actualFailure:Throwable?=null
             try {
                 loop()
             } catch(e:CancellationException) {
+                endKind=PollingExitEvidence.EndKind.CANCELLED
+                actualFailure=e
+                connectionEvent("POLL_JOB_CANCELLED",0,"LIFECYCLE","COROUTINE",null,
+                    "run=$runId;origin=$pollStopOrigin;"+
+                    PollingExitEvidence.throwableDetail(e))
                 throw e
             } catch(e:Exception) {
-                // Last-resort Service boundary: never crash AndroidRuntime because
-                // a telemetry/setup/cleanup handler itself failed.
+                endKind=PollingExitEvidence.EndKind.HANDLED_EXCEPTION
+                actualFailure=e
+                // This exception is intentionally contained by the existing
+                // Service boundary; the Job's completion cause will be null.
+                connectionEvent("POLL_JOB_CAUGHT_EXCEPTION",0,"LIFECYCLE",
+                    "COROUTINE",null,"run=$runId;profile="+pollProfileForLog()+
+                    ";"+PollingExitEvidence.throwableDetail(e))
+                android.util.Log.e("BMW_OCTANE_POLL",
+                    "Polling job $runId caught exception (profile="+
+                    pollProfileForLog()+")",e)
+                // Preserve the v215 fail-safe behavior and existing CSV data.
                 running=false
                 try { socket?.close() } catch(_:Exception) {}
                 socket=null
                 DiagnosticFailureBoundary.attempt {
                     emit("LOGGER остановлен после ошибки: ${e.javaClass.simpleName}",state="ERROR")
                 }
+            } catch(t:Throwable) {
+                endKind=PollingExitEvidence.EndKind.FATAL_ERROR
+                actualFailure=t
+                connectionEvent("POLL_JOB_FATAL",0,"LIFECYCLE","COROUTINE",null,
+                    "run=$runId;"+PollingExitEvidence.throwableDetail(t))
+                android.util.Log.e("BMW_OCTANE_POLL",
+                    "Polling job $runId fatal Throwable",t)
+                throw t
             } finally {
+                val origin=pollStopOrigin
+                val reason=PollingExitEvidence.classification(endKind,origin)
+                outcome.set(endKind)
+                originalFailure.set(actualFailure)
+                originalClassification.set(reason)
+                val state=healthState
+                val now=SystemClock.elapsedRealtime()
+                connectionEvent("POLL_JOB_EXIT",0,"LIFECYCLE","COROUTINE",null,
+                    "run=$runId;reason=$reason;profile="+pollProfileForLog()+
+                    ";phase=${state.phase};phase_age_ms="+
+                    (now-state.phaseSinceMs).coerceAtLeast(0L)+
+                    ";valid_age_ms="+
+                    (if(state.lastValidAtMs>0L)
+                        (now-state.lastValidAtMs).coerceAtLeast(0L) else -1L)+
+                    ";thread="+Thread.currentThread().name)
                 running=false
             }
         }.also { job ->
-            // Completion runs only after loop() has drained all queued CSV
-            // writes. Also handles STOP before the coroutine gets scheduled.
-            job.invokeOnCompletion {
+            // invokeOnCompletion observes the actual Job outcome. The earlier
+            // finally row disambiguates a swallowed Exception from success.
+            job.invokeOnCompletion { completionCause ->
+                val end=outcome.get()
+                val reason=originalClassification.get()
+                val error=originalFailure.get() ?: completionCause
+                connectionEvent("POLL_JOB_COMPLETION",0,"LIFECYCLE","COROUTINE",null,
+                    "run=$runId;reason=$reason;end=$end;"+
+                    "origin=$pollStopOrigin;cause="+
+                    (completionCause?.javaClass?.simpleName ?: "null")+
+                    ";error="+(error?.javaClass?.simpleName ?: "none")+
+                    ";job_cancelled=${job.isCancelled};"+
+                    "job_completed=${job.isCompleted}")
                 if(!running) {
                     healthJob?.cancel()
                     healthGeneration++
@@ -350,8 +420,13 @@ class EnetLoggerService : Service() {
         // loop() releases the foreground service only after all writers close.
     }
     override fun onDestroy() {
+        if(pollStopOrigin==PollingExitEvidence.StopOrigin.NONE)
+            pollStopOrigin=PollingExitEvidence.StopOrigin.SERVICE_DESTROY
         connectionEvent("LOGGER_SERVICE_DESTROY",0,"LIFECYCLE","ANDROID",null,
-            "running=$running;active=$isLoggerActive;job_active=${pollingJob?.isActive}")
+            "run=${pollJobRunId};origin=$pollStopOrigin;running=$running;"+
+            "active=$isLoggerActive;job_active=${pollingJob?.isActive};"+
+            "job_cancelled=${pollingJob?.isCancelled};"+
+            "job_completed=${pollingJob?.isCompleted}")
         healthGeneration++
         healthJob?.cancel()
         healthScope.cancel()
