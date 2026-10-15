@@ -42,6 +42,7 @@ class MainActivity : Activity() {
     private var localOnlyStatus:TextView?=null
     private var pendingLocalOnlySsid:String?=null
     private var pendingLocalOnlyPassword:String?=null
+    private var pendingLocalOnlyBssid:String?=null
     private val LOCAL_ONLY_WIFI_PERMISSION_REQUEST=6212
     private var liveLearningRpm:Double? = null
     private var liveLearningLoad:Double? = null
@@ -873,6 +874,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        autoStartLocalOnlyWifiIfEnabled()
         if(::homeFuelTitle.isInitialized) {
             logging=EnetLoggerService.isLoggerActive
             if(!logging) {
@@ -946,8 +948,9 @@ class MainActivity : Activity() {
         if(active.enabled) {
             AlertDialog.Builder(this)
                 .setTitle("VXSCAN • local-only: "+active.phase.name)
-                .setMessage(active.detail+"\n\nОтключение вернёт обычный системный режим Wi-Fi.")
-                .setPositiveButton("Отключить") { _,_ ->
+                .setMessage(active.detail+"\n\nОтключение удалит профиль автоподключения и зашифрованный пароль.")
+                .setPositiveButton("Отключить и забыть") { _,_ ->
+                    VxscanWifiCredentials.clear(this)
                     VxscanLocalOnlyWifi.stop(this)
                     refreshLocalOnlyWifiStatus()
                 }
@@ -962,7 +965,8 @@ class MainActivity : Activity() {
         val ssidInput=EditText(this).apply {
             hint="SSID адаптера (любое имя, без префикса)"
             setSingleLine(true)
-            setText(prefs.getString("vxscan_local_only_ssid",""))
+            setText(VxscanWifiCredentials.lastSsid(this@MainActivity) ?:
+                prefs.getString("vxscan_local_only_ssid",""))
         }
         val passwordInput=EditText(this).apply {
             hint="Пароль WPA2, пусто для открытой сети"
@@ -970,34 +974,54 @@ class MainActivity : Activity() {
             inputType=android.text.InputType.TYPE_CLASS_TEXT or
                 android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
         }
+        val bssidInput=EditText(this).apply {
+            hint="BSSID / MAC точки (необязательно)"
+            setSingleLine(true)
+            setText(VxscanWifiCredentials.lastBssid(this@MainActivity).orEmpty())
+        }
+        val autoSave=CheckBox(this).apply {
+            text="Автоподключение при запуске BMW OCTANE"
+            isChecked=true
+        }
         body.addView(ssidInput)
         body.addView(passwordInput)
+        body.addView(bssidInput)
+        body.addView(autoSave)
         AlertDialog.Builder(this)
             .setTitle("VXSCAN + мобильный интернет • эксперимент")
             .setMessage("Укажи точное имя Wi-Fi своего адаптера — у разных VXSCAN SSID отличаются. "+
-                "Android запросит подтверждение подключения. Пароль не сохраняется. "+
+                "Android может запросить подтверждение. При автоподключении пароль шифруется Android Keystore. "+
                 "После READY запусти LOGGER: VXSCAN останется только на выбранном Wi-Fi. "+
                 "Интернет других приложений зависит от One UI и проверяется отдельно.")
             .setView(body)
             .setPositiveButton("Подключить") { _,_ ->
                 val ssid=ssidInput.text?.toString()?.trim().orEmpty()
                 val password=passwordInput.text?.toString().orEmpty()
+                val bssid=bssidInput.text?.toString()?.trim()?.ifBlank { null }
                 val error=VxscanLocalOnlyPolicy.validate(ssid,password)
+                    ?:VxscanLocalOnlyPolicy.validateBssid(bssid)
                 if(error!=null) {
                     Toast.makeText(this,error,Toast.LENGTH_LONG).show()
                 } else {
-                    // Remember the SSID only, never remember the password.
                     prefs.edit().putString("vxscan_local_only_ssid",ssid).apply()
+                    if(autoSave.isChecked &&
+                        !VxscanWifiCredentials.save(this,ssid,password,bssid)) {
+                        Toast.makeText(this,
+                            "Не удалось сохранить пароль защищённо; автоподключение отключено",
+                            Toast.LENGTH_LONG).show()
+                        return@setPositiveButton
+                    }
                     if(!hasLocalOnlyWifiPermission()) {
                         pendingLocalOnlySsid=ssid
                         pendingLocalOnlyPassword=password
+                        pendingLocalOnlyBssid=bssid
                         val permission=if(Build.VERSION.SDK_INT>=33)
                             Manifest.permission.NEARBY_WIFI_DEVICES
                         else Manifest.permission.ACCESS_FINE_LOCATION
                         requestPermissions(arrayOf(permission),
                             LOCAL_ONLY_WIFI_PERMISSION_REQUEST)
                     } else {
-                        startLocalOnlyWifi(ssid,password)
+                        startLocalOnlyWifi(ssid,password,bssid)
                     }
                 }
             }
