@@ -9,7 +9,7 @@ class SignalEvidenceGateTest {
                     trip:String="101",fuel:String="1",epoch:String="0",
                     age:String="90",context:Boolean=true,
                     clock:String="1000"):String {
-        val c=MutableList(24){""}
+        val c=MutableList(25){""}
         c[0]="1792000000000";c[1]=trip;c[2]=fuel;c[3]=epoch
         c[4]="2.0.1-lab";c[5]="DME8FF_R";c[6]="USER_ACK_ONLY"
         c[7]="BASELINE";c[8]="B+";c[9]="DID_$did"
