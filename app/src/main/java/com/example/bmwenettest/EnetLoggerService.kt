@@ -858,7 +858,7 @@ class EnetLoggerService : Service() {
             val cycle=File(dir,"bmw_fast_cycle_timing_v1_${learningTripId}.csv")
             val note="# host_monotonic_ns=true;ecu_sample_clock=unknown;"+
                 "same_uds_reply_does_not_prove_simultaneous_acquisition=true;"+
-                "dynamic_limits=research_only\\n"
+                "dynamic_limits=research_only\n"
             tx.writeText(note+FastTimingTrace.TX_HEADER+"\n")
             signal.writeText(note+FastTimingTrace.SIGNAL_HEADER+"\n")
             cycle.writeText(note+FastTimingTrace.CYCLE_HEADER+"\n")
