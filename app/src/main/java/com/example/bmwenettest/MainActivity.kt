@@ -1035,10 +1035,26 @@ class MainActivity : Activity() {
         return checkSelfPermission(permission)==PackageManager.PERMISSION_GRANTED
     }
 
-    private fun startLocalOnlyWifi(ssid:String,password:String) {
-        val error=VxscanLocalOnlyWifi.start(this,ssid,password)
+    private fun startLocalOnlyWifi(ssid:String,password:String,bssid:String?=null) {
+        val error=VxscanLocalOnlyWifi.start(this,ssid,password,bssid)
         if(error!=null) Toast.makeText(this,error,Toast.LENGTH_LONG).show()
         refreshLocalOnlyWifiStatus()
+    }
+
+    /** The user has explicitly opted in to auto-connect on app launch. */
+    private fun autoStartLocalOnlyWifiIfEnabled() {
+        if(!hasLocalOnlyWifiPermission())return
+        if(!VxscanLocalOnlyPolicy.shouldAutoRequest(
+                VxscanWifiCredentials.enabled(this),
+                VxscanLocalOnlyWifi.snapshot().enabled))return
+        val profile=VxscanWifiCredentials.load(this)
+        if(profile==null) {
+            Toast.makeText(this,
+                "Пароль VXSCAN недоступен в Android Keystore; введи его повторно",
+                Toast.LENGTH_LONG).show()
+            return
+        }
+        startLocalOnlyWifi(profile.ssid,profile.password,profile.bssid)
     }
 
     override fun onRequestPermissionsResult(
@@ -1048,12 +1064,14 @@ class MainActivity : Activity() {
         if(requestCode!=LOCAL_ONLY_WIFI_PERMISSION_REQUEST)return
         val ssid=pendingLocalOnlySsid
         val password=pendingLocalOnlyPassword
+        val bssid=pendingLocalOnlyBssid
         pendingLocalOnlySsid=null
         pendingLocalOnlyPassword=null
+        pendingLocalOnlyBssid=null
         if(grantResults.isNotEmpty() &&
             grantResults[0]==PackageManager.PERMISSION_GRANTED &&
             ssid!=null && password!=null) {
-            startLocalOnlyWifi(ssid,password)
+            startLocalOnlyWifi(ssid,password,bssid)
         } else {
             Toast.makeText(this,
                 "Без разрешения «Устройства поблизости» local-only Wi-Fi недоступен",
