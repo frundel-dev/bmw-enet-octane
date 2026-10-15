@@ -1829,17 +1829,22 @@ class EnetLoggerService : Service() {
                 if(e is CancellationException)throw e
                 if(!running) break
                 val failureAt=SystemClock.elapsedRealtime()
-                recentPollFailures.addLast(failureAt)
-                while(recentPollFailures.isNotEmpty() &&
-                    failureAt-recentPollFailures.first()>90000L) {
-                    recentPollFailures.removeFirst()
-                }
-                if(!experimentalRollback && requestedPollMode!="A" &&
-                    recentPollFailures.size>=2) {
-                    experimentalRollback=true
-                    connectionEvent("EXPERIMENT_ROLLBACK",reconnects,
-                        connectionStage,connectionTransport,connectionIp,
-                        "2 TCP interruptions within 90s; use safe mode A until STOP/START")
+                // A failure BEFORE reaching the POLL state is discovery /
+                // network provisioning, not proof of a broken FAST poll.
+                // Do not silently downgrade B+ merely because Wi-Fi was absent.
+                if(VxscanLocalOnlyPolicy.countsAsPollFailure(connectionStage)) {
+                    recentPollFailures.addLast(failureAt)
+                    while(recentPollFailures.isNotEmpty() &&
+                        failureAt-recentPollFailures.first()>90000L) {
+                        recentPollFailures.removeFirst()
+                    }
+                    if(!experimentalRollback && requestedPollMode!="A" &&
+                        recentPollFailures.size>=2) {
+                        experimentalRollback=true
+                        connectionEvent("EXPERIMENT_ROLLBACK",reconnects,
+                            connectionStage,connectionTransport,connectionIp,
+                            "2 polling interruptions within 90s; safe mode A until STOP/START")
+                    }
                 }
                 reconnects++; consecutiveFailures++; sampleTimes.clear()
                 recordObservation(DriveObservation(
