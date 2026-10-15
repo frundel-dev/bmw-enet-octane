@@ -11,18 +11,18 @@ internal object VxscanHeaderStatus {
 
     fun label(phase:VxscanLocalOnlyWifi.Phase):Label=when(phase) {
         VxscanLocalOnlyWifi.Phase.OFF ->
-            Label("● VXSCAN Wi-Fi: не активирован",Tone.OFF)
+            Label("● Wi-Fi: выключен",Tone.OFF)
         VxscanLocalOnlyWifi.Phase.REQUESTING ->
-            Label("● VXSCAN Wi-Fi: подключение…",Tone.WAITING)
+            Label("● Wi-Fi: подключение…",Tone.WAITING)
         VxscanLocalOnlyWifi.Phase.WAITING_IP ->
-            Label("● VXSCAN Wi-Fi: ожидание IP…",Tone.WAITING)
+            Label("● Wi-Fi: ожидание IP",Tone.WAITING)
         VxscanLocalOnlyWifi.Phase.READY ->
-            Label("● VXSCAN Wi-Fi: готово · local-only",Tone.READY)
+            Label("● Wi-Fi: готово",Tone.READY)
         VxscanLocalOnlyWifi.Phase.LOST ->
-            Label("● VXSCAN Wi-Fi: связь потеряна",Tone.FAILED)
+            Label("● Wi-Fi: связь потеряна",Tone.FAILED)
         VxscanLocalOnlyWifi.Phase.UNAVAILABLE ->
-            Label("● VXSCAN Wi-Fi: недоступно",Tone.FAILED)
+            Label("● Wi-Fi: недоступно",Tone.FAILED)
         VxscanLocalOnlyWifi.Phase.ERROR ->
-            Label("● VXSCAN Wi-Fi: ошибка",Tone.FAILED)
+            Label("● Wi-Fi: ошибка",Tone.FAILED)
     }
 }
