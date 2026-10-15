@@ -37,6 +37,17 @@ internal object VxscanLocalOnlyWifi {
     private var requestCallback:ConnectivityManager.NetworkCallback?=null
     private var generation=0
 
+    @Volatile private var uiVisible=false
+
+    fun setUiVisible(visible:Boolean) { uiVisible=visible }
+    fun releaseUnlessUiVisible(context:Context) {
+        if(!uiVisible)stop(context)
+    }
+    // Prevent fallback to ordinary Wi-Fi during a STOP/START transition,
+    // even when the request callback has temporarily been released.
+    fun reservationRequired(context:Context):Boolean =
+        VxscanWifiCredentials.enabled(context) || state.enabled
+
     fun snapshot():Snapshot=state
 
     /** Immutable for the purpose of fail-closed routing within one transaction. */
@@ -183,6 +194,10 @@ internal object VxscanLocalOnlyPolicy {
             return "Для WPA2 нужен пароль длиной 8–63 символа; пустой — открытая сеть"
         return null
     }
+
+    fun releaseAfterStop(uiVisible:Boolean):Boolean = !uiVisible
+    fun shouldBlockWithoutReady(autoProfile:Boolean,requestActive:Boolean,ready:Boolean):Boolean =
+        (autoProfile || requestActive) && !ready
 
     enum class Choice { NORMAL, RESERVED, BLOCKED }
     fun choice(enabled:Boolean,ready:Boolean):Choice=when {
