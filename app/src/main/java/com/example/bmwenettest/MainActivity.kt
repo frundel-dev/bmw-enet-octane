@@ -1046,7 +1046,7 @@ class MainActivity : Activity() {
 
     /** The user has explicitly opted in to auto-connect on app launch. */
     private fun autoStartLocalOnlyWifiIfEnabled() {
-        if(!hasLocalOnlyWifiPermission())return
+        if(pendingLocalOnlySsid!=null || !hasLocalOnlyWifiPermission())return
         if(!VxscanLocalOnlyPolicy.shouldAutoRequest(
                 VxscanWifiCredentials.enabled(this),
                 VxscanLocalOnlyWifi.snapshot().enabled))return
