@@ -1004,12 +1004,15 @@ class MainActivity : Activity() {
                     Toast.makeText(this,error,Toast.LENGTH_LONG).show()
                 } else {
                     prefs.edit().putString("vxscan_local_only_ssid",ssid).apply()
-                    if(autoSave.isChecked &&
-                        !VxscanWifiCredentials.save(this,ssid,password,bssid)) {
-                        Toast.makeText(this,
-                            "Не удалось сохранить пароль защищённо; автоподключение отключено",
-                            Toast.LENGTH_LONG).show()
-                        return@setPositiveButton
+                    if(autoSave.isChecked) {
+                        if(!VxscanWifiCredentials.save(this,ssid,password,bssid)) {
+                            Toast.makeText(this,
+                                "Android Keystore недоступен; профиль не сохранён",
+                                Toast.LENGTH_LONG).show()
+                            return@setPositiveButton
+                        }
+                    } else {
+                        VxscanWifiCredentials.clear(this)
                     }
                     if(!hasLocalOnlyWifiPermission()) {
                         pendingLocalOnlySsid=ssid
@@ -2581,6 +2584,16 @@ class MainActivity : Activity() {
                     }.setNegativeButton("Закрыть",null).show()
             }
         }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // A Wi-Fi approval sheet can temporarily hide this Activity during
+        // REQUESTING/WAITING_IP. Never tear it down before user approval.
+        // When the UI is left without LOGGER, release READY local-only Wi-Fi.
+        if(!EnetLoggerService.isLoggerActive &&
+            VxscanLocalOnlyWifi.snapshot().phase==VxscanLocalOnlyWifi.Phase.READY)
+            VxscanLocalOnlyWifi.stop(this)
     }
 
     // Legacy bmw_fuel_events.csv is a read-only archive. All new
