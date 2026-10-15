@@ -46,6 +46,7 @@ class MainActivity : Activity() {
     private var pendingLocalOnlyPassword:String?=null
     private var pendingLocalOnlyBssid:String?=null
     private var pendingWifiScanSsidInput:EditText?=null
+    private var pendingWifiScanPasswordInput:EditText?=null
     private var pendingWifiScanBssidInput:EditText?=null
     private val WIFI_SCAN_PERMISSION_REQUEST=6213
     private val LOCAL_ONLY_WIFI_PERMISSION_REQUEST=6212
@@ -1004,7 +1005,7 @@ class MainActivity : Activity() {
             text="Найти Wi-Fi рядом"
             isAllCaps=false
             setOnClickListener {
-                requestNearbyWifiSelection(ssidInput,bssidInput)
+                requestNearbyWifiSelection(ssidInput,passwordInput,bssidInput)
             }
         }
         body.addView(findWifiButton)
@@ -1056,6 +1057,113 @@ class MainActivity : Activity() {
             .setNegativeButton("Отмена",null).show()
     }
 
+
+    /** Scan only after an explicit tap; no background discovery or SSID filtering. */
+    private fun requestNearbyWifiSelection(
+        ssidInput:EditText,passwordInput:EditText,bssidInput:EditText
+    ) {
+        if(logging || EnetLoggerService.isLoggerActive) {
+            Toast.makeText(this,"Сначала останови LOGGER",Toast.LENGTH_LONG).show()
+            return
+        }
+        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
+            PackageManager.PERMISSION_GRANTED) {
+            showNearbyWifiResults(ssidInput,passwordInput,bssidInput)
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Поиск Wi-Fi • разрешение Android")
+            .setMessage("Android требует разрешение «Точное местоположение» и " +
+                "включённую геолокацию для получения списка соседних Wi-Fi. " +
+                "BMW OCTANE использует этот список только для выбора SSID/BSSID. " +
+                "Поиск выполняется только по кнопке, список не сохраняется " +
+                "и никуда не отправляется. Без разрешения можно ввести SSID вручную.")
+            .setPositiveButton("Разрешить поиск") { _,_ ->
+                pendingWifiScanSsidInput=ssidInput
+                pendingWifiScanPasswordInput=passwordInput
+                pendingWifiScanBssidInput=bssidInput
+                // On Android 12+ the OS requires COARSE + FINE together.
+                val perms=if(Build.VERSION.SDK_INT>=31)
+                    arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION,
+                        Manifest.permission.ACCESS_FINE_LOCATION)
+                else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+                requestPermissions(perms,WIFI_SCAN_PERMISSION_REQUEST)
+            }
+            .setNegativeButton("Ввести вручную",null).show()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun showNearbyWifiResults(
+        ssidInput:EditText,passwordInput:EditText,bssidInput:EditText
+    ) {
+        if(logging || EnetLoggerService.isLoggerActive)return
+        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=
+            PackageManager.PERMISSION_GRANTED)return
+        val lm=getSystemService(LOCATION_SERVICE) as? LocationManager
+        val locationEnabled=try {
+            if(Build.VERSION.SDK_INT>=28) lm?.isLocationEnabled==true
+            else lm?.isProviderEnabled(LocationManager.NETWORK_PROVIDER)==true ||
+                lm?.isProviderEnabled(LocationManager.GPS_PROVIDER)==true
+        }catch(_:Exception){false}
+        if(!locationEnabled) {
+            AlertDialog.Builder(this)
+                .setTitle("Включи геолокацию Android")
+                .setMessage("Без включённой геолокации Android не выдаёт список Wi-Fi. " +
+                    "Ручной ввод SSID по-прежнему доступен.")
+                .setPositiveButton("Открыть настройки") { _,_ ->
+                    startActivity(Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                }
+                .setNegativeButton("Закрыть",null).show()
+            return
+        }
+        val wifi=applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
+        if(wifi==null || !wifi.isWifiEnabled) {
+            Toast.makeText(this,"Сначала включи Wi-Fi",Toast.LENGTH_LONG).show()
+            return
+        }
+        val started=try { wifi.startScan() }catch(_:SecurityException){false}
+        catch(_:Exception){false}
+        // startScan is throttled by Android; cached scans may still be usable.
+        Toast.makeText(this,
+            if(started)"Ищу Wi-Fi рядом…" else "Сканирование ограничено Android; проверяю доступный список",
+            Toast.LENGTH_SHORT).show()
+        main.postDelayed({
+            if(isFinishing || isDestroyed || !ssidInput.isAttachedToWindow ||
+                logging || EnetLoggerService.isLoggerActive)return@postDelayed
+            val list=try {
+                VxscanWifiScanList.entries(wifi.scanResults.map { ap ->
+                    VxscanWifiScanList.AccessPoint(
+                        ap.SSID ?: "",ap.BSSID ?: "",ap.level,ap.frequency,
+                        ap.capabilities ?: "")
+                })
+            }catch(_:SecurityException){emptyList()}
+            catch(_:Exception){emptyList()}
+            if(list.isEmpty()) {
+                AlertDialog.Builder(this)
+                    .setTitle("Wi-Fi не найден")
+                    .setMessage("Android не вернул доступных точек доступа. " +
+                        "Повтори поиск немного позже либо укажи SSID вручную. " +
+                        "Проверь включение Wi-Fi и геолокации.")
+                    .setPositiveButton("OK",null).show()
+                return@postDelayed
+            }
+            AlertDialog.Builder(this)
+                .setTitle("Выбери сеть адаптера • "+list.size+" Wi-Fi")
+                .setItems(list.map(VxscanWifiScanList::label).toTypedArray()) { _,index ->
+                    val found=list[index]
+                    // Never silently reuse a WPA2 password for a different AP.
+                    if(ssidInput.text.toString()!=found.ssid) passwordInput.setText("")
+                    ssidInput.setText(found.ssid)
+                    bssidInput.setText(found.bssid)
+                    if(VxscanWifiScanList.security(found.capabilities)=="WPA3/SAE")
+                        Toast.makeText(this,
+                            "Проверь защиту: текущий local-only профиль поддерживает WPA2 или открытую сеть",
+                            Toast.LENGTH_LONG).show()
+                }
+                .setNegativeButton("Отмена",null).show()
+        },2000L)
+    }
+
     private fun hasLocalOnlyWifiPermission():Boolean {
         val permission=if(Build.VERSION.SDK_INT>=33)
             Manifest.permission.NEARBY_WIFI_DEVICES
@@ -1091,13 +1199,15 @@ class MainActivity : Activity() {
         super.onRequestPermissionsResult(requestCode,permissions,grantResults)
         if(requestCode==WIFI_SCAN_PERMISSION_REQUEST) {
             val ssidInput=pendingWifiScanSsidInput
+            val passwordInput=pendingWifiScanPasswordInput
             val bssidInput=pendingWifiScanBssidInput
             pendingWifiScanSsidInput=null
+            pendingWifiScanPasswordInput=null
             pendingWifiScanBssidInput=null
             if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==
                 PackageManager.PERMISSION_GRANTED &&
-                ssidInput!=null && bssidInput!=null)
-                showNearbyWifiResults(ssidInput,bssidInput)
+                ssidInput!=null && passwordInput!=null && bssidInput!=null)
+                showNearbyWifiResults(ssidInput,passwordInput,bssidInput)
             else Toast.makeText(this,
                 "Поиск Wi-Fi требует точного местоположения. Можно ввести SSID вручную.",
                 Toast.LENGTH_LONG).show()
