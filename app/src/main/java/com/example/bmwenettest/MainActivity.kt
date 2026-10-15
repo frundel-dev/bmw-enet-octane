@@ -1245,9 +1245,7 @@ class MainActivity : Activity() {
         // A dead NetworkCallback stays LOST/UNAVAILABLE/ERROR until explicitly
         // unregistered. Only on a foreground return do we re-request it;
         // never interrupt a still-READY or pending approved connection.
-        if(wifiPhase==VxscanLocalOnlyWifi.Phase.LOST ||
-            wifiPhase==VxscanLocalOnlyWifi.Phase.UNAVAILABLE ||
-            wifiPhase==VxscanLocalOnlyWifi.Phase.ERROR)
+        if(VxscanLocalOnlyPolicy.needsForegroundRerequest(wifiPhase))
             VxscanLocalOnlyWifi.stop(this)
         if(!VxscanLocalOnlyPolicy.shouldAutoRequest(true,
                 VxscanLocalOnlyWifi.snapshot().enabled))return
