@@ -8,6 +8,12 @@ class VxscanLocalOnlyLifecycleTest {
         assertFalse(VxscanLocalOnlyPolicy.releaseAfterStop(true))
         assertTrue(VxscanLocalOnlyPolicy.releaseAfterStop(false))
     }
+    @Test fun noFastFallbackUntilConnectionHasEnteredActivePolling() {
+        for(stage in listOf("NETWORK","FAST_TCP","DISCOVERY","TCP"))
+            assertFalse(VxscanLocalOnlyPolicy.countsAsPollFailure(stage))
+        assertTrue(VxscanLocalOnlyPolicy.countsAsPollFailure("POLL"))
+    }
+
     @Test fun savedProfileNeverFallsBackToUnrelatedWifiBetweenStopAndStart() {
         assertTrue(VxscanLocalOnlyPolicy.shouldBlockWithoutReady(true,false,false))
         assertFalse(VxscanLocalOnlyPolicy.shouldBlockWithoutReady(true,false,true))
