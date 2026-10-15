@@ -11,7 +11,7 @@ class VxscanHeaderStatusTest {
         val state=VxscanHeaderStatus.label(P.READY)
         assertEquals(T.READY,state.tone)
         assertTrue(state.text.contains("готово"))
-        assertTrue(state.text.contains("local-only"))
+        assertTrue(state.text.contains("Wi-Fi"))
         assertFalse(state.text.contains("DME"))
         assertFalse(state.text.contains("интернет"))
     }
@@ -26,7 +26,7 @@ class VxscanHeaderStatusTest {
 
     @Test fun disconnectedLostAndUnavailableAreDistinct() {
         assertEquals(T.OFF,VxscanHeaderStatus.label(P.OFF).tone)
-        assertTrue(VxscanHeaderStatus.label(P.OFF).text.contains("не активирован"))
+        assertTrue(VxscanHeaderStatus.label(P.OFF).text.contains("выключен"))
         assertTrue(VxscanHeaderStatus.label(P.LOST).text.contains("потеряна"))
         assertTrue(VxscanHeaderStatus.label(P.UNAVAILABLE).text.contains("недоступно"))
         for(phase in listOf(P.LOST,P.UNAVAILABLE,P.ERROR))
