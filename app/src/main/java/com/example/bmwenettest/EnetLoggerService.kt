@@ -138,7 +138,7 @@ class EnetLoggerService : Service() {
             ACTION_STOP -> stopLogger()
             ACTION_START -> if(!running && pollingJob?.isActive!=true) {
                 val reservation=VxscanLocalOnlyWifi.snapshot()
-                if(reservation.enabled &&
+                if(VxscanLocalOnlyWifi.reservationRequired(this) &&
                     reservation.phase!=VxscanLocalOnlyWifi.Phase.READY) {
                     sendBroadcast(Intent(ACTION_STATUS).setPackage(packageName)
                         .putExtra(EXTRA_STATUS,
@@ -263,7 +263,9 @@ class EnetLoggerService : Service() {
 
     private fun stopLogger() {
         running=false
-        VxscanLocalOnlyWifi.stop(this)
+        // Preserve an approved local-only Wi-Fi session while UI is visible:
+        // STOP followed by START must not silently fall back to normal Wi-Fi.
+        VxscanLocalOnlyWifi.releaseUnlessUiVisible(this)
         androidNetworkMonitor?.stop(); androidNetworkMonitor=null
         try{socket?.close()}catch(_:Exception){}
         pollingJob?.cancel()
@@ -271,7 +273,7 @@ class EnetLoggerService : Service() {
         // loop() releases the foreground service only after all writers close.
     }
     override fun onDestroy() {
-        VxscanLocalOnlyWifi.stop(this)
+        VxscanLocalOnlyWifi.releaseUnlessUiVisible(this)
         androidNetworkMonitor?.stop(); androidNetworkMonitor=null
         running=false;try{socket?.close()}catch(_:Exception){}
         isLoggerActive=false
@@ -429,7 +431,7 @@ class EnetLoggerService : Service() {
                 val localOnly=VxscanLocalOnlyWifi.snapshot()
                 // A local-only reservation MUST NOT fall back to the system's
                 // regular Wi-Fi. Another AP could accidentally receive HSFZ.
-                val candidates=if(localOnly.enabled) {
+                val candidates=if(VxscanLocalOnlyWifi.reservationRequired(this)) {
                     val reserved=localOnly.network
                     if(VxscanLocalOnlyPolicy.choice(true,
                             localOnly.phase==VxscanLocalOnlyWifi.Phase.READY &&
@@ -595,7 +597,7 @@ class EnetLoggerService : Service() {
                     duration,readStarted-cycleStart,rpm,load,map,speed,
                     hz,4,4,
                     "read-only; no RON conversion; FAST read completed before this request"
-                )+"\\n")
+                ).let(DmeHistoryProtocol::completeCsvRow))
             } catch(_:IOException) {}
             return MonitorOutcome(status,duration)
         } catch(cancelled:CancellationException) {
@@ -612,7 +614,7 @@ class EnetLoggerService : Service() {
                     duration,SystemClock.elapsedRealtime()-cycleStart,
                     rpm,load,map,speed,hz,4,4,
                     "${e.javaClass.simpleName}: ${e.message}; monitor disabled until LOGGER restart"
-                )+"\\n")
+                ).let(DmeHistoryProtocol::completeCsvRow))
             } catch(_:IOException){}
             // Fail-closed BEFORE further reporting: no late response may leak
             // into the next FAST request after an uncertain monitor read.
