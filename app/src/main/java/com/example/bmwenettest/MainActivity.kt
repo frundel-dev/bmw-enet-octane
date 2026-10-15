@@ -730,6 +730,7 @@ class MainActivity : Activity() {
             addAction(EnetLoggerService.ACTION_OCTANE2)
             addAction(EnetLoggerService.ACTION_FAST_TELEMETRY)
             addAction(EnetLoggerService.ACTION_HIGH_SPEED_STATUS)
+            addAction(VxscanLocalOnlyWifi.ACTION_STATUS)
         }
         if(Build.VERSION.SDK_INT>=33) {
             registerReceiver(statusReceiver,filter,RECEIVER_NOT_EXPORTED)
@@ -906,6 +907,136 @@ class MainActivity : Activity() {
      * PRG Signal Lab is an offline view only. It cannot acquire a TCP socket,
      * invoke Service, send UDS requests or alter a fuel-session baseline.
      */
+
+    private fun refreshLocalOnlyWifiStatus() {
+        val status=VxscanLocalOnlyWifi.snapshot()
+        val cm=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+        val caps=cm.getNetworkCapabilities(cm.activeNetwork)
+        val primary=when {
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)==true ->
+                "системная сеть: мобильная"
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN)==true ->
+                "системная сеть: VPN"
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)==true ->
+                "системная сеть: Wi-Fi"
+            else -> "системная сеть: неизвестна"
+        }
+        localOnlyStatus?.text="VXSCAN local-only: "+status.phase.name+
+            (status.ssid?.let { " • "+it } ?: "")+
+            "\n"+status.detail+"\n"+primary+
+            " (интернет остальных приложений проверяется на телефоне)"
+        localOnlyStatus?.setTextColor(when(status.phase) {
+            VxscanLocalOnlyWifi.Phase.READY -> accentGreen
+            VxscanLocalOnlyWifi.Phase.ERROR,
+            VxscanLocalOnlyWifi.Phase.LOST,
+            VxscanLocalOnlyWifi.Phase.UNAVAILABLE -> Color.rgb(255,134,117)
+            else -> tertiary
+        })
+    }
+
+    private fun showLocalOnlyWifiDialog() {
+        if(logging || EnetLoggerService.isLoggerActive) {
+            AlertDialog.Builder(this).setTitle("Останови LOGGER")
+                .setMessage("Изменение маршрута разрешено только после STOP. " +
+                    "Это защищает текущую HSFZ-транзакцию от смены сетевого интерфейса.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        val active=VxscanLocalOnlyWifi.snapshot()
+        if(active.enabled) {
+            AlertDialog.Builder(this)
+                .setTitle("VXSCAN • local-only: "+active.phase.name)
+                .setMessage(active.detail+"\n\nОтключение вернёт обычный системный режим Wi-Fi.")
+                .setPositiveButton("Отключить") { _,_ ->
+                    VxscanLocalOnlyWifi.stop(this)
+                    refreshLocalOnlyWifiStatus()
+                }
+                .setNegativeButton("Отмена",null).show()
+            return
+        }
+        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        val body=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(30,14,30,4)
+        }
+        val ssidInput=EditText(this).apply {
+            hint="SSID адаптера (любое имя, без префикса)"
+            setSingleLine(true)
+            setText(prefs.getString("vxscan_local_only_ssid",""))
+        }
+        val passwordInput=EditText(this).apply {
+            hint="Пароль WPA2, пусто для открытой сети"
+            setSingleLine(true)
+            inputType=android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        body.addView(ssidInput)
+        body.addView(passwordInput)
+        AlertDialog.Builder(this)
+            .setTitle("VXSCAN + мобильный интернет • эксперимент")
+            .setMessage("Укажи точное имя Wi-Fi своего адаптера — у разных VXSCAN SSID отличаются. "+
+                "Android запросит подтверждение подключения. Пароль не сохраняется. "+
+                "После READY запусти LOGGER: VXSCAN останется только на выбранном Wi-Fi. "+
+                "Интернет других приложений зависит от One UI и проверяется отдельно.")
+            .setView(body)
+            .setPositiveButton("Подключить") { _,_ ->
+                val ssid=ssidInput.text?.toString()?.trim().orEmpty()
+                val password=passwordInput.text?.toString().orEmpty()
+                val error=VxscanLocalOnlyPolicy.validate(ssid,password)
+                if(error!=null) {
+                    Toast.makeText(this,error,Toast.LENGTH_LONG).show()
+                } else {
+                    // Remember the SSID only, never remember the password.
+                    prefs.edit().putString("vxscan_local_only_ssid",ssid).apply()
+                    if(!hasLocalOnlyWifiPermission()) {
+                        pendingLocalOnlySsid=ssid
+                        pendingLocalOnlyPassword=password
+                        val permission=if(Build.VERSION.SDK_INT>=33)
+                            Manifest.permission.NEARBY_WIFI_DEVICES
+                        else Manifest.permission.ACCESS_FINE_LOCATION
+                        requestPermissions(arrayOf(permission),
+                            LOCAL_ONLY_WIFI_PERMISSION_REQUEST)
+                    } else {
+                        startLocalOnlyWifi(ssid,password)
+                    }
+                }
+            }
+            .setNegativeButton("Отмена",null).show()
+    }
+
+    private fun hasLocalOnlyWifiPermission():Boolean {
+        val permission=if(Build.VERSION.SDK_INT>=33)
+            Manifest.permission.NEARBY_WIFI_DEVICES
+        else Manifest.permission.ACCESS_FINE_LOCATION
+        return checkSelfPermission(permission)==PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun startLocalOnlyWifi(ssid:String,password:String) {
+        val error=VxscanLocalOnlyWifi.start(this,ssid,password)
+        if(error!=null) Toast.makeText(this,error,Toast.LENGTH_LONG).show()
+        refreshLocalOnlyWifiStatus()
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode:Int,permissions:Array<out String>,grantResults:IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode,permissions,grantResults)
+        if(requestCode!=LOCAL_ONLY_WIFI_PERMISSION_REQUEST)return
+        val ssid=pendingLocalOnlySsid
+        val password=pendingLocalOnlyPassword
+        pendingLocalOnlySsid=null
+        pendingLocalOnlyPassword=null
+        if(grantResults.isNotEmpty() &&
+            grantResults[0]==PackageManager.PERMISSION_GRANTED &&
+            ssid!=null && password!=null) {
+            startLocalOnlyWifi(ssid,password)
+        } else {
+            Toast.makeText(this,
+                "Без разрешения «Устройства поблизости» local-only Wi-Fi недоступен",
+                Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun showPrgOfflineLab() {
         val entries=DmePrgEvidenceLab.specs
         val names=entries.map { spec ->
