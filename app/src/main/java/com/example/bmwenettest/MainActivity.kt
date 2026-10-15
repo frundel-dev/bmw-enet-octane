@@ -2572,6 +2572,11 @@ class MainActivity : Activity() {
                     "DID: ${audit.dids}\n"+
                     "Статусы: ${audit.statuses}\n"+
                     "RAW снят только с существующих каналов."+
+                    "\n\nКонтроль достоверности сохранённых RAW:\n"+
+                    file.useLines { rawLines->
+                        SignalEvidenceGate.offlineSummary(
+                            SignalEvidenceGate.assess(rawLines))
+                    }+
                     "\n\nПоследние RAW/статус по каждому DID:\n"+
                     file.useLines { rawLines->
                         val latest=FastDidAuditCsv.latestSamples(rawLines)
