@@ -563,6 +563,7 @@ class MainActivity : Activity() {
         settingsCard.addView(action("РЕЖИМ ОПРОСА DME"){showPollingModeDialog()})
         settingsCard.addView(action("HIGH-SPEED ПРОФИЛЬ"){showHighSpeedProfileDialog()})
         settingsCard.addView(action("OFFLINE REPLAY"){showObservationReplay()})
+        settingsCard.addView(action("DME PRG • RAW OFFLINE (БЕЗ ECU)") { showPrgOfflineLab() })
         settingsCard.addView(action("ДОПОЛНИТЕЛЬНО • ДИАГНОСТИКА / ЭКСПОРТ"){
             showAdditionalMenu()
         })
@@ -877,6 +878,75 @@ class MainActivity : Activity() {
         registerReceiver(statusReceiver,filter)
     }
 
+
+    /**
+     * PRG Signal Lab is an offline view only. It cannot acquire a TCP socket,
+     * invoke Service, send UDS requests or alter a fuel-session baseline.
+     */
+    private fun showPrgOfflineLab() {
+        val entries=DmePrgEvidenceLab.specs
+        val names=entries.map { spec ->
+            "0x"+spec.didHex+" • "+spec.label+
+                if(spec.width==null)" • LOCKED" else
+                    " • PRG; SWFL не проверен"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("DME8FF_R • PRG Signal Lab (OFFLINE)")
+            .setMessage("22 определения PRG. Только ручная проверка уже сохранённого RAW. " +
+                "Никаких новых DID/UDS запросов и никаких изменений Fuel Score.")
+            .setPositiveButton("Выбрать DID") { _,_ ->
+                AlertDialog.Builder(this)
+                    .setTitle("PRG • выбери сигнал")
+                    .setItems(names) { _,index ->
+                        showPrgOfflineSample(entries[index])
+                    }
+                    .setNegativeButton("Закрыть",null)
+                    .show()
+            }
+            .setNegativeButton("Закрыть",null)
+            .show()
+    }
+
+    private fun showPrgOfflineSample(spec:DmePrgEvidenceLab.Spec) {
+        if(spec.width==null) {
+            AlertDialog.Builder(this)
+                .setTitle("0x"+spec.didHex+" • OFFLINE LOCKED")
+                .setMessage("PRG содержит структурированные результаты, но не доказана " +
+                    "полная форма ответа этого ECU. Простой UDS 22 и авто-декодер " +
+                    "запрещены. Никакого запроса DME не выполняется.")
+                .setPositiveButton("OK",null).show()
+            return
+        }
+        val input=EditText(this).apply {
+            hint="Полный UDS payload без HSFZ: 62 "+spec.didHex.take(2)+
+                " "+spec.didHex.takeLast(2)+" ..."
+            setSingleLine(false)
+            maxLines=4
+            setPadding(24,18,24,18)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("0x"+spec.didHex+" • только OFFLINE")
+            .setMessage(spec.label+"\nФормат PRG: "+spec.width+
+                " байт; SWFL НЕ подтверждён. Вставь сохранённый UDS payload " +
+                "с SID 0x62 или NRC 0x7F 0x22.")
+            .setView(input)
+            .setPositiveButton("Проверить offline") { _,_ ->
+                val result=DmePrgEvidenceLab.interpretHex(
+                    spec.did,input.text?.toString().orEmpty())
+                val text="Статус: "+result.status.name+"\n"+
+                    "RAW: "+result.rawHex.ifEmpty { "нет достоверного RAW" }+"\n"+
+                    (result.value?.let { "Предварительное значение: "+it+"\n" } ?: "")+
+                    "\n"+result.detail+"\n\n"+
+                    "Не считается измерением с автомобиля без доказанного источника."
+                AlertDialog.Builder(this)
+                    .setTitle("PRG RAW • 0x"+spec.didHex)
+                    .setMessage(text)
+                    .setPositiveButton("Закрыть",null)
+                    .show()
+            }
+            .setNegativeButton("Отмена",null)
+            .show()
+    }
 
     private fun showAdditionalMenu() {
         val items=arrayOf("Импорт BMW DME .PRG", "История замеров", "Журнал VXSCAN + Android",
