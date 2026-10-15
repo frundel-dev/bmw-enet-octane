@@ -29,7 +29,7 @@ internal object LoggerHealthPolicy {
         lastCycleAtMs=now,
         lastValidAtMs=if(validDme)now else old.lastValidAtMs)
     fun reconnecting(old:Snapshot,now:Long)=old.copy(
-        phase=Phase.CONNECTING,phaseSinceMs=now)
+        phase=Phase.CONNECTING,phaseSinceMs=now,lastValidAtMs=0L)
     fun freshness(active:Boolean,lastValidAtMs:Long,now:Long):Boolean =
         active && lastValidAtMs>0L && now>=lastValidAtMs &&
             now-lastValidAtMs<=FRESH_MAX_AGE_MS
