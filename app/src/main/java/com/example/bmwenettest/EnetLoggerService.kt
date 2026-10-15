@@ -298,7 +298,48 @@ class EnetLoggerService : Service() {
             var endKind=PollingExitEvidence.EndKind.NORMAL_RETURN
             var actualFailure:Throwable?=null
             try {
-                loop()
+                var fallbackCount=0
+                var fallbackWindowStart=0L
+                while(running) {
+                    try {
+                        loop()
+                        if(running) {
+                            connectionEvent("POLL_LOOP_UNEXPECTED_RETURN",0,
+                                "LIFECYCLE","COROUTINE",null,
+                                "run=$runId;profile="+pollProfileForLog())
+                            // Do not leave an active Service with no socket owner.
+                            running=false
+                        }
+                        break
+                    } catch(e:SocketException) {
+                        val now=SystemClock.elapsedRealtime()
+                        val decision=PollingSocketFallbackPolicy.decide(
+                            running,pollStopOrigin==PollingExitEvidence.StopOrigin.USER_STOP,
+                            now,fallbackWindowStart,fallbackCount)
+                        if(decision.action==PollingSocketFallbackPolicy.Action.STOP)break
+                        if(decision.action==PollingSocketFallbackPolicy.Action.FAIL) {
+                            connectionEvent("POLL_LOOP_RECOVERY_LIMIT",0,
+                                "LIFECYCLE","COROUTINE",null,
+                                "run=$runId;profile="+pollProfileForLog()+
+                                ";"+PollingExitEvidence.throwableDetail(e))
+                            throw e
+                        }
+                        fallbackCount=decision.attempt
+                        fallbackWindowStart=decision.windowStart
+                        connectionEvent("POLL_LOOP_SOCKET_FALLBACK",0,
+                            "RECOVERY","COROUTINE",null,
+                            "run=$runId;attempt=$fallbackCount;profile="+pollProfileForLog()+
+                            ";previous_csv_closed_before_retry=true;"+
+                            PollingExitEvidence.throwableDetail(e))
+                        // loop() unwinds its CSV writers before the sole owner
+                        // can enter here. No competing reads or ECU requests.
+                        try{socket?.close()}catch(_:Exception){}
+                        socket=null
+                        lastFreshDmeAtMs=0L
+                        healthState=LoggerHealthPolicy.reconnecting(healthState,now)
+                        delay(150L)
+                    }
+                }
             } catch(e:CancellationException) {
                 endKind=PollingExitEvidence.EndKind.CANCELLED
                 actualFailure=e
@@ -307,21 +348,25 @@ class EnetLoggerService : Service() {
                     PollingExitEvidence.throwableDetail(e))
                 throw e
             } catch(e:Exception) {
-                endKind=PollingExitEvidence.EndKind.HANDLED_EXCEPTION
+                endKind=if(!running && pollStopOrigin!=PollingExitEvidence.StopOrigin.NONE)
+                    PollingExitEvidence.EndKind.CANCELLED
+                    else PollingExitEvidence.EndKind.HANDLED_EXCEPTION
                 actualFailure=e
                 // This exception is intentionally contained by the existing
                 // Service boundary; the Job's completion cause will be null.
-                connectionEvent("POLL_JOB_CAUGHT_EXCEPTION",0,"LIFECYCLE",
+                val expectedClose=endKind==PollingExitEvidence.EndKind.CANCELLED
+                connectionEvent(if(expectedClose)"POLL_JOB_EXPECTED_STOP_CLOSE"
+                    else "POLL_JOB_CAUGHT_EXCEPTION",0,"LIFECYCLE",
                     "COROUTINE",null,"run=$runId;profile="+pollProfileForLog()+
                     ";"+PollingExitEvidence.throwableDetail(e))
-                android.util.Log.e("BMW_OCTANE_POLL",
+                if(!expectedClose)android.util.Log.e("BMW_OCTANE_POLL",
                     "Polling job $runId caught exception (profile="+
                     pollProfileForLog()+")",e)
                 // Preserve the v215 fail-safe behavior and existing CSV data.
                 running=false
                 try { socket?.close() } catch(_:Exception) {}
                 socket=null
-                DiagnosticFailureBoundary.attempt {
+                if(!expectedClose)DiagnosticFailureBoundary.attempt {
                     emit("LOGGER остановлен после ошибки: ${e.javaClass.simpleName}",state="ERROR")
                 }
             } catch(t:Throwable) {
@@ -343,7 +388,8 @@ class EnetLoggerService : Service() {
                 connectionEvent("POLL_JOB_EXIT",0,"LIFECYCLE","COROUTINE",null,
                     "run=$runId;reason=$reason;profile="+pollProfileForLog()+
                     ";phase=${state.phase};phase_age_ms="+
-                    (now-state.phaseSinceMs).coerceAtLeast(0L)+
+                    (if(state.phaseSinceMs>0L)
+                        (now-state.phaseSinceMs).coerceAtLeast(0L) else -1L)+
                     ";valid_age_ms="+
                     (if(state.lastValidAtMs>0L)
                         (now-state.lastValidAtMs).coerceAtLeast(0L) else -1L)+
