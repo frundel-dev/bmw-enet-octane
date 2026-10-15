@@ -2591,7 +2591,7 @@ class MainActivity : Activity() {
         // A Wi-Fi approval sheet can temporarily hide this Activity during
         // REQUESTING/WAITING_IP. Never tear it down before user approval.
         // When the UI is left without LOGGER, release READY local-only Wi-Fi.
-        if(!EnetLoggerService.isLoggerActive &&
+        if(!logging && !EnetLoggerService.isLoggerActive &&
             VxscanLocalOnlyWifi.snapshot().phase==VxscanLocalOnlyWifi.Phase.READY)
             VxscanLocalOnlyWifi.stop(this)
     }
@@ -2603,7 +2603,8 @@ class MainActivity : Activity() {
         guidedUiRefresh?.let { main.removeCallbacks(it) }
         guidedUiRefresh=null
         historyCancel=true
-        if(!EnetLoggerService.isLoggerActive) VxscanLocalOnlyWifi.stop(this)
+        if(!logging && !EnetLoggerService.isLoggerActive)
+            VxscanLocalOnlyWifi.stop(this)
         statusReceiver?.let{try{unregisterReceiver(it)}catch(_:Exception){}}
         statusReceiver=null
         super.onDestroy()
