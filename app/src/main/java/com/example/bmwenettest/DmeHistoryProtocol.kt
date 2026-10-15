@@ -70,4 +70,6 @@ internal object DmeHistoryProtocol {
             "\"" + str.replace("\"","\"\"") + "\""
         else str
     }
+    /** A physical newline is required; literal backslash-n corrupts the next CSV row. */
+    fun completeCsvRow(csv:String):String=csv+"\n"
 }
