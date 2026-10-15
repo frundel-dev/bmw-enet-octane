@@ -120,7 +120,7 @@ class FastTimingTraceTest {
         s.trace.finish(1_100_000_000,mapOf(0x0C to true,0x04 to true))
         val all=s.tx.single().lines().map{it.split(",")}
         assertEquals(listOf("1","2"),all.map{it[7]})
-        assertEquals(listOf("0C","04"),all.map{it[9]})
+        assertEquals(listOf("000C","0004"),all.map{it[9]})
         val disconnected=s.trace.abort(1_200_000_000,"already flushed")
         assertEquals(0,disconnected.completeCount)
         assertEquals(1,s.cycle.size)
