@@ -1239,8 +1239,16 @@ class MainActivity : Activity() {
     /** The user has explicitly opted in to auto-connect on app launch. */
     private fun autoStartLocalOnlyWifiIfEnabled() {
         if(pendingLocalOnlySsid!=null || !hasLocalOnlyWifiPermission())return
-        if(!VxscanLocalOnlyPolicy.shouldAutoRequest(
-                VxscanWifiCredentials.enabled(this),
+        if(!VxscanWifiCredentials.enabled(this))return
+        val wifiPhase=VxscanLocalOnlyWifi.snapshot().phase
+        // A dead NetworkCallback stays LOST/UNAVAILABLE/ERROR until explicitly
+        // unregistered. Only on a foreground return do we re-request it;
+        // never interrupt a still-READY or pending approved connection.
+        if(wifiPhase==VxscanLocalOnlyWifi.Phase.LOST ||
+            wifiPhase==VxscanLocalOnlyWifi.Phase.UNAVAILABLE ||
+            wifiPhase==VxscanLocalOnlyWifi.Phase.ERROR)
+            VxscanLocalOnlyWifi.stop(this)
+        if(!VxscanLocalOnlyPolicy.shouldAutoRequest(true,
                 VxscanLocalOnlyWifi.snapshot().enabled))return
         val profile=VxscanWifiCredentials.load(this)
         if(profile==null) {
