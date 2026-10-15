@@ -1,13 +1,12 @@
 package com.example.bmwenettest
 
+import com.example.bmwenettest.PollingExitEvidence as P
 import java.io.IOException
 import java.util.concurrent.CancellationException
 import org.junit.Assert.*
 import org.junit.Test
 
 class PollingExitEvidenceTest {
-    private val P=PollingExitEvidence
-
     @Test fun intentionalStopAndServiceDestroyAreDistinctFromUnexpectedCancellation() {
         assertEquals("CANCELLED_BY_STOP",
             P.classification(P.EndKind.CANCELLED,P.StopOrigin.USER_STOP))
