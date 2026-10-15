@@ -84,6 +84,7 @@ class MainActivity : Activity() {
     private var presentedRefuelId=0L
     private lateinit var homeFuelTitle:TextView
     private lateinit var homeFuelMeta:TextView
+    private lateinit var headerWifiStatus:TextView
     private lateinit var homeConnection:TextView
     private lateinit var homeCaptureState:TextView
     private lateinit var homeNextMode:TextView
@@ -159,13 +160,38 @@ class MainActivity : Activity() {
             setTextColor(sky)
         })
         root.addView(heading)
-        root.addView(TextView(this).apply {
-            text="G20 / B48   •   USB ENET / VXSCAN"
+        // Both lines stay in the fixed header, above the scrollable tabs.
+        // Keep Wi-Fi readiness separate from real DME and LOGGER states.
+        val vehicleAndWifi=LinearLayout(this).apply {
+            orientation=LinearLayout.HORIZONTAL
+            gravity=Gravity.CENTER_VERTICAL
+            setPadding(0,dp(5),0,dp(5))
+        }
+        vehicleAndWifi.addView(TextView(this).apply {
+            text="B48 · USB ENET/VXSCAN"
             textSize=12f
             setTextColor(muted)
-            setPadding(0,dp(5),0,dp(5))
-        })
-        // Outside every ScrollView: DME and LOGGER are visible on all tabs.
+            setSingleLine(true)
+            ellipsize=android.text.TextUtils.TruncateAt.END
+        },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
+        headerWifiStatus=TextView(this).apply {
+            textSize=11f
+            setTextColor(muted)
+            includeFontPadding=false
+            gravity=Gravity.END or Gravity.CENTER_VERTICAL
+            setSingleLine(true)
+            ellipsize=android.text.TextUtils.TruncateAt.END
+            setPadding(dp(6),0,0,0)
+            isClickable=true
+            isFocusable=true
+            setOnClickListener {
+                if(::tabPages.isInitialized) selectTab(tabPages.lastIndex)
+            }
+        }
+        vehicleAndWifi.addView(headerWifiStatus,
+            LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
+        root.addView(vehicleAndWifi)
+        refreshHeaderWifiStatus(VxscanLocalOnlyWifi.snapshot().phase)
         val headerStatus=LinearLayout(this).apply {
             orientation=LinearLayout.HORIZONTAL
             gravity=Gravity.CENTER_VERTICAL
@@ -893,6 +919,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         autoStartLocalOnlyWifiIfEnabled()
+        refreshHeaderWifiStatus(VxscanLocalOnlyWifi.snapshot().phase)
         if(::homeFuelTitle.isInitialized) {
             logging=EnetLoggerService.isLoggerActive
             if(!logging) {
@@ -928,8 +955,24 @@ class MainActivity : Activity() {
      * invoke Service, send UDS requests or alter a fuel-session baseline.
      */
 
+    /** The same Android NetworkCallback drives header and Settings statuses. */
+    private fun refreshHeaderWifiStatus(phase:VxscanLocalOnlyWifi.Phase) {
+        if(!::headerWifiStatus.isInitialized)return
+        val label=VxscanHeaderStatus.label(phase)
+        headerWifiStatus.text=label.text
+        headerWifiStatus.setTextColor(when(label.tone) {
+            VxscanHeaderStatus.Tone.READY -> accentGreen
+            VxscanHeaderStatus.Tone.WAITING -> accentBlue
+            VxscanHeaderStatus.Tone.FAILED -> Color.rgb(255,134,117)
+            VxscanHeaderStatus.Tone.OFF -> tertiary
+        })
+        headerWifiStatus.contentDescription=label.text+
+            ". Нажмите, чтобы открыть настройки VXSCAN"
+    }
+
     private fun refreshLocalOnlyWifiStatus() {
         val status=VxscanLocalOnlyWifi.snapshot()
+        refreshHeaderWifiStatus(status.phase)
         val cm=getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
         val caps=cm.getNetworkCapabilities(cm.activeNetwork)
         val primary=when {
