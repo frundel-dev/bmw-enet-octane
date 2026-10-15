@@ -122,8 +122,9 @@ class MainActivity : Activity() {
         showFastTelemetry(null,null,null,-1,0L)
         lastActualLambda=null
         octane2LambdaStatus.text="Фактическая λ: нет свежих данных"
-        if(logging && connection==Octane2UiState.Connection.CONNECTED)
-            connection=Octane2UiState.Connection.CONNECTING
+        // Do not rewrite the transport state to CONNECTING just because
+        // telemetry aged out: the header differentiates TCP and stale DME
+        // using Service's monotonic last-successful-cycle timestamp.
         renderHomeState()
     }
 
