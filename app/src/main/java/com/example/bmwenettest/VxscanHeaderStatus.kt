@@ -11,7 +11,7 @@ internal object VxscanHeaderStatus {
 
     fun label(phase:VxscanLocalOnlyWifi.Phase):Label=when(phase) {
         VxscanLocalOnlyWifi.Phase.OFF ->
-            Label("● Wi-Fi: выключен",Tone.OFF)
+            Label("● Wi-Fi: режим выкл.",Tone.OFF)
         VxscanLocalOnlyWifi.Phase.REQUESTING ->
             Label("● Wi-Fi: подключение…",Tone.WAITING)
         VxscanLocalOnlyWifi.Phase.WAITING_IP ->
