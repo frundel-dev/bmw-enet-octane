@@ -10,7 +10,10 @@ class FastTimingTraceTest {
         val tx=mutableListOf<String>()
         val sig=mutableListOf<String>()
         val cycle=mutableListOf<String>()
-        return Sink(tx,sig,cycle,FastTimingTrace(tx::add,sig::add,cycle::add))
+        return Sink(tx,sig,cycle,FastTimingTrace(
+            onTransactions={ tx.add(it); Unit },
+            onSignals={ sig.add(it); Unit },
+            onCycle={ cycle.add(it); Unit }))
     }
     private val ids=listOf(0x0C,0x04,0x0B,0x4A37,0x4A38,0x4A39,
         0x4A3A,0x4A49,0x4A4A,0x4A4C,0x4A4D)
