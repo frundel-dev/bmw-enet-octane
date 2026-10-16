@@ -58,7 +58,8 @@ internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
         val completeness:Double get()=if(cycles>0)complete.toDouble()/cycles else 0.0
     }
     private data class Acc(
-        var cycles:Int=0,var complete:Int=0,var lastCycleMs:Long=0L,
+        var cycles:Int=0,var complete:Int=0,var incompleteStreak:Int=0,
+        var lastCycleMs:Long=0L,
         var gaps:Int=0,var maxGap:Long=0L,var backgroundCycles:Int=0,
         var backgroundGaps:Int=0,var epochChanges:Int=0,var epoch:Int?=null,
         var csvStart:Long?=null,var lastCsvLost:Long=0L,
@@ -156,7 +157,10 @@ internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
         }
         acc.lastCycleMs=x.nowMs
         acc.cycles++
-        if(x.fastComplete)acc.complete++
+        if(x.fastComplete) {
+            acc.complete++
+            acc.incompleteStreak=0
+        } else acc.incompleteStreak++
         if(s.background && !x.uiVisible)acc.backgroundCycles++
         if(acc.epoch!=null && acc.epoch!=x.epoch)acc.epochChanges++
         acc.epoch=x.epoch
@@ -164,6 +168,8 @@ internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
         if(acc.csvStart==null)acc.csvStart=x.csvLost
         appendBounded(acc.durations,x.cycleMs)
         appendBounded(acc.skews,x.hostSkewMs)
+        if(acc.incompleteStreak>=25)
+            return abort(x.nowMs,"25 consecutive incomplete FAST sets; no valid comparison")
         if(x.nowMs-stageStartMs>=s.durationMs) {
             val summary=report(x.nowMs,if(s.background &&
                 acc.backgroundCycles==0)"BACKGROUND_NOT_OBSERVED"
@@ -230,6 +236,30 @@ internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
                 .append(" • CSV lost=").append(r.lostDelta)
                 .append(" • ").append(r.notes).append('\n')
         }
-        append("Repeated CORE stages 2/5 show reproducibility only; no fuel grade or ECU internal timing claim.")
+        fun compare(a:StageReport?,b:StageReport?,title:String) {
+            if(a==null || b==null || a.cycles<10 || b.cycles<10) {
+                append(title).append(": insufficient cycles for comparison\\n")
+                return
+            }
+            val ratio=if(a.observedHz>0.0)b.observedHz/a.observedHz else null
+            append(title).append(": observed host Hz ratio=").append(f(ratio))
+                .append(" • completeness delta=")
+                .append(f(b.completeness-a.completeness))
+                .append(" • host-skew p95 delta ms=")
+                .append(f(if(a.skewP95!=null && b.skewP95!=null)
+                    b.skewP95-a.skewP95 else null))
+                .append("\\n")
+        }
+        compare(completed.firstOrNull{it.stage.id==1},
+            completed.firstOrNull{it.stage.id==2},"B+/CORE versus B+/LEGACY")
+        compare(completed.firstOrNull{it.stage.id==2},
+            completed.firstOrNull{it.stage.id==3},"B+/EXTENDED versus B+/CORE")
+        compare(completed.firstOrNull{it.stage.id==2},
+            completed.firstOrNull{it.stage.id==4},"B/CORE versus B+/CORE")
+        compare(completed.firstOrNull{it.stage.id==2},
+            completed.firstOrNull{it.stage.id==5},"B+/CORE repeatability 2 versus 5")
+        append("Comparisons are observational: different engine temperatures, "+
+            "DME adaptation and Android scheduling may confound. "+
+            "No fuel grade or ECU-internal timing claim.")
     }
 }
