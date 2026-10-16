@@ -1274,13 +1274,9 @@ class EnetLoggerService : Service() {
                     healthState=LoggerHealthPolicy.cycleStarted(healthState,cycleStart)
                     highSpeedCycle++
                     wireCycleActive=suite!=null
-                    val fastBeginNs=System.nanoTime()
-                    fastTimingTrace?.begin(learningTripId,fuelSessionId,reconnects,
-                        highSpeedCycle,highSpeedProfile.name,pollModeActive,
-                        fastBeginNs,transport=transport)
-                    // BEGIN contiguous FAST slice: 01 0C, 01 04, 01 0B,
-                    // then the unchanged serialized knock/ignition UDS flow.
-                    // All SLOW/optional work is deliberately AFTER FAST END.
+                    // BENCHMARK GUARD EXCEPTION: missing/stale speed or coolant
+                    // is polled before FAST, using the SAME existing SLOW budget.
+                    // All other SLOW stays outside the contiguous FAST region.
                     fun pid(id:Int):ByteArray? =
                         measuredDiagnostic("OBD_%02X".format(java.util.Locale.US,id),listOf(id), {
                             hsfz(byteArrayOf(0x01,id.toByte()))
@@ -1288,6 +1284,37 @@ class EnetLoggerService : Service() {
                             replies.firstOrNull { DiagnosticResponse.obd(it,id)!=null }
                         }
                     fun obd(p:ByteArray?,id:Int)=p?.let{DiagnosticResponse.obd(it,id)}
+                    fun scheduledSlow(atMs:Long):SlowPollEngine.Result = SlowPollEngine.poll(
+                        mode=pollModeActive,profile=highSpeedProfile,
+                        cycle=highSpeedCycle,
+                        previousCycleMs=previousHighSpeedCycleMs,
+                        hadFailures=consecutiveFailures>0,
+                        benchmark=suite!=null,scheduler=slowScheduler,
+                        nowMs=atMs,
+                        previous=SlowPollEngine.Values(
+                            slowSpeed,slowIat,slowIgn,slowCoolant,slowThrottle,
+                            slowStft,slowLtft,slowLambda,slowOil,slowSuperKnock),
+                        lastSlowMs=lastSlow,
+                        sensorReceivedAtMs=slowSensorAtMs,
+                        clockMs={SystemClock.elapsedRealtime()},
+                        readObd={id->obd(pid(id),id)},
+                        readUds={id->udsData(id)})
+                    val preflightNeeded=FastGuardPreflight.required(
+                        suite!=null,slowScheduler,SystemClock.elapsedRealtime())
+                    val preflightStartNs=if(preflightNeeded)System.nanoTime() else null
+                    val preflightStartMs=if(preflightNeeded)SystemClock.elapsedRealtime() else null
+                    val preflightResult=if(preflightNeeded)
+                        scheduledSlow(preflightStartMs!!) else null
+                    val preflightEndNs=if(preflightNeeded)System.nanoTime() else null
+                    val preflightDurationMs=if(preflightNeeded)
+                        (SystemClock.elapsedRealtime()-preflightStartMs!!).coerceAtLeast(0L)
+                        else null
+                    val fastBeginNs=System.nanoTime()
+                    fastTimingTrace?.begin(learningTripId,fuelSessionId,reconnects,
+                        highSpeedCycle,highSpeedProfile.name,pollModeActive,
+                        fastBeginNs,transport=transport)
+                    // BEGIN contiguous FAST slice: 01 0C, 01 04, 01 0B,
+                    // then unchanged knock and ignition. No SLOW inside.
                     val collectedFast=FastCriticalSlice.collect(
                         clockMs={SystemClock.elapsedRealtime()},
                         readObd={id->obd(pid(id),id)},
@@ -1354,25 +1381,11 @@ class EnetLoggerService : Service() {
                     // SLOW reads retain their existing PIDs, deadlines and policy,
                     // but can no longer stretch the host FAST sampling window.
                     val now=SystemClock.elapsedRealtime()
-                    val slowStartNs=System.nanoTime()
-                    val slowStarted=SystemClock.elapsedRealtime()
-                    // Same in-order reads, moved outside the large suspend
-                    // coroutine. Callbacks execute synchronously on THIS owner.
-                    val slowResult=SlowPollEngine.poll(
-                        mode=pollModeActive,profile=highSpeedProfile,
-                        cycle=highSpeedCycle,
-                        previousCycleMs=previousHighSpeedCycleMs,
-                        hadFailures=consecutiveFailures>0,
-                        benchmark=suite!=null,scheduler=slowScheduler,
-                        nowMs=now,
-                        previous=SlowPollEngine.Values(
-                            slowSpeed,slowIat,slowIgn,slowCoolant,slowThrottle,
-                            slowStft,slowLtft,slowLambda,slowOil,slowSuperKnock),
-                        lastSlowMs=lastSlow,
-                        sensorReceivedAtMs=slowSensorAtMs,
-                        clockMs={SystemClock.elapsedRealtime()},
-                        readObd={id->obd(pid(id),id)},
-                        readUds={id->udsData(id)})
+                    val slowStartNs=preflightStartNs ?: System.nanoTime()
+                    val slowStarted=preflightStartMs ?: SystemClock.elapsedRealtime()
+                    // SLOW always executes exactly once. LAB guard preflight,
+                    // when required, was performed BEFORE the FAST trace began.
+                    val slowResult=preflightResult ?: scheduledSlow(now)
                     val optimizedSlow=slowResult.optimized
                     val slowRequestCount=slowResult.slowRequests
                     slowSpeed=slowResult.values.speed
@@ -1387,7 +1400,7 @@ class EnetLoggerService : Service() {
                     slowSuperKnock=slowResult.values.superKnock
                     lastSlow=slowResult.lastSlowMs
                     slowSensorAtMs=slowResult.sensorReceivedAtMs
-                    val slowEndNs=System.nanoTime()
+                    val slowEndNs=preflightEndNs ?: System.nanoTime()
                     // Tank level is a slow optional OBD parameter. No value means unsupported/unavailable.
                     if(now-lastFuelPoll>=15000L) {
                         slowFuel=obd(pid(0x2F),0x2F)?.firstOrNull()?.let {
@@ -1450,7 +1463,7 @@ class EnetLoggerService : Service() {
                         slowStft=null; slowLtft=null; slowLambda=null
                         slowSuperKnock=null; slowOil=null; slowSpeed=null
                     }
-                    val slowMs=SystemClock.elapsedRealtime()-slowStarted
+                    val slowMs=preflightDurationMs ?: (SystemClock.elapsedRealtime()-slowStarted)
                     val speed=slowSpeed; val i=slowIat; val a=slowIgn; val coolant=slowCoolant; val oil=slowOil; val throttle=slowThrottle; val stft1=slowStft; val ltft1=slowLtft; val lambdaEq=slowLambda
                     // Legacy 1.7 measurements remain grounded in original OBD RPM.
                     val r=obdRpm
