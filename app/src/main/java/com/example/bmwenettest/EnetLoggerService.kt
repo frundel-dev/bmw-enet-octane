@@ -148,7 +148,7 @@ class EnetLoggerService : Service() {
     // Only the primary single-owner diagnostic coroutine accesses this.
     private var fastTimingTrace:FastTimingTrace?=null
     // Benchmark tracing stays on the SAME serialized polling owner; no new socket.
-    private var wireTrace:DiagnosticWireTrace?=null
+    private var benchmarkRuntime:DmeBenchmarkRuntime?=null
     private var wireCycleActive=false
     private var benchmarkRequested=false
     @Volatile private var benchmarkUiVisible=true
@@ -872,30 +872,13 @@ class EnetLoggerService : Service() {
         val ramFrameReader=HsfzReusableReader()
         val highspeed=HighSpeedMetrics()
         highSpeedMetrics=highspeed
-        val suite=if(benchmarkRequested) AutomatedDmeBenchmark(
-            SystemClock.elapsedRealtime()) else null
-        val suiteFile=if(suite!=null)try {
-            File(getExternalFilesDir(null)?:filesDir,
-                "bmw_dme_benchmark_suite_v1_${System.currentTimeMillis()}.csv").apply {
-                writeText("# stationary_read_only=true;ecu_sample_time=unknown;"+
-                    "android_elapsed_includes_suspend=true;parking_gear_unverified=true\n"+
-                    AutomatedDmeBenchmark.HEADER+"\n")
-            }
-        }catch(_:Exception){null} else null
-        val suiteWireFile=if(suiteFile!=null)try {
-            File(suiteFile.parentFile,suiteFile.name.removeSuffix(".csv")+
-                "_wire_v1.csv").apply {
-                writeText("# host_read_timestamps_not_ecu_acquisition=true;ack_is_not_data=true\n"+
-                    DiagnosticWireTrace.HEADER+"\n")
-            }
-        }catch(_:Exception){null} else null
-        val suiteReportFile=if(suiteFile!=null)
-            File(suiteFile.parentFile,suiteFile.name.removeSuffix(".csv")+".txt") else null
+        val suite=DmeBenchmarkRuntimeFactory.create(
+            benchmarkRequested,getExternalFilesDir(null)?:filesDir,
+            SystemClock.elapsedRealtime(),::emitBenchmarkState)
         var appliedSuiteStage=0
-        var lastSuiteExport=0L
-        wireTrace=if(suite!=null)DiagnosticWireTrace() else null
-        if(suite!=null && (suiteFile==null || suiteWireFile==null)) {
-            emitBenchmarkState("Нет доступа к файлу отчёта: тест отменён",terminal=true)
+        benchmarkRuntime=suite
+        if(benchmarkRequested && suite==null) {
+            emitBenchmarkState("Не удалось начать безопасный LAB benchmark",true)
             running=false
         }
         val csvWriter=AsyncCsvWriter(onFailure={ file,error ->
@@ -1195,18 +1178,18 @@ class EnetLoggerService : Service() {
                     // Benchmark configuration is applied only BETWEEN full
                     // diagnostic cycles on this socket's sole owning thread.
                     if(suite!=null) {
-                        val stage=suite.current
+                        val stage=suite.stage
                         if(stage==null){running=false;break}
                         if(appliedSuiteStage!=stage.id) {
                             appliedSuiteStage=stage.id
                             highSpeedProfile=stage.profile
-                            requestedPollMode=stage.pollMode
-                            activatePollingMode(stage.pollMode,activeNet!!,gatewayIp!!,
+                            requestedPollMode=stage.mode
+                            activatePollingMode(stage.mode,activeNet!!,gatewayIp!!,
                                 transport,"benchmark stage ${stage.id}/6")
                             highspeed.reset()
                             slowScheduler.reset()
                             lastHighSpeedExport=0L
-                            wireTrace?.discard()
+                            suite.discardWire()
                             emitBenchmarkState(if(stage.background)
                                 "ЭТАП 6: проверка фона (5 минут). Сверни приложение / "+
                                 "выключи экран. Неполные интервалы будут отмечены."
@@ -2000,11 +1983,8 @@ class EnetLoggerService : Service() {
                     // Dashboard's heavyweight status stays at every fourth cycle.
                     emitFastTelemetry(octane2Rpm,m,l,steadyTargetTracker.progress(now))
                     if(suite!=null) {
-                        val lines=wireTrace?.flush(suite.current?.id?:-1,
-                            reconnects,highSpeedCycle,System.nanoTime())
+                        suite.flushWire(reconnects,highSpeedCycle,System.nanoTime(),csvWriter)
                         wireCycleActive=false
-                        if(lines!=null && suiteWireFile!=null)
-                            csvWriter.offerAudit(suiteWireFile,lines)
                     }
                     val effectiveMode=when {
                         batchEnabled && pollModeActive=="B+" -> "B+"
@@ -2079,51 +2059,23 @@ class EnetLoggerService : Service() {
                     val postFastMs=benchmarkNow-postFastStarted
                     val cycleMs=benchmarkNow-cycleStart
                     previousHighSpeedCycleMs=cycleMs
+
                     if(suite!=null) {
-                        // Speed/temperature ages are diagnostic-observation ages,
-                        // never default zero on missing/unsupported OBD PIDs.
                         val speedAge=if(optimizedSlow)
                             slowScheduler.ageMs(0x0D,benchmarkNow)
-                        else slowSensorAtMs.takeIf{it>0L}?.let{
-                            (benchmarkNow-it).coerceAtLeast(0L)
-                        }
+                        else slowSensorAtMs.takeIf{it>0L}?.let{benchmarkNow-it}
                         val coolantAge=if(optimizedSlow)
                             slowScheduler.ageMs(0x05,benchmarkNow)
-                        else slowSensorAtMs.takeIf{it>0L}?.let{
-                            (benchmarkNow-it).coerceAtLeast(0L)
-                        }
-                        val result=suite.onCycle(AutomatedDmeBenchmark.Cycle(
-                            nowMs=benchmarkNow,wallMs=System.currentTimeMillis(),
-                            speedKmh=speed,speedAgeMs=speedAge,
-                            coolantC=coolant,coolantAgeMs=coolantAge,rpm=r,
-                            actualMode=effectiveMode,actualProfile=highSpeedProfile,
-                            epoch=reconnects,
-                            fastComplete=timingOutcome?.complete == true ||
-                                (timingOutcome==null && r!=null && l!=null && m!=null &&
-                                listOf(kz1,kz2,kz3,kz4,iz1,iz2,iz3,iz4).all{it!=null}),
-                            hostSkewMs=timingOutcome?.hostSkewMs,
-                            cycleMs=cycleMs,uiVisible=benchmarkUiVisible,
-                            csvLost=csvWriter.snapshot().lost
-                        ))
-                        if(result!=null) {
-                            suiteFile?.let {file ->
-                                csvWriter.append(file,suite.csvRow(result.type,
-                                    benchmarkNow,System.currentTimeMillis(),result.summary))
-                            }
-                            emitBenchmarkState(suite.status(benchmarkNow)+
-                                " • "+result.summary,result.terminal)
-                            if(result.terminal)running=false
-                        }
-                        if(running && benchmarkNow-lastSuiteExport>=5_000L) {
-                            lastSuiteExport=benchmarkNow
-                            suiteFile?.let{file->
-                                csvWriter.append(file,suite.csvRow(
-                                    if(suite.state==AutomatedDmeBenchmark.State.WAITING)
-                                        "WAIT" else "PROGRESS",
-                                    benchmarkNow,System.currentTimeMillis(),suite.status(benchmarkNow)))
-                            }
-                            emitBenchmarkState(suite.status(benchmarkNow))
-                        }
+                        else slowSensorAtMs.takeIf{it>0L}?.let{benchmarkNow-it}
+                        val complete=timingOutcome?.complete == true ||
+                            (timingOutcome==null && r!=null && l!=null && m!=null &&
+                                listOf(kz1,kz2,kz3,kz4,iz1,iz2,iz3,iz4).all{it!=null})
+                        val outcome=suite.onCycle(DmeBenchmarkRuntime.Cycle(
+                            benchmarkNow,System.currentTimeMillis(),speed,speedAge,
+                            coolant,coolantAge,r,effectiveMode,highSpeedProfile,
+                            reconnects,complete,timingOutcome?.hostSkewMs,cycleMs,
+                            benchmarkUiVisible,csvWriter.snapshot().lost),csvWriter)
+                        if(outcome)running=false
                     }
                     val fallbackNote=lastBatchFallback.replace(",",";")
                     if(benchmarkNow-lastBenchmarkMs>=3000L) {
@@ -2209,18 +2161,15 @@ class EnetLoggerService : Service() {
                 }
             } catch(e:Exception) {
                 wireCycleActive=false
-                wireTrace?.discard()
+                suite?.discardWire()
                 fastTimingTrace?.abort(System.nanoTime(),
                     "cycle_interrupted:"+e.javaClass.simpleName)
                 if(suite!=null) {
-                    val event=suite.abort(SystemClock.elapsedRealtime(),
-                        "diagnostic/network failure: "+e.javaClass.simpleName)
-                    suiteFile?.let {file->
-                        try{csvWriter.append(file,suite.csvRow(event.type,
-                            SystemClock.elapsedRealtime(),System.currentTimeMillis(),event.summary))}
-                        catch(_:Exception){}
-                    }
-                    emitBenchmarkState(suite.status(SystemClock.elapsedRealtime()),true)
+                    try {
+                        suite.abort(SystemClock.elapsedRealtime(),
+                            "diagnostic/network failure: "+e.javaClass.simpleName,
+                            csvWriter)
+                    }catch(_:Exception){}
                     running=false
                 }
                 if(e is CancellationException)throw e
@@ -2299,24 +2248,12 @@ class EnetLoggerService : Service() {
         fastTimingTrace?.abort(System.nanoTime(),"poll_job_finally")
         fastTimingTrace=null
         wireCycleActive=false
-        wireTrace=null
+        benchmarkRuntime=null
         highSpeedMetrics=null
         // Drain/flush even when the Service is cancelled during a reconnect.
         withContext(NonCancellable) {
         if(suite!=null) {
-            if(!suite.terminal) {
-                val event=suite.abort(SystemClock.elapsedRealtime(),
-                    "LOGGER stopped before benchmark completed")
-                suiteFile?.let{file->try {
-                    csvWriter.append(file,suite.csvRow(event.type,
-                        SystemClock.elapsedRealtime(),System.currentTimeMillis(),event.summary))
-                }catch(_:Exception){}}
-                emitBenchmarkState(suite.status(SystemClock.elapsedRealtime()),true)
-            }
-            try{suiteReportFile?.writeText(suite.reportText()+"\n"+
-                "Raw HOST HSFZ: "+(suiteWireFile?.name?:"unavailable")+"\n"+
-                "FAST traces: bmw_fast_*_timing_v1_${learningTripId}.csv\n"+
-                "High-Speed: "+highSpeedFile.name+"\n")}
+            try{suite.finish(SystemClock.elapsedRealtime(),csvWriter)}
             catch(e:Exception){
                 connectionEvent("DME_BENCHMARK_REPORT_FAILED",reconnects,
                     "FILE","BENCHMARK",null,e.javaClass.simpleName)
@@ -2473,7 +2410,7 @@ class EnetLoggerService : Service() {
         } finally {
             val end=System.nanoTime()
             if(wireCycleActive)try {
-                wireTrace?.record(DiagnosticWireTrace.Tx(
+                benchmarkRuntime?.recordWire(DmeBenchmarkRuntime.Wire(
                     System.currentTimeMillis(),channel,start,builtAt,sentAt,
                     verifiedAckAt,dataHeaderAt,dataCompleteAt,
                     if(dataCompleteAt!=null)decodedAt else null,valid,failure))
