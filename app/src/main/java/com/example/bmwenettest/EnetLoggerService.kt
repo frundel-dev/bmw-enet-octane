@@ -2107,7 +2107,10 @@ class EnetLoggerService : Service() {
                         sendBroadcast(Intent(ACTION_HIGH_SPEED_STATUS).setPackage(packageName)
                             .putExtra(EXTRA_HIGH_SPEED_STATUS,summary))
                     }
-                    if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v2.0 EXP • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
+                    // Keep the original status payload, without inlining its
+                    // large string/argument construction into the poll coroutine.
+                    fun emitUiStatus() {
+                        val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v2.0 EXP • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
                         steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,
                         steadyScore,accelScore,highRpmMean,highRpmPoints,highRpmOver120,
                         steadySurveyPoints,steadySurveyCells.size,accelV08Score,accelV08Points,
@@ -2120,7 +2123,9 @@ class EnetLoggerService : Service() {
                             " • DME Monitor "+monitorState+" (OK "+monitorOk+
                             " / ERR "+monitorErrors+")"),
                         DmeReadOnlyProbe.overview(dmeProbeResults,dmeProbeResults.size),
-                        dmeProbeResults.size) }
+                        dmeProbeResults.size)
+                    }
+                    if(samples%4==0)emitUiStatus()
                     // Background history runs only AFTER the complete FAST
                     // cycle and never on a secondary socket. One bounded
                     // request per qualified low-load gap, independent CSV.
