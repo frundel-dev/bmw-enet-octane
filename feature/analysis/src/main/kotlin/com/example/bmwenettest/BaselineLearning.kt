@@ -10,7 +10,7 @@ import kotlin.math.abs
  * Segment IDs are scoped to their trip, avoiding false independence from
  * adjacent 2-3 Hz DME samples.
  */
-internal object BaselineLearning {
+object BaselineLearning {
     const val PREF_ENABLED = "baseline_learning_enabled"
     const val PREF_DATASET = "baseline_learning_dataset"
     const val PREF_FUEL_ID = "baseline_learning_fuel_session"

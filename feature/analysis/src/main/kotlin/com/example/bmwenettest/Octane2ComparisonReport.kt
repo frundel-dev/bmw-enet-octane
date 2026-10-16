@@ -7,7 +7,7 @@ import kotlin.math.abs
  * This is not a measurement of octane rating or statistical repeatability
  * across different fills/trips. Never infer missing samples from a zero.
  */
-internal object Octane2ComparisonReport {
+object Octane2ComparisonReport {
     data class Summary(
         val rows:Int,val malformed:Int,val obdValid:Int,val ramValid:Int,
         val lambdaValid:Int,val knockValid:Int,val ignitionValid:Int,

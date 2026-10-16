@@ -8,7 +8,7 @@ import kotlin.math.abs
  * Only approved immutable historical 95-RON knock references are used for
  * a caveated *relative signal* comparison, never laboratory RON.
  */
-internal object GuidedFuelTest {
+object GuidedFuelTest {
     const val PREF_ID = "guided_fuel_test_id"
     const val PREF_ACTIVE = "guided_fuel_test_active"
     const val PREF_DONE = "guided_fuel_test_done"

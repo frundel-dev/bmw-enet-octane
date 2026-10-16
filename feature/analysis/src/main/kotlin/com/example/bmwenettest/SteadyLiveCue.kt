@@ -4,7 +4,7 @@ package com.example.bmwenettest
  * Presentation-only cue for the two research STEADY targets.
  * No ECU requests and no claim of fuel quality or persisted evidence.
  */
-internal object SteadyLiveCue {
+object SteadyLiveCue {
     enum class Band { NO_DATA, OUTSIDE_RPM, LOW_MAP, TARGET_MAP, HIGH_MAP }
     data class Cue(val band:Band, val description:String, val holdPct:Int)
 

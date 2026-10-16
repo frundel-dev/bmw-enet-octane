@@ -4,7 +4,7 @@ package com.example.bmwenettest
  * The fuel-oriented UI uses ONLY persisted, validated STEADY counts (not
  * elapsed LOGGER time) for coverage. Pure, deterministic and JVM-testable.
  */
-internal object Octane2UiState {
+object Octane2UiState {
     enum class Stage { NOT_STARTED, COLLECTING, SUFFICIENT }
     enum class Connection { DISCONNECTED, CONNECTING, CONNECTED, RECONNECTING, ERROR }
     data class Target(val points:Int,val segments:Int,val loggerStarts:Int,

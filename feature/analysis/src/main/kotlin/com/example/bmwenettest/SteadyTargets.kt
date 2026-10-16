@@ -7,7 +7,7 @@ import kotlin.math.abs
  * STEADY RPM × MAP regions. It is NOT a fuel test, an octane estimate,
  * or a self-updating calibration.
  */
-internal object SteadyTargets {
+object SteadyTargets {
     const val HEADER="wall_time_ms,trip_id,fuel_session_id,segment_id,rpm,map_kpa_abs,load_pct,iat_c,coolant_c,knock_mean_vms"
     const val POINTS_TARGET=24
     const val SEGMENTS_TARGET=4
