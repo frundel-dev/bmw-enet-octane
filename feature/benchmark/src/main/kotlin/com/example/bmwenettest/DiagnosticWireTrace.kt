@@ -6,7 +6,7 @@ package com.example.bmwenettest
  * DATA header timestamp is when the first Android read returned bytes.
  * Neither that time nor cycle-publish time is an ECU sampling timestamp.
  */
-internal class DiagnosticWireTrace {
+class DiagnosticWireTrace {
     companion object {
         const val HEADER="wall_time_ms,stage_id,epoch,cycle,channel,request_start_ns,"+
             "send_start_ns,send_end_ns,ack_verified_ns,data_header_first_read_ns,"+

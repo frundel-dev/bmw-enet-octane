@@ -10,7 +10,7 @@ import kotlin.math.ceil
  * Android elapsedRealtime() is wall elapsed, NOT proof that the process ran
  * continuously. Per-cycle gaps and background visibility are reported separately.
  */
-internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
+class AutomatedDmeBenchmark(private val startedAtMs:Long) {
     data class Stage(
         val id:Int,val label:String,val pollMode:String,
         val profile:HighSpeedProfilePolicy.Profile,

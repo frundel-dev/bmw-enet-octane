@@ -7,7 +7,7 @@ import java.util.Locale
  * Leaves the single-socket coroutine's hot path compact. Research metrics
  * generation remains on its original coroutine, with the same CSV Channel.
  */
-internal object HighSpeedStatusWriter {
+object HighSpeedStatusWriter {
     data class Snapshot(
         val wallMs:Long,val tripId:Long,val fuelSession:Int,
         val epoch:Int,val profile:String,val effectiveMode:String,

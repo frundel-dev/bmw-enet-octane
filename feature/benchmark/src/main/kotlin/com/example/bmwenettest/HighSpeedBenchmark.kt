@@ -4,7 +4,7 @@ package com.example.bmwenettest
  * Versioned extra CSV. NEVER changes existing diagnostic CSV schema.
  * One row per actual per-channel request group at a periodic sampling point.
  */
-internal object HighSpeedBenchmark {
+object HighSpeedBenchmark {
     const val VERSION="1"
     const val HEADER="wall_time_ms,trip_id,fuel_session_id,connection_epoch,"+
         "highspeed_profile,poll_mode,channel,requests,successful,error_count,"+
