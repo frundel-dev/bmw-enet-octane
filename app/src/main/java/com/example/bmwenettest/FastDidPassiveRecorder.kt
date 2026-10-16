@@ -34,7 +34,7 @@ internal class FastDidPassiveRecorder(
         // Explicit absence of RAW for candidates; do not manufacture zeros.
         for(spec in FastDidValidation.candidates.filter { !it.existingReadOnly }) {
             send(FastDidAuditCsv.Row(System.currentTimeMillis(),tripId,
-                fuelSession(),0,"2.0.1-lab/205","DME8FF_R",
+                fuelSession(),0,DiagnosticBuildStamp.current,"DME8FF_R",
                 swflEvidence(),FastDidValidation.Profile.BASELINE,
                 "NO_NEW_REQUESTS","NO_ADDITIONAL_QUERY",spec.did,
                 FastDidValidation.status(spec.did),"NOT_VALIDATED",null,
@@ -91,7 +91,7 @@ internal class FastDidPassiveRecorder(
             else null
         send(FastDidAuditCsv.Row(
             System.currentTimeMillis(),tripId,fuelSession(),epoch,
-            "2.0.1-lab/205","DME8FF_R",swflEvidence(),
+            DiagnosticBuildStamp.current,"DME8FF_R",swflEvidence(),
             FastDidValidation.Profile.BASELINE,"UNKNOWN_PASSIVE",
             origin,did,FastDidValidation.status(did),
             if(did in 0x4A37..0x4A3A)
