@@ -20,7 +20,7 @@ class FastPhaseTimingTest {
         val data=header.zip(values).toMap()
         assertEquals("320.000",data["fast_ms"])
         assertEquals("60.000",data["obd_ms"])
-        assertEquals("179.999",data["slow_ms"])
+        assertEquals("180.000",data["slow_ms"])
         assertEquals("330.000",data["post_fast_publish_ms"])
         assertEquals("",data["monitor_ms"])
         assertEquals("",data["monitor_start_ns"])
