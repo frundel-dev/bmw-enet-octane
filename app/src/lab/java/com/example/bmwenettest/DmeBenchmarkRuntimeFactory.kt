@@ -38,6 +38,14 @@ private class LabDmeBenchmarkRuntime(
     private val wire=DiagnosticWireTrace()
     private var lastProgressMs=0L
     override val terminated:Boolean get()=suite.terminal
+    override val termination:DmeBenchmarkRuntime.Termination? get()=when(suite.state) {
+        AutomatedDmeBenchmark.State.COMPLETED ->
+            DmeBenchmarkRuntime.Termination.COMPLETED
+        AutomatedDmeBenchmark.State.ABORTED ->
+            DmeBenchmarkRuntime.Termination.ABORTED
+        else -> null
+    }
+    override val stopReason:String? get()=suite.failure
     override val stage:DmeBenchmarkRuntime.Stage?
         get()=suite.current?.let{
             DmeBenchmarkRuntime.Stage(it.id,it.pollMode,it.profile,it.background)
