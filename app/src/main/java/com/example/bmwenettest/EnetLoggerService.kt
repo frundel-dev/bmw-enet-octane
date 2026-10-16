@@ -1339,6 +1339,18 @@ class EnetLoggerService : Service() {
                         0x4A39 to (kz3!=null),0x4A3A to (kz4!=null),
                         0x4A49 to (iz1!=null),0x4A4A to (iz2!=null),
                         0x4A4C to (iz3!=null),0x4A4D to (iz4!=null)))
+                    // A typed, immutable LAB snapshot of decoded scalars;
+                    // precise per-DID request/reply times remain in FAST Timing.
+                    val fastSnapshot=if(fastPhasePort!=null || suite!=null)
+                        FastCycleSnapshot.create(
+                            learningTripId,fuelSessionId,reconnects,highSpeedCycle,
+                            fastBeginNs,fastEndNs,mapOf(
+                                0x0C to obdRpm,0x04 to l,0x0B to m,
+                                0x4A37 to kz1,0x4A38 to kz2,
+                                0x4A39 to kz3,0x4A3A to kz4,
+                                0x4A49 to iz1,0x4A4A to iz2,
+                                0x4A4C to iz3,0x4A4D to iz4))
+                    else null
                     // SLOW reads retain their existing PIDs, deadlines and policy,
                     // but can no longer stretch the host FAST sampling window.
                     val now=SystemClock.elapsedRealtime()
@@ -1854,8 +1866,7 @@ class EnetLoggerService : Service() {
                             slowScheduler.lastValidAgeMs(0x05,benchmarkNow)
                         else slowSensorAtMs.takeIf{it>0L}?.let{benchmarkNow-it}
                         val complete=timingOutcome?.complete == true ||
-                            (timingOutcome==null && r!=null && l!=null && m!=null &&
-                                listOf(kz1,kz2,kz3,kz4,iz1,iz2,iz3,iz4).all{it!=null})
+                            (timingOutcome==null && fastSnapshot?.complete==true)
                         val outcome=suite.onCycle(DmeBenchmarkRuntime.Cycle(
                             benchmarkNow,System.currentTimeMillis(),speed,speedAge,
                             coolant,coolantAge,r,effectiveMode,highSpeedProfile,
@@ -1975,9 +1986,7 @@ class EnetLoggerService : Service() {
                         monitorStartNs=monitorStartNs,monitorEndNs=monitorEndNs,
                         cycleEndNs=phaseEndedNs,
                         previousCycleEndNs=lastPhaseCompletedNs,
-                        fullFast=timingOutcome?.complete ?: (
-                            obdRpm!=null && l!=null && m!=null &&
-                            listOf(kz1,kz2,kz3,kz4,iz1,iz2,iz3,iz4).all{it!=null})
+                        fullFast=timingOutcome?.complete ?: (fastSnapshot?.complete==true)
                     ))
                     lastPhaseCompletedNs=phaseEndedNs
                     return true
