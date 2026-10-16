@@ -66,8 +66,6 @@ class MainActivity : Activity() {
     private lateinit var targetProgressOne:ProgressBar
     private lateinit var targetProgressTwo:ProgressBar
     private lateinit var livePanelBorder:android.graphics.drawable.GradientDrawable
-    private lateinit var liveMapValue:TextView
-    private lateinit var liveRpmValue:TextView
     private lateinit var liveCue:TextView
     private lateinit var liveHold:ProgressBar
     private lateinit var octane2LiveStatus:TextView
@@ -112,6 +110,15 @@ class MainActivity : Activity() {
     private val tertiary=Color.rgb(158,175,196)
     private val healthHeaderTick=object:Runnable {
         override fun run() {
+            val nowMs=SystemClock.elapsedRealtime()
+            if(::dashboard.isInitialized) dashboard.expireEngineTemperatures(
+                nowMs,logging && EnetLoggerService.hasFreshDme(nowMs))
+            if(logging && lastFastReceivedAt>0L &&
+                !EngineReadingsFreshness.isFresh(lastFastReceivedAt,nowMs,
+                    EngineReadingsFreshness.FAST_MAX_AGE_MS) &&
+                (latestRpm!=null || latestMap!=null)) {
+                showFastTelemetry(null,null,null,-1,0L)
+            }
             if(::homeFuelTitle.isInitialized)renderHomeState()
             main.postDelayed(this,2000L)
         }
@@ -275,6 +282,8 @@ class MainActivity : Activity() {
                         return@setOnClickListener
                     }
                     logging=true
+                    lastFastReceivedAt=0L
+                    dashboard.clearEngineReadings()
                     text="ОСТАНОВИТЬ"
                     connection=Octane2UiState.Connection.CONNECTING
                     renderHomeState()
@@ -292,62 +301,32 @@ class MainActivity : Activity() {
                         .setAction(EnetLoggerService.ACTION_STOP))
                     dashboard.setLogging(false)
                     main.removeCallbacks(fastStaleClear)
+                    lastFastReceivedAt=0L
                     showFastTelemetry(null,null,null,-1,0L)
+                    dashboard.clearEngineReadings()
                 }
             }
         }
         loggerControl=startButton
         controls.addView(startButton,LinearLayout.LayoutParams(-1,dp(54)))
 
-        // Fixed in the visible area: no scrolling or 1.5-second score refresh
-        // is needed to follow the next complete RPM/MAP diagnostic sample.
+
+        // STEADY cue belongs below the original six engine tiles on home.
+        // FAST readings are rendered by OctaneDashboard.updateFastReadings,
+        // never in a parallel RPM/MAP widget.
         val quickPanel=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
-            setPadding(dp(12),dp(8),dp(12),dp(10))
+            setPadding(0,dp(10),0,0)
         }
         livePanelBorder=android.graphics.drawable.GradientDrawable().apply {
-            setColor(Color.rgb(25,39,57))
-            cornerRadius=dp(10).toFloat()
+            setColor(surface)
+            cornerRadius=dp(12).toFloat()
             setStroke(dp(2),Color.rgb(71,88,111))
         }
-        quickPanel.background=livePanelBorder
-        quickPanel.addView(TextView(this).apply {
-            text="LIVE • свежие RPM / MAP от DME"
-            textSize=12f;setTextColor(muted)
-            typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
-        })
-        val liveRow=LinearLayout(this).apply {
-            orientation=LinearLayout.HORIZONTAL
-            gravity=Gravity.CENTER_VERTICAL
-        }
-        val mapColumn=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL }
-        mapColumn.addView(TextView(this).apply {
-            text="MAP ABS • кПа"
-            textSize=12f;setTextColor(muted)
-        })
-        liveMapValue=TextView(this).apply {
-            text="—";textSize=43f;setTextColor(Color.WHITE)
-            typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
-            includeFontPadding=false
-        }
-        mapColumn.addView(liveMapValue)
-        liveRow.addView(mapColumn,LinearLayout.LayoutParams(0,-2,1.2f))
-        val rpmColumn=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL }
-        rpmColumn.addView(TextView(this).apply {
-            text="ОБОРОТЫ • об/мин"
-            textSize=12f;setTextColor(muted)
-        })
-        liveRpmValue=TextView(this).apply {
-            text="—";textSize=30f;setTextColor(Color.WHITE)
-            typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
-            includeFontPadding=false
-        }
-        rpmColumn.addView(liveRpmValue)
-        liveRow.addView(rpmColumn,LinearLayout.LayoutParams(0,-2,1f))
-        quickPanel.addView(liveRow)
         liveCue=TextView(this).apply {
-            text="Ожидание свежих RPM / MAP от DME"
+            text="STEADY • ожидание свежих RPM / MAP от DME"
             textSize=12f;setTextColor(muted)
+            typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         }
         quickPanel.addView(liveCue)
         liveHold=ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal).apply {
@@ -455,6 +434,9 @@ class MainActivity : Activity() {
         // changes. The diagnostic service, receiver and fuel storage remain.
         quickPanel.removeView(octane2LiveStatus)
         quickPanel.removeView(octane2LambdaStatus)
+        // The original engine card is now owned by the home tab only.
+        dashboard.engineReadingsView.background=livePanelBorder
+        dashboard.engineReadingsView.addView(quickPanel)
         fun smallText(t:String,size:Float=13f,color:Int=Color.WHITE)=TextView(this).apply {
             text=t;textSize=size;setTextColor(color);includeFontPadding=false
         }
@@ -519,7 +501,7 @@ class MainActivity : Activity() {
         // Retain the original START/STOP button and listeners; never duplicate
         // the foreground Service control or socket owner in the new design.
         addCard(collect,controls)
-        addCard(collect,quickPanel)
+        addCard(collect,dashboard.engineReadingsView)
 
         // Keep the next suggested regime inside the existing coverage card.
         homeNextMode=smallText("Ожидаю подходящего режима",13f,Color.WHITE).apply {
@@ -929,6 +911,8 @@ class MainActivity : Activity() {
             if(!logging) {
                 connection=Octane2UiState.Connection.DISCONNECTED
                 latestRpm=null;latestMap=null;lastActualLambda=null
+                lastFastReceivedAt=0L
+                dashboard.clearEngineReadings()
             } else if(lastFastReceivedAt==0L) {
                 connection=Octane2UiState.Connection.CONNECTING
             }
@@ -1569,14 +1553,8 @@ class MainActivity : Activity() {
 
     private fun showFastTelemetry(rpm:Double?,map:Double?,load:Double?,
                                   targetIndex:Int,holdMs:Long) {
-        if(!::liveMapValue.isInitialized)return
+        if(!::liveCue.isInitialized)return
         val cue=SteadyLiveCue.evaluate(rpm,map,targetIndex,holdMs)
-        liveMapValue.text=map?.let {
-            String.format(java.util.Locale.getDefault(),"%.0f",it)
-        }?:"—"
-        liveRpmValue.text=rpm?.let {
-            String.format(java.util.Locale.getDefault(),"%.0f",it)
-        }?:"—"
         val accent=when(cue.band) {
             SteadyLiveCue.Band.TARGET_MAP -> Color.rgb(75,219,183)
             SteadyLiveCue.Band.HIGH_MAP -> Color.rgb(255,134,117)
@@ -1585,7 +1563,6 @@ class MainActivity : Activity() {
         }
         livePanelBorder.setStroke(
             (2*resources.displayMetrics.density+0.5f).toInt().coerceAtLeast(1),accent)
-        liveMapValue.setTextColor(accent)
         liveCue.text=cue.description
         liveCue.setTextColor(accent)
         liveHold.progress=cue.holdPct
