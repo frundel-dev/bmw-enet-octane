@@ -62,6 +62,19 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      - name: Verify benchmark module excluded from OCTANE
+        run: |
+          gradle --no-daemon :app:dependencies --configuration octaneDebugRuntimeClasspath > /tmp/octane-deps.txt
+          gradle --no-daemon :app:dependencies --configuration labDebugRuntimeClasspath > /tmp/lab-deps.txt
+          if grep -F "project :feature:benchmark" /tmp/octane-deps.txt; then
+            echo "FAIL: production variant includes benchmark module"
+            exit 1
+          fi
+          grep -F "project :feature:benchmark" /tmp/lab-deps.txt || {
+            echo "FAIL: LAB variant lacks benchmark module"
+            exit 1
+          }
+
       - name: Upload OCTANE APK
         uses: actions/upload-artifact@v4
         with:
