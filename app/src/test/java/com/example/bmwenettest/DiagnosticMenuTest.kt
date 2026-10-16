@@ -31,5 +31,12 @@ class DiagnosticMenuTest {
         assertEquals("AUTO", DiagnosticMenu.NORMAL_MODE)
         assertEquals("measurement_mode", DiagnosticMenu.MODE_KEY)
         assertTrue(DiagnosticMenu.RETIREMENT_MIGRATED_KEY.isNotEmpty())
+        for (mode in listOf(null, "TEST", "AUTO")) {
+            for (baseline in listOf(true, false)) {
+                val state=DiagnosticMenu.retiredDefaults(mode,baseline)
+                assertEquals("AUTO",state.measurementMode)
+                assertFalse(state.baselineRecording)
+            }
+        }
     }
 }
