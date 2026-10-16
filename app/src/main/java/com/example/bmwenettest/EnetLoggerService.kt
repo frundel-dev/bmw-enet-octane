@@ -211,6 +211,24 @@ class EnetLoggerService : Service() {
             .putExtra(EXTRA_BENCHMARK_TERMINAL,terminal))
     }
 
+    /** Research terminal state is an expected outcome, not a vanished LOGGER.
+     * The existing USER_STOP or SERVICE_DESTROY origin always takes priority.
+     */
+    private fun markBenchmarkExit(suite:DmeBenchmarkRuntime,epoch:Int) {
+        val terminal=suite.termination ?:return
+        val origin=if(terminal==DmeBenchmarkRuntime.Termination.ABORTED)
+            PollingExitEvidence.StopOrigin.BENCHMARK_ABORT
+            else PollingExitEvidence.StopOrigin.BENCHMARK_COMPLETE
+        if(pollStopOrigin==PollingExitEvidence.StopOrigin.NONE)
+            pollStopOrigin=origin
+        val reason=suite.stopReason?:if(terminal==DmeBenchmarkRuntime.Termination.COMPLETED)
+            "six stages complete" else "benchmark aborted without detailed reason"
+        connectionEvent(if(terminal==DmeBenchmarkRuntime.Termination.ABORTED)
+            "BENCHMARK_ABORT" else "BENCHMARK_COMPLETE",epoch,
+            "BENCHMARK","READ_ONLY",null,
+            "origin=$pollStopOrigin;cause="+reason.replace(",", ";").take(190))
+    }
+
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
         .setContentTitle("BMW OCTANE 2.0 LAB").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
@@ -878,7 +896,10 @@ class EnetLoggerService : Service() {
         var appliedSuiteStage=0
         benchmarkRuntime=suite
         if(benchmarkRequested && suite==null) {
+            pollStopOrigin=PollingExitEvidence.StopOrigin.BENCHMARK_ABORT
             emitBenchmarkState("Не удалось начать безопасный LAB benchmark",true)
+            connectionEvent("BENCHMARK_ABORT",0,"BENCHMARK","READ_ONLY",null,
+                "runtime unavailable; no ECU traffic started")
             running=false
         }
         val csvWriter=AsyncCsvWriter(onFailure={ file,error ->
@@ -1947,7 +1968,10 @@ class EnetLoggerService : Service() {
                             coolant,coolantAge,r,effectiveMode,highSpeedProfile,
                             reconnects,complete,timingOutcome?.hostSkewMs,cycleMs,
                             benchmarkUiVisible,csvWriter.snapshot().lost),csvWriter)
-                        if(outcome)running=false
+                        if(outcome) {
+                            markBenchmarkExit(suite,reconnects)
+                            running=false
+                        }
                     }
                     val fallbackNote=lastBatchFallback.replace(",",";")
                     if(benchmarkNow-lastBenchmarkMs>=3000L) {
@@ -2047,6 +2071,7 @@ class EnetLoggerService : Service() {
                             "diagnostic/network failure: "+e.javaClass.simpleName,
                             csvWriter)
                     }catch(_:Exception){}
+                    markBenchmarkExit(suite,reconnects)
                     running=false
                 }
                 if(e is CancellationException)throw e
@@ -2130,8 +2155,11 @@ class EnetLoggerService : Service() {
         // Drain/flush even when the Service is cancelled during a reconnect.
         withContext(NonCancellable) {
         if(suite!=null) {
-            try{suite.finish(SystemClock.elapsedRealtime(),csvWriter)}
-            catch(e:Exception){
+            try {
+                suite.finish(SystemClock.elapsedRealtime(),csvWriter)
+                if(pollStopOrigin==PollingExitEvidence.StopOrigin.NONE)
+                    markBenchmarkExit(suite,reconnects)
+            } catch(e:Exception) {
                 connectionEvent("DME_BENCHMARK_REPORT_FAILED",reconnects,
                     "FILE","BENCHMARK",null,e.javaClass.simpleName)
             }
