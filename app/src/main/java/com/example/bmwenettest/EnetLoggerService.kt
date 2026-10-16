@@ -2052,6 +2052,12 @@ class EnetLoggerService : Service() {
                             monitorLastDuration=outcome.durationMs
                             monitorLastId=task.label
                             monitorState=outcome.status
+                            // A MONITOR read happens AFTER the regular FAST
+                            // trace flush. Persist it before the stage changes.
+                            if(suite!=null)withContext(NonCancellable) {
+                                suite.flushWire(reconnects,highSpeedCycle,
+                                    System.nanoTime(),csvWriter)
+                            }
                             if(outcome.failure!=null) {
                                 monitorErrors++
                                 throw outcome.failure
@@ -2202,26 +2208,60 @@ class EnetLoggerService : Service() {
         val s=socket ?: throw IOException("No DME socket")
         val request=task.request()
         val savedTimeout=s.soTimeout
+        // Monitor is also serialized on the polling socket, but runs AFTER
+        // the FAST-cycle wire flush. It needs its own LAB-only observation.
+        val wire=benchmarkRuntime
+        val beginNs=System.nanoTime()
+        var sendStartNs:Long?=null
+        var sendEndNs:Long?=null
+        var ackAtNs:Long?=null
+        var dataHeaderAtNs:Long?=null
+        var dataCompleteAtNs:Long?=null
+        var decodeEndNs:Long?=null
+        var failedAtNs:Long?=null
+        var phase="BUILD_REQUEST"
+        var phaseAtNs=beginNs
+        var exceptionClass=""
+        var exceptionMessage=""
+        var valid=false
         try {
             s.soTimeout=750
             val packet=hsfz(request)
+            phase="SEND_REQUEST"
+            sendStartNs=System.nanoTime()
+            phaseAtNs=sendStartNs
             s.getOutputStream().write(packet)
             s.getOutputStream().flush()
-            val response=HsfzCodec.readFrames(
-                s.getInputStream(),
-                expectedRequest=packet,
-                onAlive={ reply ->
-                    s.getOutputStream().write(reply)
-                    s.getOutputStream().flush()
-                })
-                .mapNotNull { payload(it) }.firstOrNull()
+            sendEndNs=System.nanoTime()
+            phase="WAIT_ACK_OR_DATA"
+            phaseAtNs=sendEndNs
+            val alive:(ByteArray)->Unit = { reply ->
+                s.getOutputStream().write(reply)
+                s.getOutputStream().flush()
+            }
+            val frames=if(wire!=null) HsfzCodec.readFrames(
+                s.getInputStream(),expectedRequest=packet,onAlive=alive,
+                onAckAtNs={ackAtNs=it},
+                onDataHeaderAtNs={dataHeaderAtNs=it},
+                onDataCompleteAtNs={dataCompleteAtNs=it},
+                onPhase={p,atNs->phase=p.name;phaseAtNs=atNs})
+            else HsfzCodec.readFrames(s.getInputStream(),
+                expectedRequest=packet,onAlive=alive)
+            phase="DECODE"
+            phaseAtNs=System.nanoTime()
+            val response=frames.mapNotNull { payload(it) }.firstOrNull()
                 ?: throw IOException("Monitor response timeout or empty")
             if(response.size>DmeHistoryProtocol.MAX_RESPONSE_BYTES)
                 throw IOException("Monitor response exceeds safe bound")
             val nrc=DmeHistoryProtocol.classifyNrc(task.service,response)
             if(nrc=="RESPONSE_PENDING")
                 throw IOException("Monitor response pending; unsafe to proceed with FAST")
-            if(nrc!=null)return nrc to response
+            if(nrc!=null) {
+                decodeEndNs=System.nanoTime()
+                phase="NRC"
+                phaseAtNs=decodeEndNs!!
+                return nrc to response
+            }
             if(task.service==0x22) {
                 // Known candidate adaptation DIDs: exactly two data bytes.
                 if(response.size!=5 ||
@@ -2233,8 +2273,31 @@ class EnetLoggerService : Service() {
                 if(DmeHistoryProtocol.parseDtcList(response)==null)
                     throw IOException("Monitor DTC list mismatch")
             } else throw IOException("Unexpected monitor service")
+            valid=true
+            decodeEndNs=System.nanoTime()
+            phase="COMPLETE"
+            phaseAtNs=decodeEndNs!!
             return "OK" to response
+        } catch(t:Throwable) {
+            failedAtNs=System.nanoTime()
+            exceptionClass=t.javaClass.name
+            exceptionMessage=t.message?:""
+            throw t
         } finally {
+            if(wire!=null)try {
+                wire.recordWire(DmeBenchmarkRuntime.Wire(
+                    System.currentTimeMillis(),
+                    if(task.service==0x22)"DID_MONITOR_%04X".format(task.did)
+                    else "UDS_MONITOR_19",
+                    beginNs,sendStartNs,sendEndNs,
+                    ackAtNs,dataHeaderAtNs,dataCompleteAtNs,
+                    decodeEndNs,valid,
+                    if(failedAtNs!=null)exceptionClass.substringAfterLast('.') else "",
+                    if(task.service==0x22)listOf(task.did) else emptyList(),
+                    task.service,phase,phaseAtNs,failedAtNs,
+                    exceptionClass,exceptionMessage,
+                    failedAtNs!=null && dataCompleteAtNs==null))
+            }catch(_:Exception){}
             s.soTimeout=savedTimeout
         }
     }
