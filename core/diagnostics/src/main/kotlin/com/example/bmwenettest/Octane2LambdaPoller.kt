@@ -8,7 +8,7 @@ package com.example.bmwenettest
  * Probing, fallback and 4s/5s intervals are identical to the former inline
  * EnetLoggerService.loop() implementation.
  */
-internal class Octane2LambdaPoller {
+class Octane2LambdaPoller {
     data class Snapshot(
         val actual:Octane2Lambda.Sample?,
         val actualReceivedAtMs:Long,
