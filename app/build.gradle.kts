@@ -17,8 +17,8 @@ android {
         manifestPlaceholders["appLabel"] = "BMW OCTANE"
         minSdk = 26
         targetSdk = 35
-        versionCode = 224
-        versionName = "2.0.1-experimental"
+        versionCode = 225
+        versionName = "2.0.225"
     }
     flavorDimensions += "edition"
     productFlavors {
@@ -29,8 +29,12 @@ android {
         create("lab") {
             dimension = "edition"
             applicationIdSuffix = ".lab"
+            versionNameSuffix = "-lab"
             manifestPlaceholders["appLabel"] = "BMW OCTANE LAB"
         }
+    }
+    buildFeatures {
+        buildConfig = true
     }
     testOptions {
         unitTests.isIncludeAndroidResources = false
