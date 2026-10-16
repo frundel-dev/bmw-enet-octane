@@ -54,11 +54,11 @@ internal class RefuelSessionStore private constructor(
     fun hasCurrentFuel():Boolean=hasCurrentFuelUnsafe()
 
     private fun hasCurrentFuelUnsafe():Boolean {
-        val id=prefs.getLong(GuidedFuelTest.PREF_ID,0L)
+        val id=prefs.getLong(FuelSessionKeys.PREF_ID,0L)
         val session=prefs.getInt("fuel_session_id",1)
         return id>0L &&
-            prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)==session &&
-            prefs.getString(GuidedFuelTest.PREF_GRADE,null) in GuidedFuelTest.grades
+            prefs.getInt(FuelSessionKeys.PREF_FUEL_SESSION,-1)==session &&
+            prefs.getString(FuelSessionKeys.PREF_GRADE,null) in FuelSessionKeys.grades
     }
 
     fun pending():Pending?=synchronized(lock) {
@@ -103,9 +103,9 @@ internal class RefuelSessionStore private constructor(
             .putInt(PREF_PENDING_SESSION,current)
             .putLong(PREF_LAST_EVENT_ID,id)
             .putString(PREF_ACTIVE_STATE,"REFUEL_PENDING")
-            .putBoolean(PREF_WAS_ACTIVE,prefs.getBoolean(GuidedFuelTest.PREF_ACTIVE,false))
+            .putBoolean(PREF_WAS_ACTIVE,prefs.getBoolean(FuelSessionKeys.PREF_ACTIVE,false))
             .putBoolean(PREF_WAS_BASELINE,prefs.getBoolean(BaselineLearning.PREF_ENABLED,false))
-            .putBoolean(GuidedFuelTest.PREF_ACTIVE,false)
+            .putBoolean(FuelSessionKeys.PREF_ACTIVE,false)
             .putBoolean(BaselineLearning.PREF_ENABLED,false)
             .commit()
         if(!ok)return@synchronized null
@@ -121,7 +121,7 @@ internal class RefuelSessionStore private constructor(
     fun confirm(grade:String,station:String,rating:String,
                 wall:Long=System.currentTimeMillis(),manual:Boolean=false):Confirmed?=
         synchronized(lock) {
-            if(grade !in GuidedFuelTest.selectableGrades)return@synchronized null
+            if(grade !in FuelSessionKeys.selectableGrades)return@synchronized null
             val pending=pending()
             if(!manual && pending==null)return@synchronized null
             val oldSession=prefs.getInt("fuel_session_id",1).coerceAtLeast(1)
@@ -136,12 +136,12 @@ internal class RefuelSessionStore private constructor(
             val newSession=if(firstSelection)oldSession else oldSession+1
             val edit=prefs.edit()
                 .putInt("fuel_session_id",newSession)
-                .putLong(GuidedFuelTest.PREF_ID,id)
-                .putInt(GuidedFuelTest.PREF_FUEL_SESSION,newSession)
-                .putString(GuidedFuelTest.PREF_GRADE,grade)
-                .putString(GuidedFuelTest.PREF_STATION,station.take(100))
-                .putBoolean(GuidedFuelTest.PREF_ACTIVE,true)
-                .putBoolean(GuidedFuelTest.PREF_DONE,false)
+                .putLong(FuelSessionKeys.PREF_ID,id)
+                .putInt(FuelSessionKeys.PREF_FUEL_SESSION,newSession)
+                .putString(FuelSessionKeys.PREF_GRADE,grade)
+                .putString(FuelSessionKeys.PREF_STATION,station.take(100))
+                .putBoolean(FuelSessionKeys.PREF_ACTIVE,true)
+                .putBoolean(FuelSessionKeys.PREF_DONE,false)
                 .putString(PREF_RATING_PREFIX+id,rating)
                 .putString(PREF_META_GRADE_PREFIX+id,grade)
                 .putString(PREF_META_STATION_PREFIX+id,station.take(100))
@@ -194,7 +194,7 @@ internal class RefuelSessionStore private constructor(
             .remove(PREF_PENDING_FROM).remove(PREF_PENDING_TO)
             .remove(PREF_PENDING_SESSION).remove(PREF_WAS_ACTIVE)
             .remove(PREF_WAS_BASELINE)
-            .putBoolean(GuidedFuelTest.PREF_ACTIVE,oldActive)
+            .putBoolean(FuelSessionKeys.PREF_ACTIVE,oldActive)
             .putBoolean(BaselineLearning.PREF_ENABLED,oldBaseline)
             .putString(PREF_ACTIVE_STATE,"ACTIVE")
             .commit()
@@ -205,20 +205,20 @@ internal class RefuelSessionStore private constructor(
 
     /** Pure metadata edit: no new logical session, detector reset or score reset. */
     fun editFuel(id:Long,grade:String,station:String,rating:String):Boolean=synchronized(lock) {
-        if(grade !in GuidedFuelTest.grades || id<=0L)return@synchronized false
+        if(grade !in FuelSessionKeys.grades || id<=0L)return@synchronized false
         val session=prefs.getInt(PREF_META_SESSION_PREFIX+id,-1)
         // Preserve ability to correct a historical refill created by 1.7.
         // Its older CSV may be the only identity record in the app.
-        if(session<1 && id!=prefs.getLong(GuidedFuelTest.PREF_ID,0L) &&
-            !File(eventFile.parentFile,GuidedFuelTest.filename(id)).isFile)
+        if(session<1 && id!=prefs.getLong(FuelSessionKeys.PREF_ID,0L) &&
+            !File(eventFile.parentFile,FuelSessionKeys.filename(id)).isFile)
             return@synchronized false
         val editor=prefs.edit()
             .putString(PREF_META_GRADE_PREFIX+id,grade)
             .putString(PREF_META_STATION_PREFIX+id,station.take(100))
             .putString(PREF_RATING_PREFIX+id,rating)
-        if(id==prefs.getLong(GuidedFuelTest.PREF_ID,0L)){
-            editor.putString(GuidedFuelTest.PREF_GRADE,grade)
-                .putString(GuidedFuelTest.PREF_STATION,station.take(100))
+        if(id==prefs.getLong(FuelSessionKeys.PREF_ID,0L)){
+            editor.putString(FuelSessionKeys.PREF_GRADE,grade)
+                .putString(FuelSessionKeys.PREF_STATION,station.take(100))
         }
         val ok=editor.commit()
         if(ok)audit(id,System.currentTimeMillis(),"USER","METADATA_EDIT",
