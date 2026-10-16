@@ -1362,9 +1362,7 @@ class MainActivity : Activity() {
     private fun showResearchToolsMenu() {
         val tools=DiagnosticMenu.research
         AlertDialog.Builder(this)
-            .setTitle("Исследование DME • только для разработчика")
-            .setMessage("RAW/FAST-исследование не подтверждает октановое число. "+
-                "RAM допустим только при проверенном SWFL; read-only диагностика.")
+            .setTitle("Исследование DME • ECU/SWFL требуется проверка")
             .setItems(tools.map { it.label }.toTypedArray()) { _,index ->
                 when(tools[index]) {
                     DiagnosticMenu.Tool.FAST_DID_CANDIDATES -> showFastDidCandidateAudit()
