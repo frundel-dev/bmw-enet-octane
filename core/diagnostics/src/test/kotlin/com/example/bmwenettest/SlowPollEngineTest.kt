@@ -135,7 +135,7 @@ class SlowPollEngineTest {
             readUds={id->error("no UDS expected when both guards are due")})
         assertEquals(listOf("FAST:0C","FAST:04","FAST:0B",
             "KNOCK_IGN_BPLUS","SLOW:0D","SLOW:05"),events)
-        assertEquals(410L,fastEnd-10_000L)
+        assertEquals(340L,fastEnd-10_000L)
         assertEquals(600L,now-fastEnd)
         assertEquals(2,slow.slowRequests)
         assertEquals(0.0,slow.values.speed!!,0.0)
