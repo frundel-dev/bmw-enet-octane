@@ -14,6 +14,7 @@ android {
 
     defaultConfig {
         applicationId = "com.example.bmwenettest.octane2"
+        manifestPlaceholders["appLabel"] = "BMW OCTANE"
         minSdk = 26
         targetSdk = 35
         versionCode = 224
@@ -28,6 +29,7 @@ android {
         create("lab") {
             dimension = "edition"
             applicationIdSuffix = ".lab"
+            manifestPlaceholders["appLabel"] = "BMW OCTANE LAB"
         }
     }
     testOptions {
