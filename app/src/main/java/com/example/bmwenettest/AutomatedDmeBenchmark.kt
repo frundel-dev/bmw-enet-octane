@@ -67,6 +67,7 @@ internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
     )
     private var index=0
     private var stageStartMs=0L
+    private var pendingSinceMs=startedAtMs
     private var acc=Acc()
     private val completed=mutableListOf<StageReport>()
     var state=State.WAITING
@@ -128,7 +129,7 @@ internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
         if(x.coolantC!=null && x.coolantC>115.0)
             return abort(x.nowMs,"coolant temperature too high")
         if(state==State.WAITING || state==State.PENDING_STAGE) {
-            if(state==State.WAITING && x.nowMs-startedAtMs>MAX_WAIT_FOR_PARKED_MS)
+            if(x.nowMs-pendingSinceMs>MAX_WAIT_FOR_PARKED_MS)
                 return abort(x.nowMs,"no fresh stationary/warm DME evidence within 90 seconds")
             if(!parked(x))return null
             if(x.actualMode!=current!!.pollMode ||
@@ -176,6 +177,7 @@ internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
             }
             // All mode changes are applied by the owner before the NEXT cycle.
             state=State.PENDING_STAGE
+            pendingSinceMs=x.nowMs
             stageStartMs=0L
             acc=Acc()
             return Event("STAGE_END","finished ${s.id}; next ${current!!.label}")
@@ -190,7 +192,9 @@ internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
             nowMs-stageStartMs else r?.let{it.finishedMs-it.startedMs}?:0L
         val base=listOf(event,wallMs,s?.id?:"",csvText(s?.label?:""),
             s?.pollMode?:"",s?.profile?.name?:"",s?.durationMs?:"",elapsed)
-        val metrics=if(event=="PROGRESS") {
+        val metrics=if(event=="START") {
+            List<Any>(12){""}
+        } else if(event=="PROGRESS") {
             val elapsedSec=(nowMs-stageStartMs).coerceAtLeast(1L)
             listOf(acc.cycles,acc.complete,
                 f(if(acc.cycles>0)acc.complete.toDouble()/acc.cycles else null),
