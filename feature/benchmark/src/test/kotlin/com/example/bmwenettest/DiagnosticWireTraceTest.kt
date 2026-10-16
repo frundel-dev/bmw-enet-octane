@@ -155,6 +155,51 @@ class DiagnosticWireTraceTest {
         assertEquals("true",row.last())
     }
 
+    @Test fun socketTimeoutAfterAckKeepsWaitDataPhaseAndOriginalMessage() {
+        val request=HsfzCodec.encode(b(0x22,0x4A,0x37))
+        val ack=b(0,0,0,2,0,2,0xF4,0x12)
+        val input=object:java.io.InputStream() {
+            var at=0
+            override fun read():Int {
+                if(at<ack.size)return ack[at++].toInt() and 255
+                throw java.net.SocketTimeoutException("VXSCAN DATA timeout, no response")
+            }
+            override fun read(dst:ByteArray,offset:Int,length:Int):Int {
+                if(at>=ack.size)
+                    throw java.net.SocketTimeoutException("VXSCAN DATA timeout, no response")
+                val count=minOf(length,ack.size-at)
+                ack.copyInto(dst,offset,at,at+count)
+                at+=count
+                return count
+            }
+        }
+        var phase=HsfzCodec.Phase.WAIT_ACK_OR_DATA
+        var ackAt:Long?=null
+        val failure=try {
+            HsfzCodec.readFrames(input,expectedRequest=request,
+                onAckAtNs={ackAt=it},onPhase={p,_->phase=p})
+            fail("timeout should close the transaction")
+            null
+        }catch(e:IOException){e}
+        assertNotNull(failure)
+        assertNotNull(ackAt)
+        assertEquals(HsfzCodec.Phase.WAIT_DATA,phase)
+        assertEquals("HSFZ diagnostic response timeout; reconnect",failure!!.message)
+        assertEquals(java.net.SocketTimeoutException::class.java,failure.cause!!.javaClass)
+    }
+
+    @Test fun exceptionCsvEscapesPunctuationWithoutDroppingErrorText() {
+        val t=DiagnosticWireTrace()
+        t.record(DiagnosticWireTrace.Tx(1L,"OBD_0D",1L,2L,3L,
+            null,null,null,null,false,"IOException",listOf(0x0D),1,
+            "WAIT_ACK_OR_DATA",4L,5L,"java.io.IOException",
+            "diagnostic, \"no DATA\"\nretry blocked",true))
+        val csv=t.flush(1,0,0L,6L)!!
+        assertTrue(csv.contains("\"diagnostic, \"\"no DATA\"\"\\nretry blocked\""))
+        assertTrue(csv.endsWith(",true"))
+        assertEquals(28,DiagnosticWireTrace.HEADER.split(",").size)
+    }
+
     @Test fun failureRowSurvivesBoundedTraceCapacity() {
         val trace=DiagnosticWireTrace()
         repeat(128){i ->
