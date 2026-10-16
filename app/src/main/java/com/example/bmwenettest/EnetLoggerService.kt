@@ -2287,6 +2287,9 @@ class EnetLoggerService : Service() {
         var builtAt=start
         var sentAt=start
         var firstAt:Long?=null
+        var verifiedAckAt:Long?=null
+        var dataHeaderAt:Long?=null
+        var dataCompleteAt:Long?=null
         var receivedAt=start
         var decodedAt=start
         var valid=false
@@ -2303,7 +2306,10 @@ class EnetLoggerService : Service() {
                 onAlive={ response ->
                     s.getOutputStream().write(response)
                     s.getOutputStream().flush()
-                },expectedRequest=bytes)
+                },expectedRequest=bytes,
+                onAckAtNs={verifiedAckAt=it},
+                onDataHeaderAtNs={dataHeaderAt=it},
+                onDataCompleteAtNs={dataCompleteAt=it})
             receivedAt=System.nanoTime()
             val payloads=received.mapNotNull(::payload)
             val result=decode(payloads)
@@ -2327,6 +2333,12 @@ class EnetLoggerService : Service() {
             throw t
         } finally {
             val end=System.nanoTime()
+            if(wireCycleActive)try {
+                wireTrace?.record(DiagnosticWireTrace.Tx(
+                    System.currentTimeMillis(),channel,start,builtAt,sentAt,
+                    verifiedAckAt,dataHeaderAt,dataCompleteAt,
+                    if(dataCompleteAt!=null)decodedAt else null,valid,failure))
+            }catch(_:Exception){}
             try {
                 fastTimingTrace?.transaction(channel,members,
                     System.currentTimeMillis(),FastTimingTrace.Timing(
