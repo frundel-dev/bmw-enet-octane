@@ -94,4 +94,54 @@ class SlowPollEngineTest {
         assertFalse(scheduler.fresh(0x0D,10_000L))
         assertFalse(scheduler.fresh(0x05,10_000L))
     }
+    @Test fun realisticSlowReplyDelaysNeverInterleaveWithFastAndGuardsStayFresh() {
+        val events=mutableListOf<String>()
+        val scheduler=SlowPollScheduler()
+        var now=10_000L
+        val fast=FastCriticalSlice.collect(
+            clockMs={now},
+            readObd={id->
+                events.add("FAST:%02X".format(id))
+                now+=30L
+                when(id) {
+                    0x0C -> byteArrayOf(0x0B,0xB8.toByte())
+                    0x04 -> byteArrayOf(120.toByte())
+                    0x0B -> byteArrayOf(100)
+                    else -> error("unexpected FAST ID")
+                }
+            },
+            afterObd={},
+            readFastDme={
+                events.add("KNOCK_IGN_BPLUS")
+                now+=250L
+                "FAST_COMPLETE"
+            }
+        )
+        val fastEnd=now
+        val slow=SlowPollEngine.poll(
+            mode="B+",profile=HighSpeedProfilePolicy.Profile.HIGH_SPEED_CORE,
+            cycle=1L,previousCycleMs=410L,hadFailures=false,benchmark=true,
+            scheduler=scheduler,nowMs=fastEnd,previous=SlowPollEngine.Values(),
+            lastSlowMs=0L,sensorReceivedAtMs=0L,clockMs={now},
+            readObd={id->
+                events.add("SLOW:%02X".format(id))
+                now+=300L
+                when(id){
+                    0x0D -> byteArrayOf(0)
+                    0x05 -> byteArrayOf(130.toByte())
+                    else -> error("unexpected SLOW ID")
+                }
+            },
+            readUds={id->error("no UDS expected when both guards are due")})
+        assertEquals(listOf("FAST:0C","FAST:04","FAST:0B",
+            "KNOCK_IGN_BPLUS","SLOW:0D","SLOW:05"),events)
+        assertEquals(410L,fastEnd-10_000L)
+        assertEquals(600L,now-fastEnd)
+        assertEquals(2,slow.slowRequests)
+        assertEquals(0.0,slow.values.speed!!,0.0)
+        assertEquals(90.0,slow.values.coolant!!,0.0)
+        assertTrue(scheduler.fresh(0x0D,now))
+        assertTrue(scheduler.fresh(0x05,now))
+    }
+
 }
