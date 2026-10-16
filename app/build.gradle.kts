@@ -26,6 +26,10 @@ android {
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation(project(":core:data"))
+    implementation(project(":core:diagnostics"))
+    implementation(project(":feature:analysis"))
+    implementation(project(":feature:benchmark"))
     testImplementation("junit:junit:4.13.2")
 }
 
