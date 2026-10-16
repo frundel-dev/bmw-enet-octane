@@ -972,15 +972,9 @@ class EnetLoggerService : Service() {
                     "CSV write failed; primary logger unaffected")
             }
         }
-        var actualLambda:Octane2Lambda.Sample?=null
-        var actualLambdaAt=0L
-        var lambdaChecked=false
-        var lambdaPid:Int?=null
-        var lambdaBackupPid:Int?=null
-        var lambdaNextPoll=0L
-        var fuelControlSupported=false
-        var fuelControlState:String?=null
-        var fuelControlNext=0L
+        // Optional OBD lambda capability/fallback state lives outside the
+        // oversized suspend loop state machine; only this thread calls it.
+        val lambdaPoller=Octane2LambdaPoller()
         var lastCycleComplete=0L
         var lastRamRequestMs=0L
         // Owned by this polling thread, opened once per LOGGER start.
@@ -1169,14 +1163,7 @@ class EnetLoggerService : Service() {
                     .putString("last_gateway_transport",transport).apply()
                 sampleTimes.clear()
                 // Support masks and sensor timestamps are scoped to the TCP session.
-                lambdaChecked=false
-                lambdaPid=null
-                lambdaBackupPid=null
-                actualLambda=null
-                actualLambdaAt=0L
-                fuelControlNext=0L
-                fuelControlSupported=false
-                fuelControlState=null
+                lambdaPoller.reset()
                 val gap=outageFrom?.let { (SystemClock.elapsedRealtime()-it).coerceAtLeast(0L) } ?: 0L
                 connectionEvent(if(gap>0)"RECOVERED" else "CONNECTED",reconnects,connectionStage,
                     transport,gatewayIp,if(viaFastPath)"cached TCP" else "UDP discovery + TCP",gap)
@@ -1515,45 +1502,15 @@ class EnetLoggerService : Service() {
                     val octane2Rpm=if(acceptedRam)ramRpm else obdRpm
                     val selectedRpmSource=if(acceptedRam)"RAM_NKW" else "OBD_01_0C"
 
-                    // Exact OBD capability masks: optional lambda/loop data
-                    // must never be synthesized from commanded PID 0x44.
-                    if(!lambdaChecked) {
-                        lambdaChecked=true
-                        val mask20=obd(pid(0x20),0x20)
-                        val sensor34=Octane2Lambda.supported(mask20,0x34)
-                        val sensor24=Octane2Lambda.supported(mask20,0x24)
-                        lambdaPid=when {
-                            sensor34 -> 0x34
-                            sensor24 -> 0x24
-                            else -> null
-                        }
-                        lambdaBackupPid=if(sensor34 && sensor24)0x24 else null
-                        val mask00=obd(pid(0x00),0x00)
-                        fuelControlSupported=Octane2Lambda.supportedBase(mask00,0x03)
-                    }
-                    val lambdaNow=SystemClock.elapsedRealtime()
-                    if(lambdaPid!=null && lambdaNow>=lambdaNextPoll) {
-                        val id=lambdaPid!!
-                        actualLambda=Octane2Lambda.decode(id,obd(pid(id),id))
-                        // Test supported alternate only on a later cycle. Do
-                        // not repeatedly hammer an ECU that rejects a PID.
-                        if(actualLambda==null) {
-                            lambdaPid=lambdaBackupPid
-                            lambdaBackupPid=null
-                        }
-                        actualLambdaAt=if(actualLambda!=null)
-                            SystemClock.elapsedRealtime() else 0L
-                        lambdaNextPoll=SystemClock.elapsedRealtime()+4000L
-                    }
-                    if(fuelControlSupported && lambdaNow>=fuelControlNext) {
-                        fuelControlState=Octane2Lambda.controlStatus(obd(pid(0x03),0x03))
-                        fuelControlNext=SystemClock.elapsedRealtime()+5000L
-                    }
-                    val freshActualLambda=actualLambda?.takeIf {
-                        actualLambdaAt>0L &&
-                            SampleFreshness.isFresh(SystemClock.elapsedRealtime(),
-                                actualLambdaAt,8000L)
-                    }
+                    // Same ordered, capability-gated optional OBD reads.
+                    // Never a parallel socket or an extra polling coroutine.
+                    val lambdaSnapshot=lambdaPoller.poll(
+                        clockMs={SystemClock.elapsedRealtime()},
+                        readObd={id->obd(pid(id),id)})
+                    val freshActualLambda=lambdaSnapshot.freshActual(
+                        SystemClock.elapsedRealtime())
+                    val actualLambdaAt=lambdaSnapshot.actualReceivedAtMs
+                    val fuelControlState=lambdaSnapshot.fuelControlState
 
                     if(testWindow && knockMean!=null && ignSpread!=null) validOctaneSamples++
                     val confidence=(validOctaneSamples*2).coerceAtMost(100)
