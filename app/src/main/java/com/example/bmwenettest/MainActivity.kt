@@ -135,9 +135,12 @@ class MainActivity : Activity() {
         // active after its UI switch is removed.
         val retiredPrefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         if(!retiredPrefs.getBoolean(DiagnosticMenu.RETIREMENT_MIGRATED_KEY,false)) {
+            val legacy=DiagnosticMenu.retiredDefaults(
+                retiredPrefs.getString(DiagnosticMenu.MODE_KEY,null),
+                retiredPrefs.getBoolean(BaselineLearning.PREF_ENABLED,false))
             retiredPrefs.edit()
-                .putString(DiagnosticMenu.MODE_KEY,DiagnosticMenu.NORMAL_MODE)
-                .putBoolean(BaselineLearning.PREF_ENABLED,false)
+                .putString(DiagnosticMenu.MODE_KEY,legacy.measurementMode)
+                .putBoolean(BaselineLearning.PREF_ENABLED,legacy.baselineRecording)
                 .putBoolean(DiagnosticMenu.RETIREMENT_MIGRATED_KEY,true)
                 .commit()
         }
