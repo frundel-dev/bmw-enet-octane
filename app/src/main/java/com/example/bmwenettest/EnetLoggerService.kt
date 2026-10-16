@@ -1172,12 +1172,15 @@ class EnetLoggerService : Service() {
                     fuelId=fuelSessionId,reconnects=reconnects)
                 emit("CONNECTED $transport $gatewayIp:6801 • reconnects $reconnects" +
                     if(gap>0)" • recovered in ${gap} ms" else "")
-                while(running && socket?.isClosed==false) {
+                // Extract a single complete owner-thread diagnostic cycle from
+                // the enormous suspend loop coroutine. No new scope, job, TCP
+                // session, scheduling or concurrent socket access is created.
+                suspend fun runConnectedCycle():Boolean {
                     // Benchmark configuration is applied only BETWEEN full
                     // diagnostic cycles on this socket's sole owning thread.
                     if(suite!=null) {
                         val stage=suite.stage
-                        if(stage==null){running=false;break}
+                        if(stage==null){running=false;return false}
                         if(appliedSuiteStage!=stage.id) {
                             appliedSuiteStage=stage.id
                             highSpeedProfile=stage.profile
@@ -1929,6 +1932,10 @@ class EnetLoggerService : Service() {
                             if(outcome.status=="OK") monitorOk++
                         }
                     }
+                    return true
+                }
+                while(running && socket?.isClosed==false) {
+                    if(!runConnectedCycle())break
                 }
             } catch(e:Exception) {
                 // Never discard the in-flight HSFZ transaction. measuredDiagnostic
