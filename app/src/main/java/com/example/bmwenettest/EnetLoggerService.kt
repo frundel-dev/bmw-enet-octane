@@ -878,15 +878,15 @@ class EnetLoggerService : Service() {
             File(getExternalFilesDir(null)?:filesDir,
                 "bmw_dme_benchmark_suite_v1_${System.currentTimeMillis()}.csv").apply {
                 writeText("# stationary_read_only=true;ecu_sample_time=unknown;"+
-                    "android_elapsed_includes_suspend=true;parking_gear_unverified=true\\n"+
-                    AutomatedDmeBenchmark.HEADER+"\\n")
+                    "android_elapsed_includes_suspend=true;parking_gear_unverified=true\n"+
+                    AutomatedDmeBenchmark.HEADER+"\n")
             }
         }catch(_:Exception){null} else null
         val suiteWireFile=if(suiteFile!=null)try {
             File(suiteFile.parentFile,suiteFile.name.removeSuffix(".csv")+
                 "_wire_v1.csv").apply {
-                writeText("# host_read_timestamps_not_ecu_acquisition=true;ack_is_not_data=true\\n"+
-                    DiagnosticWireTrace.HEADER+"\\n")
+                writeText("# host_read_timestamps_not_ecu_acquisition=true;ack_is_not_data=true\n"+
+                    DiagnosticWireTrace.HEADER+"\n")
             }
         }catch(_:Exception){null} else null
         val suiteReportFile=if(suiteFile!=null)
@@ -1207,7 +1207,10 @@ class EnetLoggerService : Service() {
                             slowScheduler.reset()
                             lastHighSpeedExport=0L
                             wireTrace?.discard()
-                            emitBenchmarkState(suite.status(SystemClock.elapsedRealtime())+
+                            emitBenchmarkState(if(stage.background)
+                                "ЭТАП 6: проверка фона (5 минут). Сверни приложение / "+
+                                "выключи экран. Неполные интервалы будут отмечены."
+                                else suite.status(SystemClock.elapsedRealtime())+
                                 " • SPEED=0, ECT≥70°C, RPM на холостом ходу")
                         }
                     } else {
@@ -2310,10 +2313,10 @@ class EnetLoggerService : Service() {
                 }catch(_:Exception){}}
                 emitBenchmarkState(suite.status(SystemClock.elapsedRealtime()),true)
             }
-            try{suiteReportFile?.writeText(suite.reportText()+"\\n"+
-                "Raw HOST HSFZ: "+(suiteWireFile?.name?:"unavailable")+"\\n"+
-                "FAST traces: bmw_fast_*_timing_v1_${learningTripId}.csv\\n"+
-                "High-Speed: "+highSpeedFile.name+"\\n")}
+            try{suiteReportFile?.writeText(suite.reportText()+"\n"+
+                "Raw HOST HSFZ: "+(suiteWireFile?.name?:"unavailable")+"\n"+
+                "FAST traces: bmw_fast_*_timing_v1_${learningTripId}.csv\n"+
+                "High-Speed: "+highSpeedFile.name+"\n")}
             catch(e:Exception){
                 connectionEvent("DME_BENCHMARK_REPORT_FAILED",reconnects,
                     "FILE","BENCHMARK",null,e.javaClass.simpleName)
