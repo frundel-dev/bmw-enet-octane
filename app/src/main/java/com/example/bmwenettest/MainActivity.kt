@@ -241,18 +241,6 @@ class MainActivity : Activity() {
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         logging=EnetLoggerService.isLoggerActive
         connection=if(logging)Octane2UiState.Connection.CONNECTING else Octane2UiState.Connection.DISCONNECTED
-        val modeButton=Button(this).apply {
-            text="НОВАЯ ЗАПРАВКА"
-            textSize=13f
-            isAllCaps=false
-            minHeight=dp(52)
-            setTextColor(Color.WHITE)
-            backgroundTintList=ColorStateList.valueOf(Color.rgb(41,60,84))
-            setOnClickListener { showFuelTestOverview() }
-        }
-        controls.addView(modeButton,LinearLayout.LayoutParams(0,dp(54),1f).apply {
-            rightMargin=dp(7)
-        })
         val startButton=Button(this).apply {
             text=if(logging)"ОСТАНОВИТЬ" else "НАЧАТЬ СБОР"
             textSize=15f
@@ -310,23 +298,7 @@ class MainActivity : Activity() {
             }
         }
         loggerControl=startButton
-        controls.addView(startButton,LinearLayout.LayoutParams(0,dp(54),1.15f).apply {
-            rightMargin=dp(5)
-        })
-        // Compact overflow replaces the full-width footer button.
-        controls.addView(Button(this).apply {
-            text="⋮"
-            textSize=26f
-            isAllCaps=false
-            contentDescription="Дополнительно"
-            minWidth=0
-            minHeight=dp(52)
-            setPadding(0,0,0,dp(3))
-            setTextColor(Color.WHITE)
-            backgroundTintList=ColorStateList.valueOf(Color.rgb(41,60,84))
-            setOnClickListener { showAdditionalMenu() }
-        },LinearLayout.LayoutParams(dp(47),dp(54)))
-        root.addView(controls)
+        controls.addView(startButton,LinearLayout.LayoutParams(-1,dp(54)))
 
         // Fixed in the visible area: no scrolling or 1.5-second score refresh
         // is needed to follow the next complete RPM/MAP diagnostic sample.
@@ -398,9 +370,6 @@ class MainActivity : Activity() {
             setPadding(0,dp(3),0,0)
         }
         quickPanel.addView(octane2LambdaStatus)
-        root.addView(quickPanel,LinearLayout.LayoutParams(-1,-2).apply {
-            topMargin=dp(6);bottomMargin=dp(3)
-        })
 
         // A compact permanent benchmark replaces the old full-size fuel-test
         // card. A fuel evaluation is available only after tapping "НОВАЯ ЗАПРАВКА".
@@ -446,9 +415,6 @@ class MainActivity : Activity() {
             setPadding(0,dp(7),0,0)
         }
         targetPanel.addView(targetHint)
-        root.addView(targetPanel,LinearLayout.LayoutParams(-1,-2).apply {
-            topMargin=dp(5);bottomMargin=dp(4)
-        })
         guidedPanel=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             setPadding(dp(12),dp(8),dp(12),dp(9))
@@ -494,12 +460,6 @@ class MainActivity : Activity() {
         status=dashboard.connectionView
         // Use the original, live-connected views; only their hierarchy
         // changes. The diagnostic service, receiver and fuel storage remain.
-        root.removeView(controls)
-        // Refuelling is controlled from its own card, technical tools from Settings.
-        controls.removeView(modeButton)
-        if(controls.childCount>1)controls.removeViewAt(controls.childCount-1)
-        root.removeView(quickPanel)
-        root.removeView(targetPanel)
         quickPanel.removeView(octane2LiveStatus)
         quickPanel.removeView(octane2LambdaStatus)
         fun smallText(t:String,size:Float=13f,color:Int=Color.WHITE)=TextView(this).apply {
@@ -569,7 +529,6 @@ class MainActivity : Activity() {
         addCard(collect,quickPanel)
 
         // Keep the next suggested regime inside the existing coverage card.
-        targetHint.visibility=android.view.View.GONE
         homeNextMode=smallText("Ожидаю подходящего режима",13f,Color.WHITE).apply {
             setPadding(0,dp(9),0,0)
             maxLines=3
