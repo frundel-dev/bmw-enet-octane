@@ -75,6 +75,52 @@ class AutomatedDmeBenchmark(private val startedAtMs:Long) {
         private set
     var failure:String?=null
         private set
+    private var lastGuard:Cycle?=null
+
+    private fun safetyEvidence(nowMs:Long):String {
+        val last=lastGuard ?: return "speed_age_ms=unknown;coolant_age_ms=unknown"
+        val elapsed=(nowMs-last.nowMs).coerceAtLeast(0L)
+        fun age(v:Long?):String=v?.takeIf{it>=0L}?.let {
+            if(Long.MAX_VALUE-it < elapsed) Long.MAX_VALUE.toString()
+            else (it+elapsed).toString()
+        }?:"unknown"
+        fun num(v:Double?):String=v?.takeIf{it.isFinite()}?.let{f(it)}?:"unknown"
+        return "stage=${current?.id?:stages.getOrNull(index)?.id?:-1}"+
+            ";speed_age_ms=${age(last.speedAgeMs)}"+
+            ";coolant_age_ms=${age(last.coolantAgeMs)}"+
+            ";speed_kmh=${num(last.speedKmh)}"+
+            ";coolant_c=${num(last.coolantC)}"+
+            ";rpm=${num(last.rpm)}"
+    }
+
+    /** Specific safe-stop fault, rather than an opaque 'not parked'. */
+    private fun unsafe(x:Cycle):String?=when {
+        x.speedKmh!=null && x.speedKmh>0.0 ->
+            "MOVING: vehicle speed above zero"
+        x.speedAgeMs!=null && x.speedAgeMs>MAX_SPEED_AGE_MS ->
+            "SPEED_STALE: speed age exceeds 5000 ms"
+        x.speedAgeMs!=null && x.speedAgeMs<0L ->
+            "SPEED_AGE_INVALID: negative age"
+        x.speedKmh==null -> "SPEED_MISSING: no valid vehicle-speed reply"
+        x.speedAgeMs==null -> "SPEED_AGE_UNKNOWN: no timestamp for speed"
+        x.speedKmh<0.0 || !x.speedKmh.isFinite() ->
+            "SPEED_INVALID: implausible vehicle speed"
+        x.coolantC!=null && x.coolantC>115.0 ->
+            "COOLANT_HIGH: coolant above 115 C"
+        x.coolantAgeMs!=null && x.coolantAgeMs>MAX_COOLANT_AGE_MS ->
+            "COOLANT_STALE: coolant age exceeds 16000 ms"
+        x.coolantAgeMs!=null && x.coolantAgeMs<0L ->
+            "COOLANT_AGE_INVALID: negative age"
+        x.coolantC==null -> "COOLANT_MISSING: no valid coolant reply"
+        x.coolantAgeMs==null -> "COOLANT_AGE_UNKNOWN: no timestamp for coolant"
+        !x.coolantC.isFinite() || x.coolantC<70.0 ->
+            "COOLANT_NOT_WARM: coolant below 70 C"
+        x.rpm==null || !x.rpm.isFinite() ->
+            "RPM_MISSING: no valid idle RPM"
+        x.rpm !in 500.0..1600.0 ->
+            "RPM_NOT_IDLE: RPM outside stationary idle window"
+        else -> null
+    }
     val current:Stage? get()=if(state==State.COMPLETED || state==State.ABORTED)
         null else stages.getOrNull(index)
     val reports:List<StageReport> get()=completed.toList()
@@ -109,29 +155,28 @@ class AutomatedDmeBenchmark(private val startedAtMs:Long) {
             (acc.lastCsvLost-(acc.csvStart?:acc.lastCsvLost)).coerceAtLeast(0L),
             acc.epochChanges,notes)
     }
-    private fun parked(x:Cycle):Boolean =
-        x.speedKmh!=null && x.speedKmh==0.0 &&
-        x.speedAgeMs!=null && x.speedAgeMs in 0..MAX_SPEED_AGE_MS &&
-        x.coolantC!=null && x.coolantC in 70.0..115.0 &&
-        x.coolantAgeMs!=null && x.coolantAgeMs in 0..MAX_COOLANT_AGE_MS &&
-        x.rpm!=null && x.rpm in 500.0..1600.0
+    private fun parked(x:Cycle):Boolean=unsafe(x)==null
     fun abort(nowMs:Long,reason:String):Event {
         if(terminal)return Event("ALREADY_TERMINAL",status(nowMs),true)
-        failure=csvText(reason)
+        // Preserve precise diagnostic causes and actual guard signal ages.
+        failure=reason.replace("\n"," ").replace("\r"," ").replace(",",";")+
+            ";"+safetyEvidence(nowMs)
         if(state==State.RUNNING)completed.add(report(nowMs,"INCOMPLETE: "+failure))
         state=State.ABORTED
         return Event("ABORT",failure!!,true)
     }
     fun onCycle(x:Cycle):Event? {
         if(terminal)return null
-        if(x.nowMs<startedAtMs)return abort(x.nowMs,"monotonic clock moved backwards")
+        lastGuard=x
+        if(x.nowMs<startedAtMs)return abort(x.nowMs,"CLOCK_BACKWARDS: monotonic clock moved backwards")
         if(x.speedKmh!=null && x.speedKmh>0.0)
-            return abort(x.nowMs,"vehicle speed above zero; stationary test cancelled")
+            return abort(x.nowMs,"MOVING: vehicle speed above zero")
         if(x.coolantC!=null && x.coolantC>115.0)
-            return abort(x.nowMs,"coolant temperature too high")
+            return abort(x.nowMs,"COOLANT_HIGH: coolant above 115 C")
         if(state==State.WAITING || state==State.PENDING_STAGE) {
             if(x.nowMs-pendingSinceMs>MAX_WAIT_FOR_PARKED_MS)
-                return abort(x.nowMs,"no fresh stationary/warm DME evidence within 90 seconds")
+                return abort(x.nowMs,"PREFLIGHT_TIMEOUT: "+
+                    (unsafe(x)?:"no stationary/warm DME evidence")+" after 90 seconds")
             if(!parked(x))return null
             if(x.actualMode!=current!!.pollMode ||
                 x.actualProfile!=current!!.profile)
@@ -141,8 +186,7 @@ class AutomatedDmeBenchmark(private val startedAtMs:Long) {
             state=State.RUNNING
             return Event("START",status(x.nowMs))
         }
-        if(!parked(x))return abort(x.nowMs,
-            "motion, stale speed/coolant or idle RPM outside safe stationary range")
+        unsafe(x)?.let { return abort(x.nowMs,it) }
         val s=current!!
         if(x.actualMode!=s.pollMode || x.actualProfile!=s.profile)
             return abort(x.nowMs,"profile fallback or unexpected poll mode: "+
@@ -169,7 +213,8 @@ class AutomatedDmeBenchmark(private val startedAtMs:Long) {
         appendBounded(acc.durations,x.cycleMs)
         appendBounded(acc.skews,x.hostSkewMs)
         if(acc.incompleteStreak>=25)
-            return abort(x.nowMs,"25 consecutive incomplete FAST sets; no valid comparison")
+            return abort(x.nowMs,
+                "FAST_INCOMPLETE: 25 consecutive incomplete FAST sets")
         if(x.nowMs-stageStartMs>=s.durationMs) {
             val summary=report(x.nowMs,if(s.background &&
                 acc.backgroundCycles==0)"BACKGROUND_NOT_OBSERVED"

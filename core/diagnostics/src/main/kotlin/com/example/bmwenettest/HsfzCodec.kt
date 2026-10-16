@@ -14,6 +14,12 @@ import java.net.SocketTimeoutException
 object HsfzCodec {
     const val MAX_FRAME_BODY_BYTES=65536
 
+    /** Android host receive state, NOT the ECU's internal response phase. */
+    enum class Phase {
+        WAIT_ACK_OR_DATA, HEADER_PARTIAL, ACK_BODY, ACK_VERIFIED,
+        WAIT_DATA, DATA_HEADER, DATA_BODY, DATA_COMPLETE, OTHER_CONTROL
+    }
+
     fun encode(request:ByteArray):ByteArray {
         require(request.size<=MAX_FRAME_BODY_BYTES-2) { "HSFZ request too large" }
         val length=2+request.size
@@ -71,34 +77,55 @@ object HsfzCodec {
         expectedRequest:ByteArray?=null,
         onAckAtNs:((Long)->Unit)?=null,
         onDataHeaderAtNs:((Long)->Unit)?=null,
-        onDataCompleteAtNs:((Long)->Unit)?=null
+        onDataCompleteAtNs:((Long)->Unit)?=null,
+        onPhase:((Phase,Long)->Unit)?=null
     ):List<ByteArray> {
         require(maxFrames in 1..8)
         val frames=ArrayList<ByteArray>(maxFrames)
+        fun mark(phase:Phase,time:Long?=null) {
+            if(onPhase!=null)try { onPhase(phase,time?:System.nanoTime()) }
+                catch(_:Exception){} // passive instrumentation never alters framing
+        }
+        mark(Phase.WAIT_ACK_OR_DATA)
         // Control frames do not consume the diagnostic response allowance.
         // Still bound work to prevent an endless ACK/alive flood.
         repeat(8) {
             try {
                 var headerFirstReadNs:Long?=null
                 val header=exact(input,6,idleHeader=true,
-                    firstReceived=if(onDataHeaderAtNs!=null)
-                        { t -> headerFirstReadNs=t } else null)
+                    firstReceived=if(onDataHeaderAtNs!=null || onPhase!=null)
+                        { t ->
+                            headerFirstReadNs=t
+                            mark(Phase.HEADER_PARTIAL,t)
+                        } else null)
                     ?: throw IOException("HSFZ EOF before diagnostic response")
                 val length=bodyLength(header)
                 if(length !in 0..MAX_FRAME_BODY_BYTES || length==1)
                     throw IOException("Invalid HSFZ frame size: $length")
-                val body=exact(input,length) ?: throw IOException("Truncated HSFZ body")
-                val frame=header+body
                 val type=((header[4].toInt() and 255) shl 8) or
                     (header[5].toInt() and 255)
                 when(type) {
                     0x01 -> {
                         if(length<2)throw IOException("HSFZ diagnostic addresses absent")
+                        // Publish the DATA header BEFORE waiting for the body:
+                        // even EOF midway through DATA must remain observable.
                         headerFirstReadNs?.let { t ->
                             try{onDataHeaderAtNs?.invoke(t)}catch(_:Exception){}
                         }
-                        try{onDataCompleteAtNs?.invoke(System.nanoTime())}
+                        mark(Phase.DATA_HEADER,headerFirstReadNs)
+                        mark(Phase.DATA_BODY)
+                    }
+                    0x02 -> mark(Phase.ACK_BODY)
+                    else -> mark(Phase.OTHER_CONTROL)
+                }
+                val body=exact(input,length) ?: throw IOException("Truncated HSFZ body")
+                val frame=header+body
+                when(type) {
+                    0x01 -> {
+                        val completedAt=System.nanoTime()
+                        try{onDataCompleteAtNs?.invoke(completedAt)}
                             catch(_:Exception){}
+                        mark(Phase.DATA_COMPLETE,completedAt)
                         frames.add(frame)
                         if(frames.size>=maxFrames)return frames
                         return frames // a single matched transaction owns this socket
@@ -108,8 +135,11 @@ object HsfzCodec {
                             frame.size>expectedRequest.size ||
                             (6 until frame.size).any { frame[it]!=expectedRequest[it] })
                             throw IOException("HSFZ ACK not correlated with request")
-                        try{onAckAtNs?.invoke(System.nanoTime())}
+                        val verifiedAt=System.nanoTime()
+                        try{onAckAtNs?.invoke(verifiedAt)}
                             catch(_:Exception){}
+                        mark(Phase.ACK_VERIFIED,verifiedAt)
+                        mark(Phase.WAIT_DATA)
                     }
                     0xFF -> throw IOException("HSFZ gateway NACK: reconnect required")
                     0x12 -> {

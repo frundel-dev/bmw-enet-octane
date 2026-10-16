@@ -30,14 +30,23 @@ private class LabDmeBenchmarkRuntime(
             "android_elapsed_includes_suspend=true;parking_gear_unverified=true\n"+
             AutomatedDmeBenchmark.HEADER+"\n")
     }
-    private val wireFile=File(directory,stem+"_wire_v1.csv").apply {
-        writeText("# host_read_timestamps_not_ecu_acquisition=true;"+
-            "ack_is_not_data=true\n"+DiagnosticWireTrace.HEADER+"\n")
+    private val wireFile=File(directory,stem+"_wire_v2.csv").apply {
+        writeText("# wire_schema=2;host_read_timestamps_not_ecu_acquisition=true;"+
+            "ack_is_not_data=true;incomplete_transactions_preserved=true\n"+
+            DiagnosticWireTrace.HEADER+"\n")
     }
     private val textFile=File(directory,stem+".txt")
     private val wire=DiagnosticWireTrace()
     private var lastProgressMs=0L
     override val terminated:Boolean get()=suite.terminal
+    override val termination:DmeBenchmarkRuntime.Termination? get()=when(suite.state) {
+        AutomatedDmeBenchmark.State.COMPLETED ->
+            DmeBenchmarkRuntime.Termination.COMPLETED
+        AutomatedDmeBenchmark.State.ABORTED ->
+            DmeBenchmarkRuntime.Termination.ABORTED
+        else -> null
+    }
+    override val stopReason:String? get()=suite.failure
     override val stage:DmeBenchmarkRuntime.Stage?
         get()=suite.current?.let{
             DmeBenchmarkRuntime.Stage(it.id,it.pollMode,it.profile,it.background)
@@ -47,12 +56,18 @@ private class LabDmeBenchmarkRuntime(
         wire.record(DiagnosticWireTrace.Tx(
             tx.wallMs,tx.channel,tx.requestStartNs,tx.sendStartNs,tx.sendEndNs,
             tx.ackVerifiedNs,tx.dataHeaderFirstReadNs,tx.dataCompleteNs,
-            tx.decodeEndNs,tx.valid,tx.error))
+            tx.decodeEndNs,tx.valid,tx.error,
+            tx.requestedIds,tx.requestSid,tx.recvPhase,tx.phaseAtNs,
+            tx.failedAtNs,tx.exceptionClass,tx.exceptionMessage,tx.unfinished))
     }
     override fun discardWire()=wire.discard()
-    override fun flushWire(epoch:Int,cycle:Long,publishNs:Long,writer:AsyncCsvWriter) {
-        wire.flush(stage?.id?:-1,epoch,cycle,publishNs)?.let{
-            writer.offerAudit(wireFile,it) // queue loss is separately exposed
+    override suspend fun flushWire(stageId:Int,epoch:Int,cycle:Long,publishNs:Long,
+                                   writer:AsyncCsvWriter) {
+        wire.flush(stageId,epoch,cycle,publishNs)?.let {
+            // Unlike optional FAST metrics, a failed/incomplete transaction is
+            // safety-critical diagnostic evidence: enqueue with backpressure.
+            if(!writer.append(wireFile,it))
+                emit("HSFZ wire journal write failed: "+wireFile.name,true)
         }
     }
     override suspend fun onCycle(cycle:DmeBenchmarkRuntime.Cycle,

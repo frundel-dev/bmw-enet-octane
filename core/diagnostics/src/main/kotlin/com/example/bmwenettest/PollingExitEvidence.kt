@@ -8,7 +8,8 @@ package com.example.bmwenettest
  * No network access, ECU writes, timers or Android APIs.
  */
 object PollingExitEvidence {
-    enum class StopOrigin { NONE, USER_STOP, SERVICE_DESTROY }
+    enum class StopOrigin { NONE, USER_STOP, SERVICE_DESTROY,
+        BENCHMARK_ABORT, BENCHMARK_COMPLETE }
     enum class EndKind { NORMAL_RETURN, HANDLED_EXCEPTION, CANCELLED, FATAL_ERROR, UNSET }
 
     fun classification(kind:EndKind,stop:StopOrigin):String=when(kind) {
@@ -17,9 +18,13 @@ object PollingExitEvidence {
         EndKind.CANCELLED -> when(stop) {
             StopOrigin.USER_STOP -> "CANCELLED_BY_STOP"
             StopOrigin.SERVICE_DESTROY -> "CANCELLED_BY_SERVICE_DESTROY"
+            StopOrigin.BENCHMARK_ABORT -> "BENCHMARK_ABORT"
+            StopOrigin.BENCHMARK_COMPLETE -> "BENCHMARK_COMPLETE"
             StopOrigin.NONE -> "UNEXPECTED_CANCELLATION"
         }
         EndKind.NORMAL_RETURN -> when(stop) {
+            StopOrigin.BENCHMARK_ABORT -> "BENCHMARK_ABORT"
+            StopOrigin.BENCHMARK_COMPLETE -> "BENCHMARK_COMPLETE"
             StopOrigin.NONE -> "UNEXPECTED_NORMAL_RETURN"
             else -> "NORMAL_AFTER_STOP"
         }

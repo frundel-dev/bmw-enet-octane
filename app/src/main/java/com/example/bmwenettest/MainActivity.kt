@@ -183,7 +183,7 @@ class MainActivity : Activity() {
             typeface=Typeface.create("sans-serif-medium",Typeface.BOLD)
         },LinearLayout.LayoutParams(0,LinearLayout.LayoutParams.WRAP_CONTENT,1f))
         heading.addView(TextView(this).apply {
-            text="v2.0.1 LAB"
+            text="BMW OCTANE ${BuildConfig.VERSION_NAME} / ${BuildConfig.VERSION_CODE}"
             textSize=13f
             setTextColor(sky)
         })

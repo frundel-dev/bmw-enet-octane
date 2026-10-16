@@ -211,8 +211,47 @@ class EnetLoggerService : Service() {
             .putExtra(EXTRA_BENCHMARK_TERMINAL,terminal))
     }
 
+    /** Research terminal state is an expected outcome, not a vanished LOGGER.
+     * The existing USER_STOP or SERVICE_DESTROY origin always takes priority.
+     */
+    private fun markBenchmarkExit(suite:DmeBenchmarkRuntime,epoch:Int) {
+        val terminal=suite.termination ?:return
+        val origin=if(terminal==DmeBenchmarkRuntime.Termination.ABORTED)
+            PollingExitEvidence.StopOrigin.BENCHMARK_ABORT
+            else PollingExitEvidence.StopOrigin.BENCHMARK_COMPLETE
+        if(pollStopOrigin==PollingExitEvidence.StopOrigin.NONE)
+            pollStopOrigin=origin
+        val reason=suite.stopReason?:if(terminal==DmeBenchmarkRuntime.Termination.COMPLETED)
+            "six stages complete" else "benchmark aborted without detailed reason"
+        connectionEvent(if(terminal==DmeBenchmarkRuntime.Termination.ABORTED)
+            "BENCHMARK_ABORT" else "BENCHMARK_COMPLETE",epoch,
+            "BENCHMARK","READ_ONLY",null,
+            "origin=$pollStopOrigin;cause="+reason.replace(",", ";").take(190))
+    }
+
+    /**
+     * Flushes LAB wire evidence without growing the enormous polling coroutine
+     * state machine. Failure is reported but MUST NOT hide original IOException.
+     * The writer is drained by the existing loop() finally block.
+     */
+    private suspend fun flushBenchmarkWireEvidence(
+        suite:DmeBenchmarkRuntime?,writer:AsyncCsvWriter,
+        stageId:Int,epoch:Int,cycle:Long
+    ) {
+        if(suite==null)return
+        try {
+            withContext(NonCancellable) {
+                suite.flushWire(stageId,epoch,cycle,System.nanoTime(),writer)
+            }
+        } catch(e:Exception) {
+            connectionEvent("DME_WIRE_TRACE_PERSIST_FAILED",epoch,
+                "FILE","BENCHMARK",null,
+                e.javaClass.simpleName+": "+(e.message?:"unknown"))
+        }
+    }
+
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
-        .setContentTitle("BMW OCTANE 2.0 LAB").setContentText(text)
+        .setContentTitle("BMW OCTANE ${BuildConfig.VERSION_NAME}").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
 
     /**
@@ -878,7 +917,10 @@ class EnetLoggerService : Service() {
         var appliedSuiteStage=0
         benchmarkRuntime=suite
         if(benchmarkRequested && suite==null) {
+            pollStopOrigin=PollingExitEvidence.StopOrigin.BENCHMARK_ABORT
             emitBenchmarkState("Не удалось начать безопасный LAB benchmark",true)
+            connectionEvent("BENCHMARK_ABORT",0,"BENCHMARK","READ_ONLY",null,
+                "runtime unavailable; no ECU traffic started")
             running=false
         }
         val csvWriter=AsyncCsvWriter(onFailure={ file,error ->
@@ -930,15 +972,9 @@ class EnetLoggerService : Service() {
                     "CSV write failed; primary logger unaffected")
             }
         }
-        var actualLambda:Octane2Lambda.Sample?=null
-        var actualLambdaAt=0L
-        var lambdaChecked=false
-        var lambdaPid:Int?=null
-        var lambdaBackupPid:Int?=null
-        var lambdaNextPoll=0L
-        var fuelControlSupported=false
-        var fuelControlState:String?=null
-        var fuelControlNext=0L
+        // Optional OBD lambda capability/fallback state lives outside the
+        // oversized suspend loop state machine; only this thread calls it.
+        val lambdaPoller=Octane2LambdaPoller()
         var lastCycleComplete=0L
         var lastRamRequestMs=0L
         // Owned by this polling thread, opened once per LOGGER start.
@@ -1127,14 +1163,7 @@ class EnetLoggerService : Service() {
                     .putString("last_gateway_transport",transport).apply()
                 sampleTimes.clear()
                 // Support masks and sensor timestamps are scoped to the TCP session.
-                lambdaChecked=false
-                lambdaPid=null
-                lambdaBackupPid=null
-                actualLambda=null
-                actualLambdaAt=0L
-                fuelControlNext=0L
-                fuelControlSupported=false
-                fuelControlState=null
+                lambdaPoller.reset()
                 val gap=outageFrom?.let { (SystemClock.elapsedRealtime()-it).coerceAtLeast(0L) } ?: 0L
                 connectionEvent(if(gap>0)"RECOVERED" else "CONNECTED",reconnects,connectionStage,
                     transport,gatewayIp,if(viaFastPath)"cached TCP" else "UDP discovery + TCP",gap)
@@ -1143,12 +1172,15 @@ class EnetLoggerService : Service() {
                     fuelId=fuelSessionId,reconnects=reconnects)
                 emit("CONNECTED $transport $gatewayIp:6801 • reconnects $reconnects" +
                     if(gap>0)" • recovered in ${gap} ms" else "")
-                while(running && socket?.isClosed==false) {
+                // Extract a single complete owner-thread diagnostic cycle from
+                // the enormous suspend loop coroutine. No new scope, job, TCP
+                // session, scheduling or concurrent socket access is created.
+                suspend fun runConnectedCycle():Boolean {
                     // Benchmark configuration is applied only BETWEEN full
                     // diagnostic cycles on this socket's sole owning thread.
                     if(suite!=null) {
                         val stage=suite.stage
-                        if(stage==null){running=false;break}
+                        if(stage==null){running=false;return false}
                         if(appliedSuiteStage!=stage.id) {
                             appliedSuiteStage=stage.id
                             highSpeedProfile=stage.profile
@@ -1198,7 +1230,6 @@ class EnetLoggerService : Service() {
                     fastTimingTrace?.begin(learningTripId,fuelSessionId,reconnects,
                         highSpeedCycle,highSpeedProfile.name,pollModeActive,
                         System.nanoTime(),transport=transport)
-                    var slowRequestCount=0
                     val obdStarted=SystemClock.elapsedRealtime()
                     fun pid(id:Int):ByteArray? =
                         measuredDiagnostic("OBD_%02X".format(java.util.Locale.US,id),listOf(id), {
@@ -1220,55 +1251,37 @@ class EnetLoggerService : Service() {
                     } else emptyPolls=0
                     val now=SystemClock.elapsedRealtime()
                     val slowStarted=SystemClock.elapsedRealtime()
-                    val optimizedSlow=pollModeActive=="B" || pollModeActive=="B+"
-                    if(optimizedSlow) {
-                        // B/B+ stay single-threaded on one socket. Optional
-                        // SLOW reads are spread over FAST cycles (max 2 each).
-                        val budget=HighSpeedProfilePolicy.optionalBudget(
-                            highSpeedProfile,highSpeedCycle,previousHighSpeedCycleMs,
-                            consecutiveFailures>0)
-                        val due=if(budget>0)
-                            slowScheduler.due(SystemClock.elapsedRealtime(),budget)
-                            else emptyList()
-                        for(slowId in due) {
-                            val data=if(slowId==0x5728)udsData(0x5728)
-                                else obd(pid(slowId),slowId)
-                            slowRequestCount++
-                            slowScheduler.record(slowId,SystemClock.elapsedRealtime(),
-                                data?.isNotEmpty()==true)
-                            val first=data?.firstOrNull()?.toInt()?.and(255)
-                            when(slowId) {
-                                0x0D -> slowSpeed=first?.toDouble()
-                                0x0F -> slowIat=first?.minus(40)?.toDouble()
-                                0x0E -> slowIgn=first?.div(2.0)?.minus(64.0)
-                                0x05 -> slowCoolant=first?.minus(40)?.toDouble()
-                                0x11 -> slowThrottle=first?.times(100.0/255.0)
-                                0x06 -> slowStft=first?.minus(128)?.times(100.0/128.0)
-                                0x07 -> slowLtft=first?.minus(128)?.times(100.0/128.0)
-                                0x44 -> slowLambda=data?.takeIf { it.size==2 }?.let {
-                                    (((it[0].toInt() and 255)*256)+(it[1].toInt() and 255))*2.0/65535.0
-                                }
-                                0x5C -> slowOil=first?.minus(40)?.toDouble()
-                                0x5728 -> slowSuperKnock=first
-                            }
-                        }
-
-                    } else if(now-lastSlow>=2000L) {
-                        slowSpeed=obd(pid(0x0D),0x0D)?.firstOrNull()?.let{(it.toInt() and 255).toDouble()}
-                        slowIat=obd(pid(0x0F),0x0F)?.let{((it[0].toInt()and 255)-40).toDouble()}
-                        slowIgn=obd(pid(0x0E),0x0E)?.let{(it[0].toInt()and 255)/2.0-64.0}
-                        slowCoolant=obd(pid(0x05),0x05)?.let{((it[0].toInt()and 255)-40).toDouble()}
-                        slowThrottle=obd(pid(0x11),0x11)?.let{(it[0].toInt()and 255)*100.0/255.0}
-                        slowStft=obd(pid(0x06),0x06)?.firstOrNull()?.let{((it.toInt()and 255)-128)*100.0/128.0}
-                        slowLtft=obd(pid(0x07),0x07)?.firstOrNull()?.let{((it.toInt()and 255)-128)*100.0/128.0}
-                        slowLambda=obd(pid(0x44),0x44)?.takeIf{it.size>=2}?.let{
-                            (((it[0].toInt()and 255)*256)+(it[1].toInt()and 255))*2.0/65535.0
-                        }
-                        slowOil=obd(pid(0x5C),0x5C)?.firstOrNull()?.let{((it.toInt()and 255)-40).toDouble()}
-                        slowSuperKnock=udsData(0x5728)?.firstOrNull()?.let{it.toInt() and 255}
-                        slowSensorAtMs=SystemClock.elapsedRealtime()
-                        lastSlow=now
-                    }
+                    // Same in-order reads, moved outside the large suspend
+                    // coroutine. Callbacks execute synchronously on THIS owner.
+                    val slowResult=SlowPollEngine.poll(
+                        mode=pollModeActive,profile=highSpeedProfile,
+                        cycle=highSpeedCycle,
+                        previousCycleMs=previousHighSpeedCycleMs,
+                        hadFailures=consecutiveFailures>0,
+                        benchmark=suite!=null,scheduler=slowScheduler,
+                        nowMs=now,
+                        previous=SlowPollEngine.Values(
+                            slowSpeed,slowIat,slowIgn,slowCoolant,slowThrottle,
+                            slowStft,slowLtft,slowLambda,slowOil,slowSuperKnock),
+                        lastSlowMs=lastSlow,
+                        sensorReceivedAtMs=slowSensorAtMs,
+                        clockMs={SystemClock.elapsedRealtime()},
+                        readObd={id->obd(pid(id),id)},
+                        readUds={id->udsData(id)})
+                    val optimizedSlow=slowResult.optimized
+                    val slowRequestCount=slowResult.slowRequests
+                    slowSpeed=slowResult.values.speed
+                    slowIat=slowResult.values.iat
+                    slowIgn=slowResult.values.ignition
+                    slowCoolant=slowResult.values.coolant
+                    slowThrottle=slowResult.values.throttle
+                    slowStft=slowResult.values.stft
+                    slowLtft=slowResult.values.ltft
+                    slowLambda=slowResult.values.lambda
+                    slowOil=slowResult.values.oil
+                    slowSuperKnock=slowResult.values.superKnock
+                    lastSlow=slowResult.lastSlowMs
+                    slowSensorAtMs=slowResult.sensorReceivedAtMs
                     // Adopt user-confirmed session on the one diagnostic thread.
                     // Never issue a second DME connection or merge different fills.
                     val newConfirmedId=prefs.getInt("fuel_session_id",fuelSessionId)
@@ -1380,66 +1393,28 @@ class EnetLoggerService : Service() {
                     val r=obdRpm
                     val combinedTrim=if(stft1!=null && ltft1!=null)
                         ((1.0+stft1/100.0)*(1.0+ltft1/100.0)-1.0)*100.0 else null
-                    val fastDmeStarted=SystemClock.elapsedRealtime()
-                    val knockStatus=udsData(0x4A36)?.firstOrNull()?.let{it.toInt() and 255}
-                    val knockStatusMs=SystemClock.elapsedRealtime()-fastDmeStarted
-                    val knockStarted=SystemClock.elapsedRealtime()
-                    // Experimental B+: one combined 8-DID read, strict mixed-width parse.
-                    // On rejected/unexpected response, NEVER use partial values:
-                    // disable B+ for this session and retry the proven B topology.
-                    val mixedBatch=if(pollModeActive=="B+" && batchEnabled) {
-                        val combined=udsMixedBatch()
-                        if(combined==null) {
-                            bPlusRejected=true
-                            bPlusRejections++
-                            pollModeActive="B"
-                            lastBatchFallback="B+ 8-DID rejected; safe B"
-                            connectionEvent("BPLUS_FALLBACK",reconnects,connectionStage,
-                                transport,gatewayIp,lastBatchFallback)
-                            null
-                        } else {
-                            batchOk++
-                            combined
-                        }
-                    } else null
-                    // Batch read only if the ECU returns every DID, in order
-                    // and with the exact declared width. Any failure disables
-                    // batching for the rest of this TCP connection.
-                    val knockBatch=if(mixedBatch!=null) mixedBatch else if(batchEnabled) {
-                        udsBatch(DmeBatchParser.knockDids,4).also {
-                            if(it==null) {
-                                batchErrors++
-                                lastBatchFallback="batch knock rejected"
-                                batchEnabled=false
-                                connectionEvent("BATCH_FALLBACK",reconnects,connectionStage,
-                                    transport,gatewayIp,lastBatchFallback)
-                            } else batchOk++
-                        }
-                    } else null
-                    fun knock(did:Int)=(knockBatch?.get(did) ?: udsData(did))?.takeIf{it.size>=4}?.let{
-                        val raw=((it[0].toLong()and 255) shl 24) or ((it[1].toLong()and 255) shl 16) or ((it[2].toLong()and 255) shl 8) or (it[3].toLong()and 255)
-                        raw*0.05/65536.0
-                    }
-                    val kz1=knock(0x4A37); val kz2=knock(0x4A38); val kz3=knock(0x4A39); val kz4=knock(0x4A3A)
-                    val knockPhaseMs=SystemClock.elapsedRealtime()-knockStarted
-                    val ignitionStarted=SystemClock.elapsedRealtime()
-                    val ignitionBatch=if(mixedBatch!=null) mixedBatch else if(batchEnabled) {
-                        udsBatch(DmeBatchParser.ignitionDids,2).also {
-                            if(it==null) {
-                                batchErrors++
-                                lastBatchFallback="batch ignition rejected"
-                                batchEnabled=false
-                                connectionEvent("BATCH_FALLBACK",reconnects,connectionStage,
-                                    transport,gatewayIp,lastBatchFallback)
-                            } else batchOk++
-                        }
-                    } else null
-                    fun ign(did:Int)=(ignitionBatch?.get(did) ?: udsData(did))?.takeIf{it.size>=2}?.let{
-                        val u=((it[0].toInt()and 255) shl 8) or (it[1].toInt()and 255); val signed=if(u>=0x8000)u-0x10000 else u; signed/10.0
-                    }
-                    val iz1=ign(0x4A49); val iz2=ign(0x4A4A); val iz3=ign(0x4A4C); val iz4=ign(0x4A4D)
-                    val ignitionPhaseMs=SystemClock.elapsedRealtime()-ignitionStarted
-                    val fastDmeMs=SystemClock.elapsedRealtime()-fastDmeStarted
+                    val fastDme=readFastDmeCycle(
+                        pollModeActive,batchEnabled,bPlusRejected,bPlusRejections,
+                        batchOk,batchErrors,lastBatchFallback,reconnects,
+                        connectionStage,transport,gatewayIp)
+                    pollModeActive=fastDme.activeMode
+                    batchEnabled=fastDme.batchEnabled
+                    bPlusRejected=fastDme.bPlusRejected
+                    bPlusRejections=fastDme.bPlusRejections
+                    batchOk=fastDme.batchOk
+                    batchErrors=fastDme.batchErrors
+                    lastBatchFallback=fastDme.lastBatchFallback
+                    val knockStatus=fastDme.knockStatus
+                    val knockStatusMs=fastDme.knockStatusMs
+                    val knockBatch=fastDme.knockBatch
+                    val ignitionBatch=fastDme.ignitionBatch
+                    val kz1=fastDme.kz1;val kz2=fastDme.kz2
+                    val kz3=fastDme.kz3;val kz4=fastDme.kz4
+                    val iz1=fastDme.iz1;val iz2=fastDme.iz2
+                    val iz3=fastDme.iz3;val iz4=fastDme.iz4
+                    val knockPhaseMs=fastDme.knockPhaseMs
+                    val ignitionPhaseMs=fastDme.ignitionPhaseMs
+                    val fastDmeMs=fastDme.fastDmeMs
                     val superKnock=slowSuperKnock
                     val foctanStarted=SystemClock.elapsedRealtime()
                     if(now-lastFoctan>=10000L) {
@@ -1516,110 +1491,29 @@ class EnetLoggerService : Service() {
                     val ramReadAllowed=(lastRamRequestMs==0L ||
                         ramStarted-lastRamRequestMs>=300L) &&
                         ramPolicy.canRead(obdRpm,ramGateSpeed,ramGateFresh)
-                    var ramRpm:Double?=null
-                    var acceptedRam=false
-                    if(ramReadAllowed && running) {
-                        lastRamRequestMs=ramStarted
-                        val ramT0=System.nanoTime()
-                        var ramPrepared=ramT0
-                        var ramSent=ramT0
-                        var ramFirst:Long?=null
-                        var ramReceived=ramT0
-                        var ramDecoded=ramT0
-                        try {
-                            val request=RamMemoryProtocol.approvedVehicleRequest(
-                                RamMemoryProtocol.APPROVED_A2L,
-                                RamMemoryProtocol.RPM_SIGNAL)
-                                ?: throw IOException("RAM RPM not allowlisted")
-                            val packet=hsfz(request)
-                            ramPrepared=System.nanoTime()
-                            socket!!.getOutputStream().write(packet)
-                            socket!!.getOutputStream().flush()
-                            ramSent=System.nanoTime()
-                            val ramLength=ramFrameReader.readDiagnostic(
-                                FirstByteMeasuredStream(socket!!.getInputStream(),
-                                    {time->if(ramFirst==null)ramFirst=time}),
-                                expectedRequest=packet,
-                                onAlive={ response ->
-                                    socket!!.getOutputStream().write(response)
-                                    socket!!.getOutputStream().flush()
-                                })
-                                ?: throw IOException("RAM 0x23 missing HSFZ reply")
-                            ramReceived=System.nanoTime()
-                            if(ramFrameReader.isRamPositiveRpm()) {
-                                ramRpm=ramFrameReader.rpm()?.toDouble()
-                                acceptedRam=ramPolicy.accept(ramRpm,obdRpm)
-                            } else {
-                                val nrc=ramFrameReader.ramNegativeCode()
-                                if(nrc==null || nrc==0x78)
-                                    throw IOException("RAM 0x23 unexpected or pending reply (length=$ramLength)")
-                                ramPolicy.disable("RAM NRC %02X".format(nrc))
-                            }
-                            ramDecoded=System.nanoTime()
-                        }catch(e:Exception) {
-                            ramPolicy.disable("RAM transport/protocol fault")
-                            // Unknown/late response may desynchronize the socket:
-                            // never continue ordinary DID reads on this stream.
-                            throw IOException("RAM 0x23 uncertain; reconnect safely",e)
-                        } finally {
-                            // The approved RAM channel uses the same single
-                            // socket owner and re-usable HSFZ body buffer.
-                            val last=System.nanoTime()
-                            highspeed.record("RAM_23",ramT0,HighSpeedMetrics.Request(
-                                (ramPrepared-ramT0).coerceAtLeast(0),
-                                (ramSent-ramPrepared).coerceAtLeast(0),
-                                ramFirst?.let{(it-ramSent).coerceAtLeast(0)},
-                                ramFirst?.let{((if(ramReceived>=it)ramReceived else last)-it)
-                                    .coerceAtLeast(0)},
-                                (ramDecoded-ramReceived).coerceAtLeast(0),
-                                acceptedRam,ramRpm?.toInt()))
-                        }
-                    }
+                    // No additional DME operation: the synchronous helper executes
+                    // at precisely this point in the one-socket polling sequence.
+                    if(ramReadAllowed && running)lastRamRequestMs=ramStarted
+                    val ramReadResult=if(ramReadAllowed && running)
+                        readApprovedRamRpm(ramFrameReader,ramPolicy,highspeed,obdRpm)
+                        else RamPollResult(null,false)
+                    val ramRpm=ramReadResult.rpm
+                    val acceptedRam=ramReadResult.accepted
                     val ramLatency=if(ramReadAllowed)
                         SystemClock.elapsedRealtime()-ramStarted else null
                     // Keep the established 1.7 model tied to OBD RPM.
                     val octane2Rpm=if(acceptedRam)ramRpm else obdRpm
                     val selectedRpmSource=if(acceptedRam)"RAM_NKW" else "OBD_01_0C"
 
-                    // Exact OBD capability masks: optional lambda/loop data
-                    // must never be synthesized from commanded PID 0x44.
-                    if(!lambdaChecked) {
-                        lambdaChecked=true
-                        val mask20=obd(pid(0x20),0x20)
-                        val sensor34=Octane2Lambda.supported(mask20,0x34)
-                        val sensor24=Octane2Lambda.supported(mask20,0x24)
-                        lambdaPid=when {
-                            sensor34 -> 0x34
-                            sensor24 -> 0x24
-                            else -> null
-                        }
-                        lambdaBackupPid=if(sensor34 && sensor24)0x24 else null
-                        val mask00=obd(pid(0x00),0x00)
-                        fuelControlSupported=Octane2Lambda.supportedBase(mask00,0x03)
-                    }
-                    val lambdaNow=SystemClock.elapsedRealtime()
-                    if(lambdaPid!=null && lambdaNow>=lambdaNextPoll) {
-                        val id=lambdaPid!!
-                        actualLambda=Octane2Lambda.decode(id,obd(pid(id),id))
-                        // Test supported alternate only on a later cycle. Do
-                        // not repeatedly hammer an ECU that rejects a PID.
-                        if(actualLambda==null) {
-                            lambdaPid=lambdaBackupPid
-                            lambdaBackupPid=null
-                        }
-                        actualLambdaAt=if(actualLambda!=null)
-                            SystemClock.elapsedRealtime() else 0L
-                        lambdaNextPoll=SystemClock.elapsedRealtime()+4000L
-                    }
-                    if(fuelControlSupported && lambdaNow>=fuelControlNext) {
-                        fuelControlState=Octane2Lambda.controlStatus(obd(pid(0x03),0x03))
-                        fuelControlNext=SystemClock.elapsedRealtime()+5000L
-                    }
-                    val freshActualLambda=actualLambda?.takeIf {
-                        actualLambdaAt>0L &&
-                            SampleFreshness.isFresh(SystemClock.elapsedRealtime(),
-                                actualLambdaAt,8000L)
-                    }
+                    // Same ordered, capability-gated optional OBD reads.
+                    // Never a parallel socket or an extra polling coroutine.
+                    val lambdaSnapshot=lambdaPoller.poll(
+                        clockMs={SystemClock.elapsedRealtime()},
+                        readObd={id->obd(pid(id),id)})
+                    val freshActualLambda=lambdaSnapshot.freshActual(
+                        SystemClock.elapsedRealtime())
+                    val actualLambdaAt=lambdaSnapshot.actualReceivedAtMs
+                    val fuelControlState=lambdaSnapshot.fuelControlState
 
                     if(testWindow && knockMean!=null && ignSpread!=null) validOctaneSamples++
                     val confidence=(validOctaneSamples*2).coerceAtMost(100)
@@ -1846,7 +1740,8 @@ class EnetLoggerService : Service() {
                     // Dashboard's heavyweight status stays at every fourth cycle.
                     emitFastTelemetry(octane2Rpm,m,l,steadyTargetTracker.progress(now))
                     if(suite!=null) {
-                        suite.flushWire(reconnects,highSpeedCycle,System.nanoTime(),csvWriter)
+                        flushBenchmarkWireEvidence(suite,csvWriter,
+                            appliedSuiteStage,reconnects,highSpeedCycle)
                         wireCycleActive=false
                     }
                     val effectiveMode=when {
@@ -1926,11 +1821,13 @@ class EnetLoggerService : Service() {
                     previousHighSpeedCycleMs=cycleMs
 
                     if(suite!=null) {
+                        // Preserve actual age even after a stale/failed probe.
+                        // Invalid sensor values remain null; age != validity.
                         val speedAge=if(optimizedSlow)
-                            slowScheduler.ageMs(0x0D,benchmarkNow)
+                            slowScheduler.lastValidAgeMs(0x0D,benchmarkNow)
                         else slowSensorAtMs.takeIf{it>0L}?.let{benchmarkNow-it}
                         val coolantAge=if(optimizedSlow)
-                            slowScheduler.ageMs(0x05,benchmarkNow)
+                            slowScheduler.lastValidAgeMs(0x05,benchmarkNow)
                         else slowSensorAtMs.takeIf{it>0L}?.let{benchmarkNow-it}
                         val complete=timingOutcome?.complete == true ||
                             (timingOutcome==null && r!=null && l!=null && m!=null &&
@@ -1940,7 +1837,10 @@ class EnetLoggerService : Service() {
                             coolant,coolantAge,r,effectiveMode,highSpeedProfile,
                             reconnects,complete,timingOutcome?.hostSkewMs,cycleMs,
                             benchmarkUiVisible,csvWriter.snapshot().lost),csvWriter)
-                        if(outcome)running=false
+                        if(outcome) {
+                            markBenchmarkExit(suite,reconnects)
+                            running=false
+                        }
                     }
                     val fallbackNote=lastBatchFallback.replace(",",";")
                     if(benchmarkNow-lastBenchmarkMs>=3000L) {
@@ -2021,6 +1921,10 @@ class EnetLoggerService : Service() {
                             monitorLastDuration=outcome.durationMs
                             monitorLastId=task.label
                             monitorState=outcome.status
+                            // A MONITOR read happens AFTER the regular FAST
+                            // trace flush. Persist it before the stage changes.
+                            flushBenchmarkWireEvidence(suite,csvWriter,
+                                appliedSuiteStage,reconnects,highSpeedCycle)
                             if(outcome.failure!=null) {
                                 monitorErrors++
                                 throw outcome.failure
@@ -2028,18 +1932,29 @@ class EnetLoggerService : Service() {
                             if(outcome.status=="OK") monitorOk++
                         }
                     }
+                    return true
+                }
+                while(running && socket?.isClosed==false) {
+                    if(!runConnectedCycle())break
                 }
             } catch(e:Exception) {
+                // Never discard the in-flight HSFZ transaction. measuredDiagnostic
+                // already recorded the exact request, phase and IOException in
+                // its finally. Persist ALL rows from this interrupted cycle
+                // before closing the socket or writing BENCHMARK_ABORT.
+                flushBenchmarkWireEvidence(suite,csvWriter,
+                    appliedSuiteStage,reconnects,highSpeedCycle)
                 wireCycleActive=false
-                suite?.discardWire()
                 fastTimingTrace?.abort(System.nanoTime(),
                     "cycle_interrupted:"+e.javaClass.simpleName)
                 if(suite!=null) {
                     try {
                         suite.abort(SystemClock.elapsedRealtime(),
-                            "diagnostic/network failure: "+e.javaClass.simpleName,
+                            "diagnostic/network failure: "+e.javaClass.simpleName+
+                                ": "+(e.message?:"no message"),
                             csvWriter)
                     }catch(_:Exception){}
+                    markBenchmarkExit(suite,reconnects)
                     running=false
                 }
                 if(e is CancellationException)throw e
@@ -2123,8 +2038,11 @@ class EnetLoggerService : Service() {
         // Drain/flush even when the Service is cancelled during a reconnect.
         withContext(NonCancellable) {
         if(suite!=null) {
-            try{suite.finish(SystemClock.elapsedRealtime(),csvWriter)}
-            catch(e:Exception){
+            try {
+                suite.finish(SystemClock.elapsedRealtime(),csvWriter)
+                if(pollStopOrigin==PollingExitEvidence.StopOrigin.NONE)
+                    markBenchmarkExit(suite,reconnects)
+            } catch(e:Exception) {
                 connectionEvent("DME_BENCHMARK_REPORT_FAILED",reconnects,
                     "FILE","BENCHMARK",null,e.javaClass.simpleName)
             }
@@ -2146,30 +2064,235 @@ class EnetLoggerService : Service() {
      * from the same polling thread, after a complete FAST cycle. Never
      * reuse the socket after a timeout, unsolicited reply or 0x78 pending.
      */
+    private data class FastDmeReadout(
+        val activeMode:String,val batchEnabled:Boolean,val bPlusRejected:Boolean,
+        val bPlusRejections:Int,val batchOk:Int,val batchErrors:Int,
+        val lastBatchFallback:String,
+        val knockStatus:Int?,val knockBatch:Map<Int,ByteArray>?,
+        val ignitionBatch:Map<Int,ByteArray>?,
+        val kz1:Double?,val kz2:Double?,val kz3:Double?,val kz4:Double?,
+        val iz1:Double?,val iz2:Double?,val iz3:Double?,val iz4:Double?,
+        val knockStatusMs:Long,val knockPhaseMs:Long,val ignitionPhaseMs:Long,
+        val fastDmeMs:Long
+    )
+
+    /**
+     * The original FAST DME sequence, extracted unchanged from loop().
+     * Synchronous on the single polling thread; all UDS reads use the same
+     * existing socket. ACK, DID widths, batch rejection and fallback behavior
+     * remain checked by the existing transport/decoder.
+     */
+    private fun readFastDmeCycle(
+        requestedMode:String,initialBatchEnabled:Boolean,
+        initialBPlusRejected:Boolean,initialRejections:Int,
+        initialBatchOk:Int,initialBatchErrors:Int,initialFallback:String,
+        reconnects:Int,connectionStage:String,transport:String,gatewayIp:String?
+    ):FastDmeReadout {
+        var pollModeActive=requestedMode
+        var batchEnabled=initialBatchEnabled
+        var bPlusRejected=initialBPlusRejected
+        var bPlusRejections=initialRejections
+        var batchOk=initialBatchOk
+        var batchErrors=initialBatchErrors
+        var lastBatchFallback=initialFallback
+        val fastDmeStarted=SystemClock.elapsedRealtime()
+        val knockStatus=udsData(0x4A36)?.firstOrNull()?.let{it.toInt() and 255}
+        val knockStatusMs=SystemClock.elapsedRealtime()-fastDmeStarted
+        val knockStarted=SystemClock.elapsedRealtime()
+        val mixedBatch=if(pollModeActive=="B+" && batchEnabled) {
+            val combined=udsMixedBatch()
+            if(combined==null) {
+                bPlusRejected=true
+                bPlusRejections++
+                pollModeActive="B"
+                lastBatchFallback="B+ 8-DID rejected; safe B"
+                connectionEvent("BPLUS_FALLBACK",reconnects,connectionStage,
+                    transport,gatewayIp,lastBatchFallback)
+                null
+            } else {
+                batchOk++
+                combined
+            }
+        } else null
+        val knockBatch=if(mixedBatch!=null) mixedBatch else if(batchEnabled) {
+            udsBatch(DmeBatchParser.knockDids,4).also {
+                if(it==null) {
+                    batchErrors++
+                    lastBatchFallback="batch knock rejected"
+                    batchEnabled=false
+                    connectionEvent("BATCH_FALLBACK",reconnects,connectionStage,
+                        transport,gatewayIp,lastBatchFallback)
+                } else batchOk++
+            }
+        } else null
+        fun knock(did:Int)=(knockBatch?.get(did) ?: udsData(did))
+            ?.takeIf{it.size>=4}?.let {
+                val raw=((it[0].toLong()and 255) shl 24) or
+                    ((it[1].toLong()and 255) shl 16) or
+                    ((it[2].toLong()and 255) shl 8) or
+                    (it[3].toLong()and 255)
+                raw*0.05/65536.0
+            }
+        val kz1=knock(0x4A37);val kz2=knock(0x4A38)
+        val kz3=knock(0x4A39);val kz4=knock(0x4A3A)
+        val knockPhaseMs=SystemClock.elapsedRealtime()-knockStarted
+        val ignitionStarted=SystemClock.elapsedRealtime()
+        val ignitionBatch=if(mixedBatch!=null) mixedBatch else if(batchEnabled) {
+            udsBatch(DmeBatchParser.ignitionDids,2).also {
+                if(it==null) {
+                    batchErrors++
+                    lastBatchFallback="batch ignition rejected"
+                    batchEnabled=false
+                    connectionEvent("BATCH_FALLBACK",reconnects,connectionStage,
+                        transport,gatewayIp,lastBatchFallback)
+                } else batchOk++
+            }
+        } else null
+        fun ign(did:Int)=(ignitionBatch?.get(did) ?: udsData(did))
+            ?.takeIf{it.size>=2}?.let {
+                val u=((it[0].toInt()and 255) shl 8) or
+                    (it[1].toInt()and 255)
+                val signed=if(u>=0x8000)u-0x10000 else u
+                signed/10.0
+            }
+        val iz1=ign(0x4A49);val iz2=ign(0x4A4A)
+        val iz3=ign(0x4A4C);val iz4=ign(0x4A4D)
+        val ignitionPhaseMs=SystemClock.elapsedRealtime()-ignitionStarted
+        val fastDmeMs=SystemClock.elapsedRealtime()-fastDmeStarted
+        return FastDmeReadout(
+            pollModeActive,batchEnabled,bPlusRejected,bPlusRejections,
+            batchOk,batchErrors,lastBatchFallback,knockStatus,
+            knockBatch,ignitionBatch,
+            kz1,kz2,kz3,kz4,iz1,iz2,iz3,iz4,
+            knockStatusMs,knockPhaseMs,ignitionPhaseMs,fastDmeMs)
+    }
+
+    private data class RamPollResult(val rpm:Double?,val accepted:Boolean)
+
+    /**
+     * Extracted from the oversized suspend polling state machine.
+     * Executes synchronously on the SAME owner thread and socket. The request,
+     * checked RAM reply, NRC treatment and timing metrics are unchanged.
+     * The caller alone decides whether reading is safe/allowed.
+     */
+    private fun readApprovedRamRpm(
+        ramFrameReader:HsfzReusableReader,ramPolicy:Octane2RamPolicy,
+        highspeed:HighSpeedMetrics,obdRpm:Double?
+    ):RamPollResult {
+        val ramT0=System.nanoTime()
+        var ramPrepared=ramT0
+        var ramSent=ramT0
+        var ramFirst:Long?=null
+        var ramReceived=ramT0
+        var ramDecoded=ramT0
+        var ramRpm:Double?=null
+        var acceptedRam=false
+        try {
+            val request=RamMemoryProtocol.approvedVehicleRequest(
+                RamMemoryProtocol.APPROVED_A2L,
+                RamMemoryProtocol.RPM_SIGNAL)
+                ?: throw IOException("RAM RPM not allowlisted")
+            val packet=hsfz(request)
+            ramPrepared=System.nanoTime()
+            socket!!.getOutputStream().write(packet)
+            socket!!.getOutputStream().flush()
+            ramSent=System.nanoTime()
+            val ramLength=ramFrameReader.readDiagnostic(
+                FirstByteMeasuredStream(socket!!.getInputStream(),
+                    {time->if(ramFirst==null)ramFirst=time}),
+                expectedRequest=packet,
+                onAlive={ response ->
+                    socket!!.getOutputStream().write(response)
+                    socket!!.getOutputStream().flush()
+                })
+                ?: throw IOException("RAM 0x23 missing HSFZ reply")
+            ramReceived=System.nanoTime()
+            if(ramFrameReader.isRamPositiveRpm()) {
+                ramRpm=ramFrameReader.rpm()?.toDouble()
+                acceptedRam=ramPolicy.accept(ramRpm,obdRpm)
+            } else {
+                val nrc=ramFrameReader.ramNegativeCode()
+                if(nrc==null || nrc==0x78)
+                    throw IOException("RAM 0x23 unexpected or pending reply (length=$ramLength)")
+                ramPolicy.disable("RAM NRC %02X".format(nrc))
+            }
+            ramDecoded=System.nanoTime()
+        }catch(e:Exception) {
+            ramPolicy.disable("RAM transport/protocol fault")
+            // An unknown or late reply can desynchronize the shared socket.
+            throw IOException("RAM 0x23 uncertain; reconnect safely",e)
+        } finally {
+            val last=System.nanoTime()
+            highspeed.record("RAM_23",ramT0,HighSpeedMetrics.Request(
+                (ramPrepared-ramT0).coerceAtLeast(0),
+                (ramSent-ramPrepared).coerceAtLeast(0),
+                ramFirst?.let{(it-ramSent).coerceAtLeast(0)},
+                ramFirst?.let{((if(ramReceived>=it)ramReceived else last)-it)
+                    .coerceAtLeast(0)},
+                (ramDecoded-ramReceived).coerceAtLeast(0),
+                acceptedRam,ramRpm?.toInt()))
+        }
+        return RamPollResult(ramRpm,acceptedRam)
+    }
+
     private fun readDmeMonitor(task:DmeMonitorPolicy.Task):Pair<String,ByteArray> {
         val s=socket ?: throw IOException("No DME socket")
         val request=task.request()
         val savedTimeout=s.soTimeout
+        // Monitor is also serialized on the polling socket, but runs AFTER
+        // the FAST-cycle wire flush. It needs its own LAB-only observation.
+        val wire=benchmarkRuntime
+        val beginNs=System.nanoTime()
+        var sendStartNs:Long?=null
+        var sendEndNs:Long?=null
+        var ackAtNs:Long?=null
+        var dataHeaderAtNs:Long?=null
+        var dataCompleteAtNs:Long?=null
+        var decodeEndNs:Long?=null
+        var failedAtNs:Long?=null
+        var phase="BUILD_REQUEST"
+        var phaseAtNs=beginNs
+        var exceptionClass=""
+        var exceptionMessage=""
+        var valid=false
         try {
             s.soTimeout=750
             val packet=hsfz(request)
+            phase="SEND_REQUEST"
+            sendStartNs=System.nanoTime()
+            phaseAtNs=sendStartNs
             s.getOutputStream().write(packet)
             s.getOutputStream().flush()
-            val response=HsfzCodec.readFrames(
-                s.getInputStream(),
-                expectedRequest=packet,
-                onAlive={ reply ->
-                    s.getOutputStream().write(reply)
-                    s.getOutputStream().flush()
-                })
-                .mapNotNull { payload(it) }.firstOrNull()
+            sendEndNs=System.nanoTime()
+            phase="WAIT_ACK_OR_DATA"
+            phaseAtNs=sendEndNs
+            val alive:(ByteArray)->Unit = { reply ->
+                s.getOutputStream().write(reply)
+                s.getOutputStream().flush()
+            }
+            val frames=if(wire!=null) HsfzCodec.readFrames(
+                s.getInputStream(),expectedRequest=packet,onAlive=alive,
+                onAckAtNs={ackAtNs=it},
+                onDataHeaderAtNs={dataHeaderAtNs=it},
+                onDataCompleteAtNs={dataCompleteAtNs=it},
+                onPhase={p,atNs->phase=p.name;phaseAtNs=atNs})
+            else HsfzCodec.readFrames(s.getInputStream(),
+                expectedRequest=packet,onAlive=alive)
+            phase="DECODE"
+            phaseAtNs=System.nanoTime()
+            val response=frames.mapNotNull { payload(it) }.firstOrNull()
                 ?: throw IOException("Monitor response timeout or empty")
             if(response.size>DmeHistoryProtocol.MAX_RESPONSE_BYTES)
                 throw IOException("Monitor response exceeds safe bound")
             val nrc=DmeHistoryProtocol.classifyNrc(task.service,response)
             if(nrc=="RESPONSE_PENDING")
                 throw IOException("Monitor response pending; unsafe to proceed with FAST")
-            if(nrc!=null)return nrc to response
+            if(nrc!=null) {
+                decodeEndNs=System.nanoTime()
+                phase="NRC"
+                phaseAtNs=decodeEndNs!!
+                return nrc to response
+            }
             if(task.service==0x22) {
                 // Known candidate adaptation DIDs: exactly two data bytes.
                 if(response.size!=5 ||
@@ -2181,8 +2304,31 @@ class EnetLoggerService : Service() {
                 if(DmeHistoryProtocol.parseDtcList(response)==null)
                     throw IOException("Monitor DTC list mismatch")
             } else throw IOException("Unexpected monitor service")
+            valid=true
+            decodeEndNs=System.nanoTime()
+            phase="COMPLETE"
+            phaseAtNs=decodeEndNs!!
             return "OK" to response
+        } catch(t:Throwable) {
+            failedAtNs=System.nanoTime()
+            exceptionClass=t.javaClass.name
+            exceptionMessage=t.message?:""
+            throw t
         } finally {
+            if(wire!=null)try {
+                wire.recordWire(DmeBenchmarkRuntime.Wire(
+                    System.currentTimeMillis(),
+                    if(task.service==0x22)"DID_MONITOR_%04X".format(task.did)
+                    else "UDS_MONITOR_19",
+                    beginNs,sendStartNs,sendEndNs,
+                    ackAtNs,dataHeaderAtNs,dataCompleteAtNs,
+                    decodeEndNs,valid,
+                    if(failedAtNs!=null)exceptionClass.substringAfterLast('.') else "",
+                    if(task.service==0x22)listOf(task.did) else emptyList(),
+                    task.service,phase,phaseAtNs,failedAtNs,
+                    exceptionClass,exceptionMessage,
+                    failedAtNs!=null && !valid))
+            }catch(_:Exception){}
             s.soTimeout=savedTimeout
         }
     }
@@ -2219,15 +2365,30 @@ class EnetLoggerService : Service() {
         var dataCompleteAt:Long?=null
         var receivedAt=start
         var decodedAt=start
+        var wireSendStart:Long?=null
+        var wireSendEnd:Long?=null
+        var requestSid:Int?=null
+        var recvPhase="BUILD_REQUEST"
+        var phaseAtNs=start
+        var failedAtNs:Long?=null
+        var exceptionClass=""
+        var exceptionMessage=""
         var valid=false
         var fingerprint:Int?=null
         var failure=""
         try {
             val bytes=build()
             builtAt=System.nanoTime()
+            requestSid=bytes.getOrNull(8)?.toInt()?.and(255)
+            recvPhase="SEND_REQUEST"
+            phaseAtNs=builtAt
+            wireSendStart=builtAt
             s.getOutputStream().write(bytes)
             s.getOutputStream().flush()
             sentAt=System.nanoTime()
+            wireSendEnd=sentAt
+            recvPhase="WAIT_ACK_OR_DATA"
+            phaseAtNs=sentAt
             val input=FirstByteMeasuredStream(
                 s.getInputStream(),{t->if(firstAt==null)firstAt=t})
             val alive:(ByteArray)->Unit = { response ->
@@ -2238,13 +2399,21 @@ class EnetLoggerService : Service() {
                 onAlive=alive,expectedRequest=bytes,
                 onAckAtNs={verifiedAckAt=it},
                 onDataHeaderAtNs={dataHeaderAt=it},
-                onDataCompleteAtNs={dataCompleteAt=it})
+                onDataCompleteAtNs={dataCompleteAt=it},
+                onPhase={phase,atNs ->
+                    recvPhase=phase.name
+                    phaseAtNs=atNs
+                })
             else HsfzCodec.readFrames(input,onAlive=alive,expectedRequest=bytes)
             receivedAt=System.nanoTime()
+            recvPhase="DECODE"
+            phaseAtNs=receivedAt
             val payloads=received.mapNotNull(::payload)
             val result=decode(payloads)
             decodedAt=System.nanoTime()
             valid=result!=null
+            recvPhase=if(valid)"COMPLETE" else "INVALID_DATA"
+            phaseAtNs=decodedAt
             if(valid)fingerprint=payloads.fold(1){a,b->31*a+b.contentHashCode()}
             if(result!=null)try {
                 passiveRecorder?.onDecoded(channel,result,start,decodedAt,s)
@@ -2259,15 +2428,23 @@ class EnetLoggerService : Service() {
             }
             return result
         } catch(t:Throwable) {
+            failedAtNs=System.nanoTime()
             failure=t.javaClass.simpleName
+            exceptionClass=t.javaClass.name
+            exceptionMessage=t.message?:""
             throw t
         } finally {
             val end=System.nanoTime()
             if(wireCycleActive)try {
                 benchmarkRuntime?.recordWire(DmeBenchmarkRuntime.Wire(
-                    System.currentTimeMillis(),channel,start,builtAt,sentAt,
+                    System.currentTimeMillis(),channel,start,
+                    wireSendStart,wireSendEnd,
                     verifiedAckAt,dataHeaderAt,dataCompleteAt,
-                    if(dataCompleteAt!=null)decodedAt else null,valid,failure))
+                    if(dataCompleteAt!=null && failedAtNs==null)decodedAt else null,
+                    valid,failure,
+                    members.toList(),requestSid,recvPhase,phaseAtNs,
+                    failedAtNs,exceptionClass,exceptionMessage,
+                    failedAtNs!=null && !valid))
             }catch(_:Exception){}
             try {
                 fastTimingTrace?.transaction(channel,members,
