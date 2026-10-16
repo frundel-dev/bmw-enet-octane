@@ -28,6 +28,14 @@ import kotlinx.coroutines.isActive
 class EnetLoggerService : Service() {
     companion object {
         const val ACTION_START = "enet.START"
+        const val ACTION_START_BENCHMARK = "enet.START_DME_BENCHMARK"
+        const val ACTION_BENCHMARK_UI_VISIBILITY = "enet.DME_BENCHMARK_UI_VISIBILITY"
+        const val ACTION_BENCHMARK_STATUS = "enet.DME_BENCHMARK_STATUS"
+        const val EXTRA_BENCHMARK_STATUS = "dme_benchmark_status"
+        const val EXTRA_BENCHMARK_TERMINAL = "dme_benchmark_terminal"
+        const val EXTRA_BENCHMARK_VISIBLE = "dme_benchmark_ui_visible"
+        @Volatile var isBenchmarkRunning:Boolean=false
+            private set
         const val ACTION_STOP = "enet.STOP"
         const val ACTION_STATUS = "enet.STATUS"
         const val ACTION_FAST_TELEMETRY = "enet.FAST_TELEMETRY"
@@ -139,6 +147,11 @@ class EnetLoggerService : Service() {
     private var passiveRecorder:FastDidPassiveRecorder?=null
     // Only the primary single-owner diagnostic coroutine accesses this.
     private var fastTimingTrace:FastTimingTrace?=null
+    // Benchmark tracing stays on the SAME serialized polling owner; no new socket.
+    private var wireTrace:DiagnosticWireTrace?=null
+    private var wireCycleActive=false
+    private var benchmarkRequested=false
+    @Volatile private var benchmarkUiVisible=true
     private val tone by lazy { ToneGenerator(AudioManager.STREAM_MUSIC, 85) }
 
     override fun onBind(intent: Intent?) = null
@@ -156,7 +169,11 @@ class EnetLoggerService : Service() {
                     "job_active=${pollingJob?.isActive};job_cancelled=${pollingJob?.isCancelled}")
                 stopLogger()
             }
-            ACTION_START -> if(!running && pollingJob?.isActive!=true) {
+            ACTION_BENCHMARK_UI_VISIBILITY -> {
+                if(isBenchmarkRunning)
+                    benchmarkUiVisible=intent.getBooleanExtra(EXTRA_BENCHMARK_VISIBLE,true)
+            }
+            ACTION_START, ACTION_START_BENCHMARK -> if(!running && pollingJob?.isActive!=true) {
                 val reservation=VxscanLocalOnlyWifi.snapshot()
                 if(VxscanLocalOnlyWifi.reservationRequired(this) &&
                     reservation.phase!=VxscanLocalOnlyWifi.Phase.READY) {
@@ -175,14 +192,25 @@ class EnetLoggerService : Service() {
                     stopSelfResult(startId)
                     return START_NOT_STICKY
                 }
+                benchmarkRequested=intent.action==ACTION_START_BENCHMARK
+                benchmarkUiVisible=true
+                isBenchmarkRunning=benchmarkRequested
                 startLogger()
             }
         }
         // Never silently resume ECU polling after Android re-creates a killed Service.
-        if(intent?.action!=ACTION_START && intent?.action!=ACTION_STOP && !running)
+        if(intent?.action!=ACTION_START && intent?.action!=ACTION_START_BENCHMARK &&
+            intent?.action!=ACTION_STOP &&
+            intent?.action!=ACTION_BENCHMARK_UI_VISIBILITY && !running)
             stopSelfResult(startId)
         return START_NOT_STICKY
     }
+    private fun emitBenchmarkState(summary:String,terminal:Boolean=false) {
+        sendBroadcast(Intent(ACTION_BENCHMARK_STATUS).setPackage(packageName)
+            .putExtra(EXTRA_BENCHMARK_STATUS,summary)
+            .putExtra(EXTRA_BENCHMARK_TERMINAL,terminal))
+    }
+
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
         .setContentTitle("BMW OCTANE 2.0 LAB").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
@@ -413,6 +441,8 @@ class EnetLoggerService : Service() {
                     ";job_cancelled=${job.isCancelled};"+
                     "job_completed=${job.isCompleted}")
                 if(!running) {
+                    isBenchmarkRunning=false
+                    benchmarkRequested=false
                     healthJob?.cancel()
                     healthGeneration++
                     lastFreshDmeAtMs=0L
@@ -2152,6 +2182,8 @@ class EnetLoggerService : Service() {
         } finally {
         fastTimingTrace?.abort(System.nanoTime(),"poll_job_finally")
         fastTimingTrace=null
+        wireCycleActive=false
+        wireTrace=null
         highSpeedMetrics=null
         // Drain/flush even when the Service is cancelled during a reconnect.
         withContext(NonCancellable) {
