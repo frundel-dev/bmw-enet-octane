@@ -29,7 +29,8 @@ internal object HsfzCodec {
      * the next HSFZ header has been consumed. Otherwise framing is lost and
      * the owning socket MUST be closed/reconnected by the caller.
      */
-    private fun exact(input:InputStream,length:Int,idleHeader:Boolean=false):ByteArray? {
+    private fun exact(input:InputStream,length:Int,idleHeader:Boolean=false,
+                      firstReceived:((Long)->Unit)?=null):ByteArray? {
         val out=ByteArray(length)
         var count=0
         var zeroReads=0
@@ -50,6 +51,10 @@ internal object HsfzCodec {
                 if(++zeroReads>3)throw IOException("HSFZ input repeatedly returned zero bytes")
                 continue
             }
+            if(count==0 && firstReceived!=null) {
+                // Monotonic HOST time after the read returns; not ECU sample time.
+                try{firstReceived(System.nanoTime())}catch(_:Exception){}
+            }
             zeroReads=0
             count+=received
         }
@@ -63,7 +68,10 @@ internal object HsfzCodec {
     fun readFrames(
         input:InputStream,maxFrames:Int=2,
         onAlive:((ByteArray)->Unit)?=null,
-        expectedRequest:ByteArray?=null
+        expectedRequest:ByteArray?=null,
+        onAckAtNs:((Long)->Unit)?=null,
+        onDataHeaderAtNs:((Long)->Unit)?=null,
+        onDataCompleteAtNs:((Long)->Unit)?=null
     ):List<ByteArray> {
         require(maxFrames in 1..8)
         val frames=ArrayList<ByteArray>(maxFrames)
@@ -71,7 +79,9 @@ internal object HsfzCodec {
         // Still bound work to prevent an endless ACK/alive flood.
         repeat(8) {
             try {
-                val header=exact(input,6,idleHeader=true)
+                var headerFirstReadNs:Long?=null
+                val header=exact(input,6,idleHeader=true,
+                    firstReceived={headerFirstReadNs=it})
                     ?: throw IOException("HSFZ EOF before diagnostic response")
                 val length=bodyLength(header)
                 if(length !in 0..MAX_FRAME_BODY_BYTES || length==1)
@@ -83,6 +93,11 @@ internal object HsfzCodec {
                 when(type) {
                     0x01 -> {
                         if(length<2)throw IOException("HSFZ diagnostic addresses absent")
+                        headerFirstReadNs?.let { t ->
+                            try{onDataHeaderAtNs?.invoke(t)}catch(_:Exception){}
+                        }
+                        try{onDataCompleteAtNs?.invoke(System.nanoTime())}
+                            catch(_:Exception){}
                         frames.add(frame)
                         if(frames.size>=maxFrames)return frames
                         return frames // a single matched transaction owns this socket
@@ -92,6 +107,8 @@ internal object HsfzCodec {
                             frame.size>expectedRequest.size ||
                             (6 until frame.size).any { frame[it]!=expectedRequest[it] })
                             throw IOException("HSFZ ACK not correlated with request")
+                        try{onAckAtNs?.invoke(System.nanoTime())}
+                            catch(_:Exception){}
                     }
                     0xFF -> throw IOException("HSFZ gateway NACK: reconnect required")
                     0x12 -> {
