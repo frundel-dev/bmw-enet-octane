@@ -9,17 +9,15 @@ import kotlin.math.abs
  * a caveated *relative signal* comparison, never laboratory RON.
  */
 object GuidedFuelTest {
-    const val PREF_ID = "guided_fuel_test_id"
-    const val PREF_ACTIVE = "guided_fuel_test_active"
-    const val PREF_DONE = "guided_fuel_test_done"
-    const val PREF_FUEL_SESSION = "guided_fuel_test_fuel_session"
-    const val PREF_GRADE = "guided_fuel_test_grade"
-    const val PREF_STATION = "guided_fuel_test_station"
-    val grades = listOf("АИ-92", "АИ-95", "АИ-98", "АИ-100", "Другое")
-    // Keep legacy labels readable/editable in saved sessions, but for this BMW
-    // do not offer AI-92 or free-text fuel as a new laboratory category.
-    val selectableGrades = listOf("АИ-95", "АИ-98", "АИ-100")
-    fun filename(id:Long)="bmw_fuel_test_v1731_$id.csv"
+    const val PREF_ID=FuelSessionKeys.PREF_ID
+    const val PREF_ACTIVE=FuelSessionKeys.PREF_ACTIVE
+    const val PREF_DONE=FuelSessionKeys.PREF_DONE
+    const val PREF_FUEL_SESSION=FuelSessionKeys.PREF_FUEL_SESSION
+    const val PREF_GRADE=FuelSessionKeys.PREF_GRADE
+    const val PREF_STATION=FuelSessionKeys.PREF_STATION
+    val grades=FuelSessionKeys.grades
+    val selectableGrades=FuelSessionKeys.selectableGrades
+    fun filename(id:Long)=FuelSessionKeys.filename(id)
 
     data class CellProgress(val count:Int,val segments:Int) {
         val reached:Boolean get()=count>=4 && segments>=2
