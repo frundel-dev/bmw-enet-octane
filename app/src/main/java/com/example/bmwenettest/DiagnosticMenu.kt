@@ -53,9 +53,7 @@ internal object DiagnosticMenu {
      * One-time migration of hidden, previously user-configurable legacy modes.
      * Never edits datasets or CSV; only prevents invisible TEST/manual capture.
      */
-    fun retiredDefaults(previousMode: String?, baselineRecording: Boolean): RetiredDefaults {
-        @Suppress("UNUSED_VARIABLE")
-        val obsoleteValues = previousMode to baselineRecording
-        return RetiredDefaults(NORMAL_MODE, false)
-    }
+    @Suppress("UNUSED_PARAMETER")
+    fun retiredDefaults(previousMode: String?, baselineRecording: Boolean): RetiredDefaults =
+        RetiredDefaults(NORMAL_MODE, false)
 }
