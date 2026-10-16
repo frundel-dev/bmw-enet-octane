@@ -1997,7 +1997,8 @@ class EnetLoggerService : Service() {
                     val commandedAge=if(lambdaEq==null)null else if(optimizedSlow)
                         slowScheduler.ageMs(0x44,benchmarkNow) else
                         slowSensorAtMs.takeIf{it>0L}?.let{benchmarkNow-it}
-                    saveComparison(Octane2Cycle(
+                    // Build the same v2 comparison row off the suspend method body.
+                    fun comparisonRow():Octane2Cycle = Octane2Cycle(
                         System.currentTimeMillis(),benchmarkNow-started,
                         learningTripId,fuelSessionId,reconnects,effectiveMode,
                         obdRpm,ramRpm,octane2Rpm,selectedRpmSource,ramPolicy.state.name,
@@ -2011,7 +2012,8 @@ class EnetLoggerService : Service() {
                         steadyTargetTracker.progress(now).targetIndex,
                         steadyTargetTracker.progress(now).dwellMs,
                         sessionScore,sessionConfidence
-                    ))
+                    )
+                    saveComparison(comparisonRow())
                     healthState=LoggerHealthPolicy.cycleFinished(healthState,
                         SystemClock.elapsedRealtime(),r!=null && m!=null)
                     if(r!=null && m!=null)
