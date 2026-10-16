@@ -2254,15 +2254,30 @@ class EnetLoggerService : Service() {
         var dataCompleteAt:Long?=null
         var receivedAt=start
         var decodedAt=start
+        var wireSendStart:Long?=null
+        var wireSendEnd:Long?=null
+        var requestSid:Int?=null
+        var recvPhase="BUILD_REQUEST"
+        var phaseAtNs=start
+        var failedAtNs:Long?=null
+        var exceptionClass=""
+        var exceptionMessage=""
         var valid=false
         var fingerprint:Int?=null
         var failure=""
         try {
             val bytes=build()
             builtAt=System.nanoTime()
+            requestSid=bytes.getOrNull(8)?.toInt()?.and(255)
+            recvPhase="SEND_REQUEST"
+            phaseAtNs=builtAt
+            wireSendStart=builtAt
             s.getOutputStream().write(bytes)
             s.getOutputStream().flush()
             sentAt=System.nanoTime()
+            wireSendEnd=sentAt
+            recvPhase="WAIT_ACK_OR_DATA"
+            phaseAtNs=sentAt
             val input=FirstByteMeasuredStream(
                 s.getInputStream(),{t->if(firstAt==null)firstAt=t})
             val alive:(ByteArray)->Unit = { response ->
@@ -2273,13 +2288,21 @@ class EnetLoggerService : Service() {
                 onAlive=alive,expectedRequest=bytes,
                 onAckAtNs={verifiedAckAt=it},
                 onDataHeaderAtNs={dataHeaderAt=it},
-                onDataCompleteAtNs={dataCompleteAt=it})
+                onDataCompleteAtNs={dataCompleteAt=it},
+                onPhase={phase,atNs ->
+                    recvPhase=phase.name
+                    phaseAtNs=atNs
+                })
             else HsfzCodec.readFrames(input,onAlive=alive,expectedRequest=bytes)
             receivedAt=System.nanoTime()
+            recvPhase="DECODE"
+            phaseAtNs=receivedAt
             val payloads=received.mapNotNull(::payload)
             val result=decode(payloads)
             decodedAt=System.nanoTime()
             valid=result!=null
+            recvPhase=if(valid)"COMPLETE" else "INVALID_DATA"
+            phaseAtNs=decodedAt
             if(valid)fingerprint=payloads.fold(1){a,b->31*a+b.contentHashCode()}
             if(result!=null)try {
                 passiveRecorder?.onDecoded(channel,result,start,decodedAt,s)
@@ -2294,15 +2317,23 @@ class EnetLoggerService : Service() {
             }
             return result
         } catch(t:Throwable) {
+            failedAtNs=System.nanoTime()
             failure=t.javaClass.simpleName
+            exceptionClass=t.javaClass.name
+            exceptionMessage=t.message?:""
             throw t
         } finally {
             val end=System.nanoTime()
             if(wireCycleActive)try {
                 benchmarkRuntime?.recordWire(DmeBenchmarkRuntime.Wire(
-                    System.currentTimeMillis(),channel,start,builtAt,sentAt,
+                    System.currentTimeMillis(),channel,start,
+                    wireSendStart,wireSendEnd,
                     verifiedAckAt,dataHeaderAt,dataCompleteAt,
-                    if(dataCompleteAt!=null)decodedAt else null,valid,failure))
+                    if(dataCompleteAt!=null && failedAtNs==null)decodedAt else null,
+                    valid,failure,
+                    members.toList(),requestSid,recvPhase,phaseAtNs,
+                    failedAtNs,exceptionClass,exceptionMessage,
+                    failedAtNs!=null && dataCompleteAt==null))
             }catch(_:Exception){}
             try {
                 fastTimingTrace?.transaction(channel,members,
