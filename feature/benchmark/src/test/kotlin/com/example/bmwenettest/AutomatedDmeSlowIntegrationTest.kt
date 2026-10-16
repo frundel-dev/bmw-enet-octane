@@ -24,7 +24,7 @@ class AutomatedDmeSlowIntegrationTest {
         var totalCycles=0
         val observed=mutableSetOf<Int>()
         while(!suite.terminal && totalCycles<14_000) {
-            val stage=suite.current ?:fail("missing stage")
+            val stage=suite.current ?: error("missing stage")
             if(stage.id!=stageId) {
                 stageId=stage.id
                 observed.add(stage.id)
