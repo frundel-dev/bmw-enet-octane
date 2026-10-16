@@ -15,10 +15,14 @@ internal interface DmeBenchmarkRuntime {
         val complete:Boolean,val skewMs:Long?,val cycleMs:Long,
         val visible:Boolean,val csvLost:Long)
     data class Wire(val wallMs:Long,val channel:String,val requestStartNs:Long,
-        val sendStartNs:Long,val sendEndNs:Long,
+        val sendStartNs:Long?,val sendEndNs:Long?,
         val ackVerifiedNs:Long?,val dataHeaderFirstReadNs:Long?,
         val dataCompleteNs:Long?,val decodeEndNs:Long?,
-        val valid:Boolean,val error:String)
+        val valid:Boolean,val error:String,
+        val requestedIds:List<Int> = emptyList(),val requestSid:Int?=null,
+        val recvPhase:String="",val phaseAtNs:Long?=null,
+        val failedAtNs:Long?=null,val exceptionClass:String="",
+        val exceptionMessage:String="",val unfinished:Boolean=false)
     enum class Termination { COMPLETED, ABORTED }
     val stage:Stage?
     val terminated:Boolean
@@ -28,7 +32,7 @@ internal interface DmeBenchmarkRuntime {
     fun status(nowMs:Long):String
     fun recordWire(tx:Wire)
     fun discardWire()
-    fun flushWire(epoch:Int,cycle:Long,publishNs:Long,writer:AsyncCsvWriter)
+    suspend fun flushWire(epoch:Int,cycle:Long,publishNs:Long,writer:AsyncCsvWriter)
     suspend fun onCycle(cycle:Cycle,writer:AsyncCsvWriter):Boolean
     suspend fun abort(nowMs:Long,reason:String,writer:AsyncCsvWriter)
     suspend fun finish(nowMs:Long,writer:AsyncCsvWriter)
