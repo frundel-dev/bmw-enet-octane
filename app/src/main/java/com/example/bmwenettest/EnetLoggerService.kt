@@ -28,6 +28,14 @@ import kotlinx.coroutines.isActive
 class EnetLoggerService : Service() {
     companion object {
         const val ACTION_START = "enet.START"
+        const val ACTION_START_BENCHMARK = "enet.START_DME_BENCHMARK"
+        const val ACTION_BENCHMARK_UI_VISIBILITY = "enet.DME_BENCHMARK_UI_VISIBILITY"
+        const val ACTION_BENCHMARK_STATUS = "enet.DME_BENCHMARK_STATUS"
+        const val EXTRA_BENCHMARK_STATUS = "dme_benchmark_status"
+        const val EXTRA_BENCHMARK_TERMINAL = "dme_benchmark_terminal"
+        const val EXTRA_BENCHMARK_VISIBLE = "dme_benchmark_ui_visible"
+        @Volatile var isBenchmarkRunning:Boolean=false
+            private set
         const val ACTION_STOP = "enet.STOP"
         const val ACTION_STATUS = "enet.STATUS"
         const val ACTION_FAST_TELEMETRY = "enet.FAST_TELEMETRY"
@@ -139,6 +147,11 @@ class EnetLoggerService : Service() {
     private var passiveRecorder:FastDidPassiveRecorder?=null
     // Only the primary single-owner diagnostic coroutine accesses this.
     private var fastTimingTrace:FastTimingTrace?=null
+    // Benchmark tracing stays on the SAME serialized polling owner; no new socket.
+    private var wireTrace:DiagnosticWireTrace?=null
+    private var wireCycleActive=false
+    private var benchmarkRequested=false
+    @Volatile private var benchmarkUiVisible=true
     private val tone by lazy { ToneGenerator(AudioManager.STREAM_MUSIC, 85) }
 
     override fun onBind(intent: Intent?) = null
@@ -156,7 +169,11 @@ class EnetLoggerService : Service() {
                     "job_active=${pollingJob?.isActive};job_cancelled=${pollingJob?.isCancelled}")
                 stopLogger()
             }
-            ACTION_START -> if(!running && pollingJob?.isActive!=true) {
+            ACTION_BENCHMARK_UI_VISIBILITY -> {
+                if(isBenchmarkRunning)
+                    benchmarkUiVisible=intent.getBooleanExtra(EXTRA_BENCHMARK_VISIBLE,true)
+            }
+            ACTION_START, ACTION_START_BENCHMARK -> if(!running && pollingJob?.isActive!=true) {
                 val reservation=VxscanLocalOnlyWifi.snapshot()
                 if(VxscanLocalOnlyWifi.reservationRequired(this) &&
                     reservation.phase!=VxscanLocalOnlyWifi.Phase.READY) {
@@ -175,14 +192,25 @@ class EnetLoggerService : Service() {
                     stopSelfResult(startId)
                     return START_NOT_STICKY
                 }
+                benchmarkRequested=intent.action==ACTION_START_BENCHMARK
+                benchmarkUiVisible=true
+                isBenchmarkRunning=benchmarkRequested
                 startLogger()
             }
         }
         // Never silently resume ECU polling after Android re-creates a killed Service.
-        if(intent?.action!=ACTION_START && intent?.action!=ACTION_STOP && !running)
+        if(intent?.action!=ACTION_START && intent?.action!=ACTION_START_BENCHMARK &&
+            intent?.action!=ACTION_STOP &&
+            intent?.action!=ACTION_BENCHMARK_UI_VISIBILITY && !running)
             stopSelfResult(startId)
         return START_NOT_STICKY
     }
+    private fun emitBenchmarkState(summary:String,terminal:Boolean=false) {
+        sendBroadcast(Intent(ACTION_BENCHMARK_STATUS).setPackage(packageName)
+            .putExtra(EXTRA_BENCHMARK_STATUS,summary)
+            .putExtra(EXTRA_BENCHMARK_TERMINAL,terminal))
+    }
+
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
         .setContentTitle("BMW OCTANE 2.0 LAB").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
@@ -413,6 +441,8 @@ class EnetLoggerService : Service() {
                     ";job_cancelled=${job.isCancelled};"+
                     "job_completed=${job.isCompleted}")
                 if(!running) {
+                    isBenchmarkRunning=false
+                    benchmarkRequested=false
                     healthJob?.cancel()
                     healthGeneration++
                     lastFreshDmeAtMs=0L
@@ -842,6 +872,32 @@ class EnetLoggerService : Service() {
         val ramFrameReader=HsfzReusableReader()
         val highspeed=HighSpeedMetrics()
         highSpeedMetrics=highspeed
+        val suite=if(benchmarkRequested) AutomatedDmeBenchmark(
+            SystemClock.elapsedRealtime()) else null
+        val suiteFile=if(suite!=null)try {
+            File(getExternalFilesDir(null)?:filesDir,
+                "bmw_dme_benchmark_suite_v1_${System.currentTimeMillis()}.csv").apply {
+                writeText("# stationary_read_only=true;ecu_sample_time=unknown;"+
+                    "android_elapsed_includes_suspend=true;parking_gear_unverified=true\n"+
+                    AutomatedDmeBenchmark.HEADER+"\n")
+            }
+        }catch(_:Exception){null} else null
+        val suiteWireFile=if(suiteFile!=null)try {
+            File(suiteFile.parentFile,suiteFile.name.removeSuffix(".csv")+
+                "_wire_v1.csv").apply {
+                writeText("# host_read_timestamps_not_ecu_acquisition=true;ack_is_not_data=true\n"+
+                    DiagnosticWireTrace.HEADER+"\n")
+            }
+        }catch(_:Exception){null} else null
+        val suiteReportFile=if(suiteFile!=null)
+            File(suiteFile.parentFile,suiteFile.name.removeSuffix(".csv")+".txt") else null
+        var appliedSuiteStage=0
+        var lastSuiteExport=0L
+        wireTrace=if(suite!=null)DiagnosticWireTrace() else null
+        if(suite!=null && (suiteFile==null || suiteWireFile==null)) {
+            emitBenchmarkState("Нет доступа к файлу отчёта: тест отменён",terminal=true)
+            running=false
+        }
         val csvWriter=AsyncCsvWriter(onFailure={ file,error ->
             connectionEvent("ASYNC_CSV_WRITE_FAILED",reconnects,"FILE",
                 "ASYNC",null,"file=${file.name};error=${error.javaClass.simpleName}: ${error.message}")
@@ -1136,6 +1192,28 @@ class EnetLoggerService : Service() {
                 emit("CONNECTED $transport $gatewayIp:6801 • reconnects $reconnects" +
                     if(gap>0)" • recovered in ${gap} ms" else "")
                 while(running && socket?.isClosed==false) {
+                    // Benchmark configuration is applied only BETWEEN full
+                    // diagnostic cycles on this socket's sole owning thread.
+                    if(suite!=null) {
+                        val stage=suite.current
+                        if(stage==null){running=false;break}
+                        if(appliedSuiteStage!=stage.id) {
+                            appliedSuiteStage=stage.id
+                            highSpeedProfile=stage.profile
+                            requestedPollMode=stage.pollMode
+                            activatePollingMode(stage.pollMode,activeNet!!,gatewayIp!!,
+                                transport,"benchmark stage ${stage.id}/6")
+                            highspeed.reset()
+                            slowScheduler.reset()
+                            lastHighSpeedExport=0L
+                            wireTrace?.discard()
+                            emitBenchmarkState(if(stage.background)
+                                "ЭТАП 6: проверка фона (5 минут). Сверни приложение / "+
+                                "выключи экран. Неполные интервалы будут отмечены."
+                                else suite.status(SystemClock.elapsedRealtime())+
+                                " • SPEED=0, ECT≥70°C, RPM на холостом ходу")
+                        }
+                    } else {
                     // Manual override B+/B/A, applied only between ECU replies.
                     // Apply the change at a safe boundary, never mid-UDS frame.
                     val newRequest=PollModePolicy.resolve(
@@ -1160,9 +1238,11 @@ class EnetLoggerService : Service() {
                         connectionEvent("HIGH_SPEED_PROFILE",reconnects,"PROFILE",
                             transport,gatewayIp,"profile=${highSpeedProfile.name}")
                     }
+                    }
                     val cycleStart=SystemClock.elapsedRealtime()
                     healthState=LoggerHealthPolicy.cycleStarted(healthState,cycleStart)
                     highSpeedCycle++
+                    wireCycleActive=suite!=null
                     fastTimingTrace?.begin(learningTripId,fuelSessionId,reconnects,
                         highSpeedCycle,highSpeedProfile.name,pollModeActive,
                         System.nanoTime(),transport=transport)
@@ -1919,13 +1999,20 @@ class EnetLoggerService : Service() {
                     // This broadcast is intentionally every completed FAST cycle.
                     // Dashboard's heavyweight status stays at every fourth cycle.
                     emitFastTelemetry(octane2Rpm,m,l,steadyTargetTracker.progress(now))
+                    if(suite!=null) {
+                        val lines=wireTrace?.flush(suite.current?.id?:-1,
+                            reconnects,highSpeedCycle,System.nanoTime())
+                        wireCycleActive=false
+                        if(lines!=null && suiteWireFile!=null)
+                            csvWriter.offerAudit(suiteWireFile,lines)
+                    }
                     val effectiveMode=when {
                         batchEnabled && pollModeActive=="B+" -> "B+"
                         batchEnabled -> "B"
                         else -> "A"
                     }
                     val benchmarkNow=SystemClock.elapsedRealtime()
-                    fastTimingTrace?.finish(System.nanoTime(),mapOf(
+                    val timingOutcome=fastTimingTrace?.finish(System.nanoTime(),mapOf(
                         0x0C to (r!=null),0x04 to (l!=null),0x0B to (m!=null),
                         0x4A37 to (kz1!=null),0x4A38 to (kz2!=null),
                         0x4A39 to (kz3!=null),0x4A3A to (kz4!=null),
@@ -1992,6 +2079,52 @@ class EnetLoggerService : Service() {
                     val postFastMs=benchmarkNow-postFastStarted
                     val cycleMs=benchmarkNow-cycleStart
                     previousHighSpeedCycleMs=cycleMs
+                    if(suite!=null) {
+                        // Speed/temperature ages are diagnostic-observation ages,
+                        // never default zero on missing/unsupported OBD PIDs.
+                        val speedAge=if(optimizedSlow)
+                            slowScheduler.ageMs(0x0D,benchmarkNow)
+                        else slowSensorAtMs.takeIf{it>0L}?.let{
+                            (benchmarkNow-it).coerceAtLeast(0L)
+                        }
+                        val coolantAge=if(optimizedSlow)
+                            slowScheduler.ageMs(0x05,benchmarkNow)
+                        else slowSensorAtMs.takeIf{it>0L}?.let{
+                            (benchmarkNow-it).coerceAtLeast(0L)
+                        }
+                        val result=suite.onCycle(AutomatedDmeBenchmark.Cycle(
+                            nowMs=benchmarkNow,wallMs=System.currentTimeMillis(),
+                            speedKmh=speed,speedAgeMs=speedAge,
+                            coolantC=coolant,coolantAgeMs=coolantAge,rpm=r,
+                            actualMode=effectiveMode,actualProfile=highSpeedProfile,
+                            epoch=reconnects,
+                            fastComplete=timingOutcome?.complete == true ||
+                                (timingOutcome==null && r!=null && l!=null && m!=null &&
+                                listOf(kz1,kz2,kz3,kz4,iz1,iz2,iz3,iz4).all{it!=null}),
+                            hostSkewMs=timingOutcome?.hostSkewMs,
+                            cycleMs=cycleMs,uiVisible=benchmarkUiVisible,
+                            csvLost=csvWriter.snapshot().lost
+                        ))
+                        if(result!=null) {
+                            suiteFile?.let {file ->
+                                csvWriter.append(file,suite.csvRow(result.type,
+                                    benchmarkNow,System.currentTimeMillis(),result.summary))
+                            }
+                            emitBenchmarkState(suite.status(benchmarkNow)+
+                                " • "+result.summary,result.terminal)
+                            if(result.terminal)running=false
+                        }
+                        if(running && benchmarkNow-lastSuiteExport>=5_000L) {
+                            lastSuiteExport=benchmarkNow
+                            suiteFile?.let{file->
+                                csvWriter.append(file,suite.csvRow(
+                                    if(suite.state==AutomatedDmeBenchmark.State.WAITING)
+                                        "WAIT" else "PROGRESS",
+                                    benchmarkNow,System.currentTimeMillis(),suite.status(benchmarkNow)))
+                            }
+                            emitBenchmarkState(suite.status(benchmarkNow))
+                        }
+                    }
                     val fallbackNote=lastBatchFallback.replace(",",";")
                     if(benchmarkNow-lastBenchmarkMs>=3000L) {
                         lastBenchmarkMs=benchmarkNow
@@ -2049,7 +2182,7 @@ class EnetLoggerService : Service() {
                     // request per qualified low-load gap, independent CSV.
                     // The earlier fast benchmark deliberately excludes monitor
                     // IO, while the next FAST frequency includes its latency.
-                    if(!monitorPolicy.suspended &&
+                    if(running && !monitorPolicy.suspended &&
                         pollModeActive in listOf("B+","B") &&
                         !vxscanWifiBlocked) {
                         val completedFast=knockBatch!=null && ignitionBatch!=null &&
@@ -2075,8 +2208,21 @@ class EnetLoggerService : Service() {
                     }
                 }
             } catch(e:Exception) {
+                wireCycleActive=false
+                wireTrace?.discard()
                 fastTimingTrace?.abort(System.nanoTime(),
                     "cycle_interrupted:"+e.javaClass.simpleName)
+                if(suite!=null) {
+                    val event=suite.abort(SystemClock.elapsedRealtime(),
+                        "diagnostic/network failure: "+e.javaClass.simpleName)
+                    suiteFile?.let {file->
+                        try{csvWriter.append(file,suite.csvRow(event.type,
+                            SystemClock.elapsedRealtime(),System.currentTimeMillis(),event.summary))}
+                        catch(_:Exception){}
+                    }
+                    emitBenchmarkState(suite.status(SystemClock.elapsedRealtime()),true)
+                    running=false
+                }
                 if(e is CancellationException)throw e
                 if(!running) break
                 val failureAt=SystemClock.elapsedRealtime()
@@ -2152,9 +2298,31 @@ class EnetLoggerService : Service() {
         } finally {
         fastTimingTrace?.abort(System.nanoTime(),"poll_job_finally")
         fastTimingTrace=null
+        wireCycleActive=false
+        wireTrace=null
         highSpeedMetrics=null
         // Drain/flush even when the Service is cancelled during a reconnect.
         withContext(NonCancellable) {
+        if(suite!=null) {
+            if(!suite.terminal) {
+                val event=suite.abort(SystemClock.elapsedRealtime(),
+                    "LOGGER stopped before benchmark completed")
+                suiteFile?.let{file->try {
+                    csvWriter.append(file,suite.csvRow(event.type,
+                        SystemClock.elapsedRealtime(),System.currentTimeMillis(),event.summary))
+                }catch(_:Exception){}}
+                emitBenchmarkState(suite.status(SystemClock.elapsedRealtime()),true)
+            }
+            try{suiteReportFile?.writeText(suite.reportText()+"\n"+
+                "Raw HOST HSFZ: "+(suiteWireFile?.name?:"unavailable")+"\n"+
+                "FAST traces: bmw_fast_*_timing_v1_${learningTripId}.csv\n"+
+                "High-Speed: "+highSpeedFile.name+"\n")}
+            catch(e:Exception){
+                connectionEvent("DME_BENCHMARK_REPORT_FAILED",reconnects,
+                    "FILE","BENCHMARK",null,e.javaClass.simpleName)
+            }
+            isBenchmarkRunning=false
+        }
         observationJournal?.close()
         try{compareWriter?.flush();compareWriter?.close()}catch(_:Exception){}
         csvWriter.closeAndJoin()
@@ -2255,6 +2423,9 @@ class EnetLoggerService : Service() {
         var builtAt=start
         var sentAt=start
         var firstAt:Long?=null
+        var verifiedAckAt:Long?=null
+        var dataHeaderAt:Long?=null
+        var dataCompleteAt:Long?=null
         var receivedAt=start
         var decodedAt=start
         var valid=false
@@ -2266,12 +2437,18 @@ class EnetLoggerService : Service() {
             s.getOutputStream().write(bytes)
             s.getOutputStream().flush()
             sentAt=System.nanoTime()
-            val received=HsfzCodec.readFrames(FirstByteMeasuredStream(
-                s.getInputStream(),{t->if(firstAt==null)firstAt=t}),
-                onAlive={ response ->
-                    s.getOutputStream().write(response)
-                    s.getOutputStream().flush()
-                },expectedRequest=bytes)
+            val input=FirstByteMeasuredStream(
+                s.getInputStream(),{t->if(firstAt==null)firstAt=t})
+            val alive:(ByteArray)->Unit = { response ->
+                s.getOutputStream().write(response)
+                s.getOutputStream().flush()
+            }
+            val received=if(wireCycleActive) HsfzCodec.readFrames(input,
+                onAlive=alive,expectedRequest=bytes,
+                onAckAtNs={verifiedAckAt=it},
+                onDataHeaderAtNs={dataHeaderAt=it},
+                onDataCompleteAtNs={dataCompleteAt=it})
+            else HsfzCodec.readFrames(input,onAlive=alive,expectedRequest=bytes)
             receivedAt=System.nanoTime()
             val payloads=received.mapNotNull(::payload)
             val result=decode(payloads)
@@ -2295,6 +2472,12 @@ class EnetLoggerService : Service() {
             throw t
         } finally {
             val end=System.nanoTime()
+            if(wireCycleActive)try {
+                wireTrace?.record(DiagnosticWireTrace.Tx(
+                    System.currentTimeMillis(),channel,start,builtAt,sentAt,
+                    verifiedAckAt,dataHeaderAt,dataCompleteAt,
+                    if(dataCompleteAt!=null)decodedAt else null,valid,failure))
+            }catch(_:Exception){}
             try {
                 fastTimingTrace?.transaction(channel,members,
                     System.currentTimeMillis(),FastTimingTrace.Timing(
