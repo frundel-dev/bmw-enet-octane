@@ -229,6 +229,27 @@ class EnetLoggerService : Service() {
             "origin=$pollStopOrigin;cause="+reason.replace(",", ";").take(190))
     }
 
+    /**
+     * Flushes LAB wire evidence without growing the enormous polling coroutine
+     * state machine. Failure is reported but MUST NOT hide original IOException.
+     * The writer is drained by the existing loop() finally block.
+     */
+    private suspend fun flushBenchmarkWireEvidence(
+        suite:DmeBenchmarkRuntime?,writer:AsyncCsvWriter,
+        stageId:Int,epoch:Int,cycle:Long
+    ) {
+        if(suite==null)return
+        try {
+            withContext(NonCancellable) {
+                suite.flushWire(stageId,epoch,cycle,System.nanoTime(),writer)
+            }
+        } catch(e:Exception) {
+            connectionEvent("DME_WIRE_TRACE_PERSIST_FAILED",epoch,
+                "FILE","BENCHMARK",null,
+                e.javaClass.simpleName+": "+(e.message?:"unknown"))
+        }
+    }
+
     private fun notification(text:String)=Notification.Builder(this,CHANNEL)
         .setContentTitle("BMW OCTANE ${BuildConfig.VERSION_NAME}").setContentText(text)
         .setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
@@ -2054,10 +2075,8 @@ class EnetLoggerService : Service() {
                             monitorState=outcome.status
                             // A MONITOR read happens AFTER the regular FAST
                             // trace flush. Persist it before the stage changes.
-                            if(suite!=null)withContext(NonCancellable) {
-                                suite.flushWire(appliedSuiteStage,reconnects,highSpeedCycle,
-                                    System.nanoTime(),csvWriter)
-                            }
+                            flushBenchmarkWireEvidence(suite,csvWriter,
+                                appliedSuiteStage,reconnects,highSpeedCycle)
                             if(outcome.failure!=null) {
                                 monitorErrors++
                                 throw outcome.failure
@@ -2071,19 +2090,8 @@ class EnetLoggerService : Service() {
                 // already recorded the exact request, phase and IOException in
                 // its finally. Persist ALL rows from this interrupted cycle
                 // before closing the socket or writing BENCHMARK_ABORT.
-                if(suite!=null) {
-                    try {
-                        withContext(NonCancellable) {
-                            suite.flushWire(appliedSuiteStage,reconnects,highSpeedCycle,
-                                System.nanoTime(),csvWriter)
-                        }
-                    }catch(traceError:Exception) {
-                        connectionEvent("DME_WIRE_TRACE_PERSIST_FAILED",reconnects,
-                            "FILE","BENCHMARK",null,
-                            traceError.javaClass.simpleName+": "+
-                                (traceError.message?:"unknown"))
-                    }
-                }
+                flushBenchmarkWireEvidence(suite,csvWriter,
+                    appliedSuiteStage,reconnects,highSpeedCycle)
                 wireCycleActive=false
                 fastTimingTrace?.abort(System.nanoTime(),
                     "cycle_interrupted:"+e.javaClass.simpleName)
