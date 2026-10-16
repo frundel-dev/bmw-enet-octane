@@ -78,7 +78,7 @@ jobs:
       - name: Upload OCTANE APK
         uses: actions/upload-artifact@v4
         with:
-          name: BMW-OCTANE-224-debug-apk
+          name: BMW-OCTANE-225-debug-apk
           path: app/build/outputs/apk/octane/debug/app-octane-debug.apk
           if-no-files-found: error
           retention-days: 30
@@ -86,7 +86,7 @@ jobs:
       - name: Upload LAB APK
         uses: actions/upload-artifact@v4
         with:
-          name: BMW-OCTANE-LAB-224-debug-apk
+          name: BMW-OCTANE-LAB-225-debug-apk
           path: app/build/outputs/apk/lab/debug/app-lab-debug.apk
           if-no-files-found: error
           retention-days: 30
