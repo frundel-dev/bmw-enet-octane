@@ -1227,8 +1227,13 @@ class EnetLoggerService : Service() {
                         val budget=HighSpeedProfilePolicy.optionalBudget(
                             highSpeedProfile,highSpeedCycle,previousHighSpeedCycleMs,
                             consecutiveFailures>0)
-                        val due=if(budget>0)
-                            slowScheduler.due(SystemClock.elapsedRealtime(),budget)
+                        // Read-only stationary guard probes have priority in LAB:
+                        // CORE's ordinary zero SLOW budget must not starve them.
+                        // All transactions remain sequential on the SAME socket.
+                        val due=if(suite!=null)
+                            slowScheduler.dueForBenchmark(SystemClock.elapsedRealtime(),budget)
+                            else if(budget>0)
+                                slowScheduler.due(SystemClock.elapsedRealtime(),budget)
                             else emptyList()
                         for(slowId in due) {
                             val data=if(slowId==0x5728)udsData(0x5728)
@@ -1926,11 +1931,13 @@ class EnetLoggerService : Service() {
                     previousHighSpeedCycleMs=cycleMs
 
                     if(suite!=null) {
+                        // Preserve actual age even after a stale/failed probe.
+                        // Invalid sensor values remain null; age != validity.
                         val speedAge=if(optimizedSlow)
-                            slowScheduler.ageMs(0x0D,benchmarkNow)
+                            slowScheduler.lastValidAgeMs(0x0D,benchmarkNow)
                         else slowSensorAtMs.takeIf{it>0L}?.let{benchmarkNow-it}
                         val coolantAge=if(optimizedSlow)
-                            slowScheduler.ageMs(0x05,benchmarkNow)
+                            slowScheduler.lastValidAgeMs(0x05,benchmarkNow)
                         else slowSensorAtMs.takeIf{it>0L}?.let{benchmarkNow-it}
                         val complete=timingOutcome?.complete == true ||
                             (timingOutcome==null && r!=null && l!=null && m!=null &&
