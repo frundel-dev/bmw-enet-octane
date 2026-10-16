@@ -35,6 +35,19 @@ class PollingExitEvidenceTest {
             P.classification(P.EndKind.NORMAL_RETURN,P.StopOrigin.SERVICE_DESTROY))
     }
 
+    @Test fun benchmarkAbortAndCompleteAreNeverUnexplainedLoggerExit() {
+        assertEquals("BENCHMARK_ABORT",
+            P.classification(P.EndKind.NORMAL_RETURN,P.StopOrigin.BENCHMARK_ABORT))
+        assertEquals("BENCHMARK_COMPLETE",
+            P.classification(P.EndKind.NORMAL_RETURN,P.StopOrigin.BENCHMARK_COMPLETE))
+        assertEquals("BENCHMARK_ABORT",
+            P.classification(P.EndKind.CANCELLED,P.StopOrigin.BENCHMARK_ABORT))
+        assertEquals("BENCHMARK_COMPLETE",
+            P.classification(P.EndKind.CANCELLED,P.StopOrigin.BENCHMARK_COMPLETE))
+        assertNotEquals("UNEXPECTED_NORMAL_RETURN",
+            P.classification(P.EndKind.NORMAL_RETURN,P.StopOrigin.BENCHMARK_ABORT))
+    }
+
     @Test fun cancelledBeforeCoroutineBeginsIsNotMistakenForNormal() {
         assertEquals("COMPLETION_WITHOUT_FINALLY",
             P.classification(P.EndKind.UNSET,P.StopOrigin.NONE))
