@@ -1223,6 +1223,49 @@ class EnetLoggerService : Service() {
                             transport,gatewayIp,"profile=${highSpeedProfile.name}")
                     }
                     }
+                    // Adopt user-confirmed session on the one diagnostic thread.
+                    // Never issue a second DME connection or merge different fills.
+                    val newConfirmedId=prefs.getInt("fuel_session_id",fuelSessionId)
+                    if(newConfirmedId!=fuelSessionId) {
+                        fuelSessionId=newConfirmedId
+                        highspeed.reset() // never compare different fuel sessions
+                        mixingKm=prefs.getFloat("mixing_remaining_km",
+                            RefuelSessionStore.MIXING_DISTANCE_KM).toDouble()
+                        steadyTargetTracker=loadSteadyTargets(fuelSessionId)
+                        lastAcknowledgedTargetSegment=0
+                        steadyTargetSnapshot=steadyTargetTracker.snapshot(
+                            "Новая заправка подтверждена: MIXING (эвристический карантин)")
+                            logFile=createLogFile(fuelSessionId)
+                            steadySurveyFile=createSteadySurveyFile(fuelSessionId)
+                            dmeProbeResults.clear()
+                            captureActive=false; captureTailUntil=0L; runId=0; runSamples=0; runValidPoints=0; runHighPoints=0
+                            runWeightedRatio=0.0; runWeight=0.0; lastRunScore=null; lastRunQuality=0
+                            sessionScoreSum=0.0; sessionQualitySum=0.0; sessionValidRuns=0; sessionScores.clear()
+                            coverageBins.clear(); sessionHighPoints=0; autoQualifiedSegments=0; autoAcceptedSamples=0
+                            autoCoverage.clear(); autoRatioSum=0.0; autoRatioWeight=0.0; autoKnockEvents=0; autoSuperEvents=0
+                            steadyRatioSum=0.0; steadyRatioWeight=0.0; accelRatioSum=0.0; accelRatioWeight=0.0
+                            steadyPoints=0; accelPoints=0; steadyCells.clear(); accelCells.clear(); acceptedAutoSegments.clear()
+                            steadySegments.clear(); accelSegments.clear(); steadySurveyCells.clear()
+                            steadyFineStats.clear();lastFineCell=""
+                            lastFineSummary=SteadyCellStats.Summary(0,0,null,null,false)
+                            steadySurveyPoints=0;steadySegmentId=0;lastSteadyObservation=0L
+                            accelV08Sum=0.0;accelV08Weight=0.0;accelV08Points=0
+                            highRpmRatioSum=0.0; highRpmPoints=0; highRpmOver120=0; highRpmBaselineSum=0
+                            lastAutoAcceptedTime=0L; lastQualified=0L; previousSampleTime=0L; previousRpm=null; previousMap=null
+                        recordObservation(DriveObservation(
+                            wallTimeMs=System.currentTimeMillis(),
+                            elapsedMs=SystemClock.elapsedRealtime()-started,
+                            tripId=learningTripId,
+                            fuelSessionId=fuelSessionId,
+                            connectionEpoch=reconnects,
+                            event="REFUEL_CONFIRMED",
+                            transport=transport,pollMode=pollModeActive))
+                        lastRefuelNote="Топливная сессия #$fuelSessionId подтверждена; "+
+                            "переходный период не гарантирует полного перемешивания."
+                        connectionEvent("FUEL_SESSION_CONFIRMED",reconnects,
+                            "FUEL",transport,null,"session=$fuelSessionId;heuristic_mixing=$mixingKm")
+                        emit(lastRefuelNote)
+                    }
                     val cycleStart=SystemClock.elapsedRealtime()
                     healthState=LoggerHealthPolicy.cycleStarted(healthState,cycleStart)
                     highSpeedCycle++
@@ -1230,7 +1273,9 @@ class EnetLoggerService : Service() {
                     fastTimingTrace?.begin(learningTripId,fuelSessionId,reconnects,
                         highSpeedCycle,highSpeedProfile.name,pollModeActive,
                         System.nanoTime(),transport=transport)
-                    val obdStarted=SystemClock.elapsedRealtime()
+                    // BEGIN contiguous FAST slice: 01 0C, 01 04, 01 0B,
+                    // then the unchanged serialized knock/ignition UDS flow.
+                    // All SLOW/optional work is deliberately AFTER FAST END.
                     fun pid(id:Int):ByteArray? =
                         measuredDiagnostic("OBD_%02X".format(java.util.Locale.US,id),listOf(id), {
                             hsfz(byteArrayOf(0x01,id.toByte()))
@@ -1238,17 +1283,59 @@ class EnetLoggerService : Service() {
                             replies.firstOrNull { DiagnosticResponse.obd(it,id)!=null }
                         }
                     fun obd(p:ByteArray?,id:Int)=p?.let{DiagnosticResponse.obd(it,id)}
-                    val rpmObdStarted=SystemClock.elapsedRealtime()
-                    val obdRpm=obd(pid(0x0C),0x0C)?.takeIf{it.size==2}
-                        ?.let{(((it[0].toInt()and 255)*256)+(it[1].toInt()and 255))/4.0}
-                    val obdRpmLatency=SystemClock.elapsedRealtime()-rpmObdStarted
-                    val l=obd(pid(0x04),0x04)?.let{(it[0].toInt()and 255)*100.0/255.0}
-                    val m=obd(pid(0x0B),0x0B)?.let{(it[0].toInt()and 255).toDouble()}
-                    val obdMs=SystemClock.elapsedRealtime()-obdStarted
-                    if(obdRpm==null && l==null && m==null) {
-                        emptyPolls++
-                        if(emptyPolls>=3) throw IOException("No ECU OBD reply for 3 consecutive polls")
-                    } else emptyPolls=0
+                    val collectedFast=FastCriticalSlice.collect(
+                        clockMs={SystemClock.elapsedRealtime()},
+                        readObd={id->obd(pid(id),id)},
+                        afterObd={o->
+                            if(o.rpm==null && o.load==null && o.map==null) {
+                                emptyPolls++
+                                if(emptyPolls>=3)
+                                    throw IOException("No ECU OBD reply for 3 consecutive polls")
+                            } else emptyPolls=0
+                        },
+                        readFastDme={
+                            readFastDmeCycle(
+                                pollModeActive,batchEnabled,bPlusRejected,bPlusRejections,
+                                batchOk,batchErrors,lastBatchFallback,reconnects,
+                                connectionStage,transport,gatewayIp)
+                        })
+                    val obdRpm=collectedFast.obd.rpm
+                    val l=collectedFast.obd.load
+                    val m=collectedFast.obd.map
+                    val rpmObdStarted=collectedFast.obd.rpmStartedMs
+                    val obdRpmLatency=collectedFast.obd.rpmLatencyMs
+                    val obdMs=collectedFast.obd.obdDurationMs
+                    val fastDme=collectedFast.dme
+                    pollModeActive=fastDme.activeMode
+                    batchEnabled=fastDme.batchEnabled
+                    bPlusRejected=fastDme.bPlusRejected
+                    bPlusRejections=fastDme.bPlusRejections
+                    batchOk=fastDme.batchOk
+                    batchErrors=fastDme.batchErrors
+                    lastBatchFallback=fastDme.lastBatchFallback
+                    val knockStatus=fastDme.knockStatus
+                    val knockStatusMs=fastDme.knockStatusMs
+                    val knockBatch=fastDme.knockBatch
+                    val ignitionBatch=fastDme.ignitionBatch
+                    val kz1=fastDme.kz1;val kz2=fastDme.kz2
+                    val kz3=fastDme.kz3;val kz4=fastDme.kz4
+                    val iz1=fastDme.iz1;val iz2=fastDme.iz2
+                    val iz3=fastDme.iz3;val iz4=fastDme.iz4
+                    val knockPhaseMs=fastDme.knockPhaseMs
+                    val ignitionPhaseMs=fastDme.ignitionPhaseMs
+                    val fastDmeMs=fastDme.fastDmeMs
+                    // Close FAST timing at the last FAST response, not after
+                    // fuel scoring, SLOW/Monitor work or UI publication.
+                    val fastEndNs=System.nanoTime()
+                    val fastEndMs=SystemClock.elapsedRealtime()
+                    val timingOutcome=fastTimingTrace?.finish(fastEndNs,mapOf(
+                        0x0C to (obdRpm!=null),0x04 to (l!=null),0x0B to (m!=null),
+                        0x4A37 to (kz1!=null),0x4A38 to (kz2!=null),
+                        0x4A39 to (kz3!=null),0x4A3A to (kz4!=null),
+                        0x4A49 to (iz1!=null),0x4A4A to (iz2!=null),
+                        0x4A4C to (iz3!=null),0x4A4D to (iz4!=null)))
+                    // SLOW reads retain their existing PIDs, deadlines and policy,
+                    // but can no longer stretch the host FAST sampling window.
                     val now=SystemClock.elapsedRealtime()
                     val slowStarted=SystemClock.elapsedRealtime()
                     // Same in-order reads, moved outside the large suspend
@@ -1282,49 +1369,6 @@ class EnetLoggerService : Service() {
                     slowSuperKnock=slowResult.values.superKnock
                     lastSlow=slowResult.lastSlowMs
                     slowSensorAtMs=slowResult.sensorReceivedAtMs
-                    // Adopt user-confirmed session on the one diagnostic thread.
-                    // Never issue a second DME connection or merge different fills.
-                    val newConfirmedId=prefs.getInt("fuel_session_id",fuelSessionId)
-                    if(newConfirmedId!=fuelSessionId) {
-                        fuelSessionId=newConfirmedId
-                        highspeed.reset() // never compare different fuel sessions
-                        mixingKm=prefs.getFloat("mixing_remaining_km",
-                            RefuelSessionStore.MIXING_DISTANCE_KM).toDouble()
-                        steadyTargetTracker=loadSteadyTargets(fuelSessionId)
-                        lastAcknowledgedTargetSegment=0
-                        steadyTargetSnapshot=steadyTargetTracker.snapshot(
-                            "Новая заправка подтверждена: MIXING (эвристический карантин)")
-                            logFile=createLogFile(fuelSessionId)
-                            steadySurveyFile=createSteadySurveyFile(fuelSessionId)
-                            dmeProbeResults.clear()
-                            captureActive=false; captureTailUntil=0L; runId=0; runSamples=0; runValidPoints=0; runHighPoints=0
-                            runWeightedRatio=0.0; runWeight=0.0; lastRunScore=null; lastRunQuality=0
-                            sessionScoreSum=0.0; sessionQualitySum=0.0; sessionValidRuns=0; sessionScores.clear()
-                            coverageBins.clear(); sessionHighPoints=0; autoQualifiedSegments=0; autoAcceptedSamples=0
-                            autoCoverage.clear(); autoRatioSum=0.0; autoRatioWeight=0.0; autoKnockEvents=0; autoSuperEvents=0
-                            steadyRatioSum=0.0; steadyRatioWeight=0.0; accelRatioSum=0.0; accelRatioWeight=0.0
-                            steadyPoints=0; accelPoints=0; steadyCells.clear(); accelCells.clear(); acceptedAutoSegments.clear()
-                            steadySegments.clear(); accelSegments.clear(); steadySurveyCells.clear()
-                            steadyFineStats.clear();lastFineCell=""
-                            lastFineSummary=SteadyCellStats.Summary(0,0,null,null,false)
-                            steadySurveyPoints=0;steadySegmentId=0;lastSteadyObservation=0L
-                            accelV08Sum=0.0;accelV08Weight=0.0;accelV08Points=0
-                            highRpmRatioSum=0.0; highRpmPoints=0; highRpmOver120=0; highRpmBaselineSum=0
-                            lastAutoAcceptedTime=0L; lastQualified=0L; previousSampleTime=0L; previousRpm=null; previousMap=null
-                        recordObservation(DriveObservation(
-                            wallTimeMs=System.currentTimeMillis(),
-                            elapsedMs=now-started,
-                            tripId=learningTripId,
-                            fuelSessionId=fuelSessionId,
-                            connectionEpoch=reconnects,
-                            event="REFUEL_CONFIRMED",
-                            transport=transport,pollMode=pollModeActive))
-                        lastRefuelNote="Топливная сессия #$fuelSessionId подтверждена; "+
-                            "переходный период не гарантирует полного перемешивания."
-                        connectionEvent("FUEL_SESSION_CONFIRMED",reconnects,
-                            "FUEL",transport,null,"session=$fuelSessionId;heuristic_mixing=$mixingKm")
-                        emit(lastRefuelNote)
-                    }
                     // Tank level is a slow optional OBD parameter. No value means unsupported/unavailable.
                     if(now-lastFuelPoll>=15000L) {
                         slowFuel=obd(pid(0x2F),0x2F)?.firstOrNull()?.let {
@@ -1393,28 +1437,6 @@ class EnetLoggerService : Service() {
                     val r=obdRpm
                     val combinedTrim=if(stft1!=null && ltft1!=null)
                         ((1.0+stft1/100.0)*(1.0+ltft1/100.0)-1.0)*100.0 else null
-                    val fastDme=readFastDmeCycle(
-                        pollModeActive,batchEnabled,bPlusRejected,bPlusRejections,
-                        batchOk,batchErrors,lastBatchFallback,reconnects,
-                        connectionStage,transport,gatewayIp)
-                    pollModeActive=fastDme.activeMode
-                    batchEnabled=fastDme.batchEnabled
-                    bPlusRejected=fastDme.bPlusRejected
-                    bPlusRejections=fastDme.bPlusRejections
-                    batchOk=fastDme.batchOk
-                    batchErrors=fastDme.batchErrors
-                    lastBatchFallback=fastDme.lastBatchFallback
-                    val knockStatus=fastDme.knockStatus
-                    val knockStatusMs=fastDme.knockStatusMs
-                    val knockBatch=fastDme.knockBatch
-                    val ignitionBatch=fastDme.ignitionBatch
-                    val kz1=fastDme.kz1;val kz2=fastDme.kz2
-                    val kz3=fastDme.kz3;val kz4=fastDme.kz4
-                    val iz1=fastDme.iz1;val iz2=fastDme.iz2
-                    val iz3=fastDme.iz3;val iz4=fastDme.iz4
-                    val knockPhaseMs=fastDme.knockPhaseMs
-                    val ignitionPhaseMs=fastDme.ignitionPhaseMs
-                    val fastDmeMs=fastDme.fastDmeMs
                     val superKnock=slowSuperKnock
                     val foctanStarted=SystemClock.elapsedRealtime()
                     if(now-lastFoctan>=10000L) {
@@ -1750,12 +1772,6 @@ class EnetLoggerService : Service() {
                         else -> "A"
                     }
                     val benchmarkNow=SystemClock.elapsedRealtime()
-                    val timingOutcome=fastTimingTrace?.finish(System.nanoTime(),mapOf(
-                        0x0C to (r!=null),0x04 to (l!=null),0x0B to (m!=null),
-                        0x4A37 to (kz1!=null),0x4A38 to (kz2!=null),
-                        0x4A39 to (kz3!=null),0x4A3A to (kz4!=null),
-                        0x4A49 to (iz1!=null),0x4A4A to (iz2!=null),
-                        0x4A4C to (iz3!=null),0x4A4D to (iz4!=null)))
                     // Side-by-side 2.0/1.7 reading metrics, not a RON score.
                     val cycleGap=if(lastCycleComplete>0L)
                         (cycleStart-lastCycleComplete).coerceAtLeast(0L) else null
