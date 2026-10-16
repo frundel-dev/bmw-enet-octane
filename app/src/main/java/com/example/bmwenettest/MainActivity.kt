@@ -65,7 +65,6 @@ class MainActivity : Activity() {
     private lateinit var targetPointsTwo:TextView
     private lateinit var targetProgressOne:ProgressBar
     private lateinit var targetProgressTwo:ProgressBar
-    private lateinit var targetHint:TextView
     private lateinit var livePanelBorder:android.graphics.drawable.GradientDrawable
     private lateinit var liveMapValue:TextView
     private lateinit var liveRpmValue:TextView
@@ -409,12 +408,6 @@ class MainActivity : Activity() {
         targetPointsOne=one.first;targetProgressOne=one.second
         val two=targetRow("3000–3499 об/мин")
         targetPointsTwo=two.first;targetProgressTwo=two.second
-        targetHint=TextView(this).apply {
-            text="Запусти обычный LOGGER в AUTO. Тест заправки не требуется."
-            textSize=11f;setTextColor(muted)
-            setPadding(0,dp(7),0,0)
-        }
-        targetPanel.addView(targetHint)
         guidedPanel=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             setPadding(dp(12),dp(8),dp(12),dp(9))
@@ -1611,7 +1604,6 @@ class MainActivity : Activity() {
         targetPointsTwo.text=textFor(b)
         targetProgressOne.progress=a[4].coerceIn(0,100)
         targetProgressTwo.progress=b[4].coerceIn(0,100)
-        targetHint.text=hint?:"Ожидаю устойчивые RPM и MAP"
         firstTarget=Octane2UiState.target(a)
         secondTarget=Octane2UiState.target(b)
         renderHomeState()
