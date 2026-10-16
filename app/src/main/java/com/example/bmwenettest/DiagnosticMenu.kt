@@ -46,4 +46,16 @@ internal object DiagnosticMenu {
     // The retired TEST button must not strand an upgraded installation in
     // TEST, which suppresses the normal AUTO STEADY/ACCEL capture path.
     const val NORMAL_MODE = "AUTO"
+
+    data class RetiredDefaults(val measurementMode: String, val baselineRecording: Boolean)
+
+    /**
+     * One-time migration of hidden, previously user-configurable legacy modes.
+     * Never edits datasets or CSV; only prevents invisible TEST/manual capture.
+     */
+    fun retiredDefaults(previousMode: String?, baselineRecording: Boolean): RetiredDefaults {
+        @Suppress("UNUSED_VARIABLE")
+        val obsoleteValues = previousMode to baselineRecording
+        return RetiredDefaults(NORMAL_MODE, false)
+    }
 }
