@@ -872,6 +872,32 @@ class EnetLoggerService : Service() {
         val ramFrameReader=HsfzReusableReader()
         val highspeed=HighSpeedMetrics()
         highSpeedMetrics=highspeed
+        val suite=if(benchmarkRequested) AutomatedDmeBenchmark(
+            SystemClock.elapsedRealtime()) else null
+        val suiteFile=if(suite!=null)try {
+            File(getExternalFilesDir(null)?:filesDir,
+                "bmw_dme_benchmark_suite_v1_${System.currentTimeMillis()}.csv").apply {
+                writeText("# stationary_read_only=true;ecu_sample_time=unknown;"+
+                    "android_elapsed_includes_suspend=true;parking_gear_unverified=true\\n"+
+                    AutomatedDmeBenchmark.HEADER+"\\n")
+            }
+        }catch(_:Exception){null} else null
+        val suiteWireFile=if(suiteFile!=null)try {
+            File(suiteFile.parentFile,suiteFile.name.removeSuffix(".csv")+
+                "_wire_v1.csv").apply {
+                writeText("# host_read_timestamps_not_ecu_acquisition=true;ack_is_not_data=true\\n"+
+                    DiagnosticWireTrace.HEADER+"\\n")
+            }
+        }catch(_:Exception){null} else null
+        val suiteReportFile=if(suiteFile!=null)
+            File(suiteFile.parentFile,suiteFile.name.removeSuffix(".csv")+".txt") else null
+        var appliedSuiteStage=0
+        var lastSuiteExport=0L
+        wireTrace=if(suite!=null)DiagnosticWireTrace() else null
+        if(suite!=null && (suiteFile==null || suiteWireFile==null)) {
+            emitBenchmarkState("Нет доступа к файлу отчёта: тест отменён",terminal=true)
+            running=false
+        }
         val csvWriter=AsyncCsvWriter(onFailure={ file,error ->
             connectionEvent("ASYNC_CSV_WRITE_FAILED",reconnects,"FILE",
                 "ASYNC",null,"file=${file.name};error=${error.javaClass.simpleName}: ${error.message}")
@@ -1166,6 +1192,25 @@ class EnetLoggerService : Service() {
                 emit("CONNECTED $transport $gatewayIp:6801 • reconnects $reconnects" +
                     if(gap>0)" • recovered in ${gap} ms" else "")
                 while(running && socket?.isClosed==false) {
+                    // Benchmark configuration is applied only BETWEEN full
+                    // diagnostic cycles on this socket's sole owning thread.
+                    if(suite!=null) {
+                        val stage=suite.current
+                        if(stage==null){running=false;break}
+                        if(appliedSuiteStage!=stage.id) {
+                            appliedSuiteStage=stage.id
+                            highSpeedProfile=stage.profile
+                            requestedPollMode=stage.pollMode
+                            activatePollingMode(stage.pollMode,activeNet!!,gatewayIp!!,
+                                transport,"benchmark stage ${stage.id}/6")
+                            highspeed.reset()
+                            slowScheduler.reset()
+                            lastHighSpeedExport=0L
+                            wireTrace?.discard()
+                            emitBenchmarkState(suite.status(SystemClock.elapsedRealtime())+
+                                " • SPEED=0, ECT≥70°C, RPM на холостом ходу")
+                        }
+                    } else {
                     // Manual override B+/B/A, applied only between ECU replies.
                     // Apply the change at a safe boundary, never mid-UDS frame.
                     val newRequest=PollModePolicy.resolve(
@@ -1190,9 +1235,11 @@ class EnetLoggerService : Service() {
                         connectionEvent("HIGH_SPEED_PROFILE",reconnects,"PROFILE",
                             transport,gatewayIp,"profile=${highSpeedProfile.name}")
                     }
+                    }
                     val cycleStart=SystemClock.elapsedRealtime()
                     healthState=LoggerHealthPolicy.cycleStarted(healthState,cycleStart)
                     highSpeedCycle++
+                    wireCycleActive=suite!=null
                     fastTimingTrace?.begin(learningTripId,fuelSessionId,reconnects,
                         highSpeedCycle,highSpeedProfile.name,pollModeActive,
                         System.nanoTime(),transport=transport)
@@ -1949,6 +1996,13 @@ class EnetLoggerService : Service() {
                     // This broadcast is intentionally every completed FAST cycle.
                     // Dashboard's heavyweight status stays at every fourth cycle.
                     emitFastTelemetry(octane2Rpm,m,l,steadyTargetTracker.progress(now))
+                    if(suite!=null) {
+                        val lines=wireTrace?.flush(suite.current?.id?:-1,
+                            reconnects,highSpeedCycle,System.nanoTime())
+                        wireCycleActive=false
+                        if(lines!=null && suiteWireFile!=null)
+                            csvWriter.offerAudit(suiteWireFile,lines)
+                    }
                     val effectiveMode=when {
                         batchEnabled && pollModeActive=="B+" -> "B+"
                         batchEnabled -> "B"
