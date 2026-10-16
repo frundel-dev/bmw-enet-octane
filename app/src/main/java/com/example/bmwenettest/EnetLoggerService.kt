@@ -933,6 +933,8 @@ class EnetLoggerService : Service() {
         // LAB owns passive FAST transaction traces. OCTANE links no tracing class.
         fastTimingTrace=FastTimingPortFactory.create(
             getExternalFilesDir(null)?:filesDir,learningTripId,csvWriter)
+        val fastPhasePort=FastPhasePortFactory.create(
+            getExternalFilesDir(null)?:filesDir,learningTripId,csvWriter)
         passiveRecorder=openFastDidAudit(csvWriter,learningTripId,reconnects)
         val highSpeedFile=File(getExternalFilesDir(null)?:filesDir,
             "bmw_highspeed_benchmark_v1_${learningTripId}.csv")
@@ -976,6 +978,7 @@ class EnetLoggerService : Service() {
         // oversized suspend loop state machine; only this thread calls it.
         val lambdaPoller=Octane2LambdaPoller()
         var lastCycleComplete=0L
+        var lastPhaseCompletedNs:Long?=null
         var lastRamRequestMs=0L
         // Owned by this polling thread, opened once per LOGGER start.
         // No second socket or extra DME requests.
@@ -1164,6 +1167,7 @@ class EnetLoggerService : Service() {
                 sampleTimes.clear()
                 // Support masks and sensor timestamps are scoped to the TCP session.
                 lambdaPoller.reset()
+                lastPhaseCompletedNs=null
                 val gap=outageFrom?.let { (SystemClock.elapsedRealtime()-it).coerceAtLeast(0L) } ?: 0L
                 connectionEvent(if(gap>0)"RECOVERED" else "CONNECTED",reconnects,connectionStage,
                     transport,gatewayIp,if(viaFastPath)"cached TCP" else "UDP discovery + TCP",gap)
@@ -1270,9 +1274,10 @@ class EnetLoggerService : Service() {
                     healthState=LoggerHealthPolicy.cycleStarted(healthState,cycleStart)
                     highSpeedCycle++
                     wireCycleActive=suite!=null
+                    val fastBeginNs=System.nanoTime()
                     fastTimingTrace?.begin(learningTripId,fuelSessionId,reconnects,
                         highSpeedCycle,highSpeedProfile.name,pollModeActive,
-                        System.nanoTime(),transport=transport)
+                        fastBeginNs,transport=transport)
                     // BEGIN contiguous FAST slice: 01 0C, 01 04, 01 0B,
                     // then the unchanged serialized knock/ignition UDS flow.
                     // All SLOW/optional work is deliberately AFTER FAST END.
@@ -1337,6 +1342,7 @@ class EnetLoggerService : Service() {
                     // SLOW reads retain their existing PIDs, deadlines and policy,
                     // but can no longer stretch the host FAST sampling window.
                     val now=SystemClock.elapsedRealtime()
+                    val slowStartNs=System.nanoTime()
                     val slowStarted=SystemClock.elapsedRealtime()
                     // Same in-order reads, moved outside the large suspend
                     // coroutine. Callbacks execute synchronously on THIS owner.
@@ -1369,6 +1375,7 @@ class EnetLoggerService : Service() {
                     slowSuperKnock=slowResult.values.superKnock
                     lastSlow=slowResult.lastSlowMs
                     slowSensorAtMs=slowResult.sensorReceivedAtMs
+                    val slowEndNs=System.nanoTime()
                     // Tank level is a slow optional OBD parameter. No value means unsupported/unavailable.
                     if(now-lastFuelPoll>=15000L) {
                         slowFuel=obd(pid(0x2F),0x2F)?.firstOrNull()?.let {
@@ -1761,6 +1768,7 @@ class EnetLoggerService : Service() {
                     // This broadcast is intentionally every completed FAST cycle.
                     // Dashboard's heavyweight status stays at every fourth cycle.
                     emitFastTelemetry(octane2Rpm,m,l,steadyTargetTracker.progress(now))
+                    val firstPublishNs=System.nanoTime()
                     if(suite!=null) {
                         flushBenchmarkWireEvidence(suite,csvWriter,
                             appliedSuiteStage,reconnects,highSpeedCycle)
@@ -1920,6 +1928,8 @@ class EnetLoggerService : Service() {
                     // request per qualified low-load gap, independent CSV.
                     // The earlier fast benchmark deliberately excludes monitor
                     // IO, while the next FAST frequency includes its latency.
+                    var monitorStartNs:Long?=null
+                    var monitorEndNs:Long?=null
                     if(running && !monitorPolicy.suspended &&
                         pollModeActive in listOf("B+","B") &&
                         !vxscanWifiBlocked) {
@@ -1929,11 +1939,13 @@ class EnetLoggerService : Service() {
                             completedFast,cycleMs,r,l,m,speed)
                         if(task!=null) {
                             val readStarted=SystemClock.elapsedRealtime()
+                            monitorStartNs=System.nanoTime()
                             monitorPolicy.issued(task,readStarted)
                             val outcome=executeDmeMonitorTask(task,monitorPolicy,
                                 dmeProbeResults,readStarted,started,cycleStart,
                                 transport,pollModeActive,r,l,m,speed,hz,
                                 reconnects,connectionStage,gatewayIp)
+                            monitorEndNs=System.nanoTime()
                             monitorLastDuration=outcome.durationMs
                             monitorLastId=task.label
                             monitorState=outcome.status
@@ -1948,6 +1960,26 @@ class EnetLoggerService : Service() {
                             if(outcome.status=="OK") monitorOk++
                         }
                     }
+                    val phaseEndedNs=System.nanoTime()
+                    // One observational LAB row per completed polling cycle.
+                    // Its queue loss is counted; failure evidence uses wire_v2.
+                    fastPhasePort?.record(FastPhaseTiming.Sample(
+                        wallMs=System.currentTimeMillis(),
+                        tripId=learningTripId,fuelSessionId=fuelSessionId,
+                        epoch=reconnects,cycleId=highSpeedCycle,
+                        profile=highSpeedProfile.name,mode=pollModeActive,
+                        transport=transport,fastStartNs=fastBeginNs,
+                        obdCompleteNs=collectedFast.obd.obdCompleteNs,
+                        fastEndNs=fastEndNs,slowStartNs=slowStartNs,
+                        slowEndNs=slowEndNs,firstPublishNs=firstPublishNs,
+                        monitorStartNs=monitorStartNs,monitorEndNs=monitorEndNs,
+                        cycleEndNs=phaseEndedNs,
+                        previousCycleEndNs=lastPhaseCompletedNs,
+                        fullFast=timingOutcome?.complete ?: (
+                            obdRpm!=null && l!=null && m!=null &&
+                            listOf(kz1,kz2,kz3,kz4,iz1,iz2,iz3,iz4).all{it!=null})
+                    ))
+                    lastPhaseCompletedNs=phaseEndedNs
                     return true
                 }
                 while(running && socket?.isClosed==false) {
