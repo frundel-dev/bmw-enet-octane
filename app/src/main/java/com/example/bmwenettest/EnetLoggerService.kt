@@ -1913,32 +1913,42 @@ class EnetLoggerService : Service() {
                         if(knockStatus==1 && !previousKnock) runKnockEvents++; if(superKnock!=null && superKnock>0 && !previousSuper) runSuperEvents++
                     }
                     previousKnock=knockStatus==1; previousSuper=superKnock!=null && superKnock>0
-                    val liveRunRatio=if(runWeight>0.0) runWeightedRatio/runWeight else null
-                    val liveRunScore=liveRunRatio?.let{(100.0+(1.0-it)*50.0-(runKnockEvents-1).coerceAtLeast(0)*1.5-runSuperEvents*10.0).coerceIn(0.0,120.0)}
-                    val liveRunQuality=((runHighPoints*4+runValidPoints*2).coerceAtMost(100))
-                    val sessionScore=if(autoMode) { if(autoRatioWeight>0.0) (100.0+(1.0-autoRatioSum/autoRatioWeight)*50.0-(autoKnockEvents-1).coerceAtLeast(0)*1.5-autoSuperEvents*10.0).coerceIn(0.0,120.0) else null } else if(sessionQualitySum>0) sessionScoreSum/sessionQualitySum else null
-                    val consistency=if(sessionScores.size>=2){val mean=sessionScores.average(); val sd=kotlin.math.sqrt(sessionScores.sumOf{(it-mean)*(it-mean)}/sessionScores.size); (15.0-sd*3.0).toInt().coerceIn(0,15)}else 0
-                    val steadyConfidence=if(autoMode)
-                        // Only one legacy provisional reference cell is supported by
-                        // independent AI-95 sessions; no independent v0.9 holdout yet.
-                        phaseConfidence(steadyPoints,steadySegments.size,steadyCells.size).coerceAtMost(49)
-                        else 0
-                    val accelConfidence=if(autoMode)phaseConfidence(accelPoints,accelSegments.size,accelCells.size) else 0
-                    val sessionConfidence=if(autoMode) {
-                        val primary=maxOf(steadyConfidence,accelConfidence)
-                        when {
-                            steadyConfidence>=60 && accelConfidence>=60 -> (primary+10).coerceAtMost(95)
-                            steadyPoints>=4 && accelPoints>=4 -> primary.coerceAtMost(82)
-                            else -> primary.coerceAtMost(74)
-                        }
-                    } else ((sessionValidRuns*8).coerceAtMost(40)+(sessionHighPoints*2).coerceAtMost(25)+(coverageBins.size*2).coerceAtMost(20)+consistency).coerceAtMost(100)
-                    val steadyScore=if(steadyRatioWeight>0.0) (100.0+(1.0-steadyRatioSum/steadyRatioWeight)*50.0).coerceIn(0.0,120.0) else null
-                    val accelScore=if(accelRatioWeight>0.0) (100.0+(1.0-accelRatioSum/accelRatioWeight)*50.0).coerceIn(0.0,120.0) else null
-                    val accelV08Score=if(accelV08Weight>0.0)
-                        OctaneCalibration.experimentalScore(accelV08Sum/accelV08Weight) else null
-                    val highRpmMean=if(highRpmPoints>0) highRpmRatioSum/highRpmPoints else null
-                    val highRpmBaselineAvg=if(highRpmPoints>0) highRpmBaselineSum.toDouble()/highRpmPoints else null
-                    val resultState=when { (refuelStore.hasPending() || fuelDetector.pending) -> "REFUEL CHECK"; mixingKm>0.0 -> "MIXING"; sessionConfidence<60 -> "COLLECTING"; sessionScore==null -> "COLLECTING"; sessionScore>=95.0 -> "NORMAL"; sessionScore>=92.0 -> "BORDERLINE"; else -> "BELOW BASELINE" }
+                    // Same frozen math, moved to the pure analysis module.
+                    val calculated=LegacyFuelScoring.evaluate(LegacyFuelScoring.Input(
+                        runWeight=runWeight,runWeightedRatio=runWeightedRatio,
+                        runKnockEvents=runKnockEvents,runSuperEvents=runSuperEvents,
+                        runHighPoints=runHighPoints,runValidPoints=runValidPoints,
+                        autoMode=autoMode,
+                        autoRatioWeight=autoRatioWeight,autoRatioSum=autoRatioSum,
+                        autoKnockEvents=autoKnockEvents,autoSuperEvents=autoSuperEvents,
+                        sessionQualitySum=sessionQualitySum,sessionScoreSum=sessionScoreSum,
+                        sessionScores=sessionScores,
+                        steadyPoints=steadyPoints,steadySegments=steadySegments.size,
+                        steadyCells=steadyCells.size,
+                        accelPoints=accelPoints,accelSegments=accelSegments.size,
+                        accelCells=accelCells.size,
+                        sessionValidRuns=sessionValidRuns,sessionHighPoints=sessionHighPoints,
+                        coverageCells=coverageBins.size,
+                        steadyRatioWeight=steadyRatioWeight,steadyRatioSum=steadyRatioSum,
+                        accelRatioWeight=accelRatioWeight,accelRatioSum=accelRatioSum,
+                        accelV08Weight=accelV08Weight,accelV08Sum=accelV08Sum,
+                        highRpmPoints=highRpmPoints,highRpmRatioSum=highRpmRatioSum,
+                        highRpmBaselineSum=highRpmBaselineSum,
+                        pendingRefuel=refuelStore.hasPending() || fuelDetector.pending,
+                        mixingKm=mixingKm
+                    ))
+                    val liveRunScore=calculated.liveRunScore
+                    val liveRunQuality=calculated.liveRunQuality
+                    val sessionScore=calculated.sessionScore
+                    val steadyConfidence=calculated.steadyConfidence
+                    val accelConfidence=calculated.accelConfidence
+                    val sessionConfidence=calculated.sessionConfidence
+                    val steadyScore=calculated.steadyScore
+                    val accelScore=calculated.accelScore
+                    val accelV08Score=calculated.accelV08Score
+                    val highRpmMean=calculated.highRpmMean
+                    val highRpmBaselineAvg=calculated.highRpmBaselineAvg
+                    val resultState=calculated.resultState
                     // Heartbeat is written regardless of captureActive. Keep measurement
                     // CSV unchanged, but make short connection tests analyzable.
                     if(now-lastTelemetryTime>=2500L) {
