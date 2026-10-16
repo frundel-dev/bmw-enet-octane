@@ -33,12 +33,15 @@ class LabWirePersistenceTest {
             runtime.abort(2_000L,"diagnostic/network failure: IOException",writer)
             runtime.finish(2_010L,writer)
             writer.closeAndJoin()
+            assertEquals(0,writer.snapshot().failedFiles)
             val files=dir.listFiles().orEmpty()
             val wire=files.single {it.name.endsWith("_wire_v2.csv")}
             val lines=wire.readLines()
             assertEquals(3,lines.size)
             assertTrue(lines[0].contains("wire_schema=2"))
-            assertEquals(DiagnosticWireTrace.HEADER,lines[1])
+            // OCTANE unit-test variant must compile without LAB module classes.
+            assertTrue(lines[1].contains(
+                "identifier_kind,request_sid,request_ids,recv_phase"))
             val data=lines[2].split(",")
             assertEquals(lines[1].split(",").size,data.size)
             assertEquals("DID",data[19])
