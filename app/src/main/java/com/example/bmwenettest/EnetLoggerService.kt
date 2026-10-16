@@ -1403,66 +1403,28 @@ class EnetLoggerService : Service() {
                     val r=obdRpm
                     val combinedTrim=if(stft1!=null && ltft1!=null)
                         ((1.0+stft1/100.0)*(1.0+ltft1/100.0)-1.0)*100.0 else null
-                    val fastDmeStarted=SystemClock.elapsedRealtime()
-                    val knockStatus=udsData(0x4A36)?.firstOrNull()?.let{it.toInt() and 255}
-                    val knockStatusMs=SystemClock.elapsedRealtime()-fastDmeStarted
-                    val knockStarted=SystemClock.elapsedRealtime()
-                    // Experimental B+: one combined 8-DID read, strict mixed-width parse.
-                    // On rejected/unexpected response, NEVER use partial values:
-                    // disable B+ for this session and retry the proven B topology.
-                    val mixedBatch=if(pollModeActive=="B+" && batchEnabled) {
-                        val combined=udsMixedBatch()
-                        if(combined==null) {
-                            bPlusRejected=true
-                            bPlusRejections++
-                            pollModeActive="B"
-                            lastBatchFallback="B+ 8-DID rejected; safe B"
-                            connectionEvent("BPLUS_FALLBACK",reconnects,connectionStage,
-                                transport,gatewayIp,lastBatchFallback)
-                            null
-                        } else {
-                            batchOk++
-                            combined
-                        }
-                    } else null
-                    // Batch read only if the ECU returns every DID, in order
-                    // and with the exact declared width. Any failure disables
-                    // batching for the rest of this TCP connection.
-                    val knockBatch=if(mixedBatch!=null) mixedBatch else if(batchEnabled) {
-                        udsBatch(DmeBatchParser.knockDids,4).also {
-                            if(it==null) {
-                                batchErrors++
-                                lastBatchFallback="batch knock rejected"
-                                batchEnabled=false
-                                connectionEvent("BATCH_FALLBACK",reconnects,connectionStage,
-                                    transport,gatewayIp,lastBatchFallback)
-                            } else batchOk++
-                        }
-                    } else null
-                    fun knock(did:Int)=(knockBatch?.get(did) ?: udsData(did))?.takeIf{it.size>=4}?.let{
-                        val raw=((it[0].toLong()and 255) shl 24) or ((it[1].toLong()and 255) shl 16) or ((it[2].toLong()and 255) shl 8) or (it[3].toLong()and 255)
-                        raw*0.05/65536.0
-                    }
-                    val kz1=knock(0x4A37); val kz2=knock(0x4A38); val kz3=knock(0x4A39); val kz4=knock(0x4A3A)
-                    val knockPhaseMs=SystemClock.elapsedRealtime()-knockStarted
-                    val ignitionStarted=SystemClock.elapsedRealtime()
-                    val ignitionBatch=if(mixedBatch!=null) mixedBatch else if(batchEnabled) {
-                        udsBatch(DmeBatchParser.ignitionDids,2).also {
-                            if(it==null) {
-                                batchErrors++
-                                lastBatchFallback="batch ignition rejected"
-                                batchEnabled=false
-                                connectionEvent("BATCH_FALLBACK",reconnects,connectionStage,
-                                    transport,gatewayIp,lastBatchFallback)
-                            } else batchOk++
-                        }
-                    } else null
-                    fun ign(did:Int)=(ignitionBatch?.get(did) ?: udsData(did))?.takeIf{it.size>=2}?.let{
-                        val u=((it[0].toInt()and 255) shl 8) or (it[1].toInt()and 255); val signed=if(u>=0x8000)u-0x10000 else u; signed/10.0
-                    }
-                    val iz1=ign(0x4A49); val iz2=ign(0x4A4A); val iz3=ign(0x4A4C); val iz4=ign(0x4A4D)
-                    val ignitionPhaseMs=SystemClock.elapsedRealtime()-ignitionStarted
-                    val fastDmeMs=SystemClock.elapsedRealtime()-fastDmeStarted
+                    val fastDme=readFastDmeCycle(
+                        pollModeActive,batchEnabled,bPlusRejected,bPlusRejections,
+                        batchOk,batchErrors,lastBatchFallback,reconnects,
+                        connectionStage,transport,gatewayIp)
+                    pollModeActive=fastDme.activeMode
+                    batchEnabled=fastDme.batchEnabled
+                    bPlusRejected=fastDme.bPlusRejected
+                    bPlusRejections=fastDme.bPlusRejections
+                    batchOk=fastDme.batchOk
+                    batchErrors=fastDme.batchErrors
+                    lastBatchFallback=fastDme.lastBatchFallback
+                    val knockStatus=fastDme.knockStatus
+                    val knockStatusMs=fastDme.knockStatusMs
+                    val knockBatch=fastDme.knockBatch
+                    val ignitionBatch=fastDme.ignitionBatch
+                    val kz1=fastDme.knock[0];val kz2=fastDme.knock[1]
+                    val kz3=fastDme.knock[2];val kz4=fastDme.knock[3]
+                    val iz1=fastDme.ignition[0];val iz2=fastDme.ignition[1]
+                    val iz3=fastDme.ignition[2];val iz4=fastDme.ignition[3]
+                    val knockPhaseMs=fastDme.knockPhaseMs
+                    val ignitionPhaseMs=fastDme.ignitionPhaseMs
+                    val fastDmeMs=fastDme.fastDmeMs
                     val superKnock=slowSuperKnock
                     val foctanStarted=SystemClock.elapsedRealtime()
                     if(now-lastFoctan>=10000L) {
@@ -2138,6 +2100,107 @@ class EnetLoggerService : Service() {
      * from the same polling thread, after a complete FAST cycle. Never
      * reuse the socket after a timeout, unsolicited reply or 0x78 pending.
      */
+    private data class FastDmeReadout(
+        val activeMode:String,val batchEnabled:Boolean,val bPlusRejected:Boolean,
+        val bPlusRejections:Int,val batchOk:Int,val batchErrors:Int,
+        val lastBatchFallback:String,
+        val knockStatus:Int?,val knockBatch:Map<Int,ByteArray>?,
+        val ignitionBatch:Map<Int,ByteArray>?,
+        val knock:List<Double?>,val ignition:List<Double?>,
+        val knockStatusMs:Long,val knockPhaseMs:Long,val ignitionPhaseMs:Long,
+        val fastDmeMs:Long
+    )
+
+    /**
+     * The original FAST DME sequence, extracted unchanged from loop().
+     * Synchronous on the single polling thread; all UDS reads use the same
+     * existing socket. ACK, DID widths, batch rejection and fallback behavior
+     * remain checked by the existing transport/decoder.
+     */
+    private fun readFastDmeCycle(
+        requestedMode:String,initialBatchEnabled:Boolean,
+        initialBPlusRejected:Boolean,initialRejections:Int,
+        initialBatchOk:Int,initialBatchErrors:Int,initialFallback:String,
+        reconnects:Int,connectionStage:String,transport:String,gatewayIp:String?
+    ):FastDmeReadout {
+        var pollModeActive=requestedMode
+        var batchEnabled=initialBatchEnabled
+        var bPlusRejected=initialBPlusRejected
+        var bPlusRejections=initialRejections
+        var batchOk=initialBatchOk
+        var batchErrors=initialBatchErrors
+        var lastBatchFallback=initialFallback
+        val fastDmeStarted=SystemClock.elapsedRealtime()
+        val knockStatus=udsData(0x4A36)?.firstOrNull()?.let{it.toInt() and 255}
+        val knockStatusMs=SystemClock.elapsedRealtime()-fastDmeStarted
+        val knockStarted=SystemClock.elapsedRealtime()
+        val mixedBatch=if(pollModeActive=="B+" && batchEnabled) {
+            val combined=udsMixedBatch()
+            if(combined==null) {
+                bPlusRejected=true
+                bPlusRejections++
+                pollModeActive="B"
+                lastBatchFallback="B+ 8-DID rejected; safe B"
+                connectionEvent("BPLUS_FALLBACK",reconnects,connectionStage,
+                    transport,gatewayIp,lastBatchFallback)
+                null
+            } else {
+                batchOk++
+                combined
+            }
+        } else null
+        val knockBatch=if(mixedBatch!=null) mixedBatch else if(batchEnabled) {
+            udsBatch(DmeBatchParser.knockDids,4).also {
+                if(it==null) {
+                    batchErrors++
+                    lastBatchFallback="batch knock rejected"
+                    batchEnabled=false
+                    connectionEvent("BATCH_FALLBACK",reconnects,connectionStage,
+                        transport,gatewayIp,lastBatchFallback)
+                } else batchOk++
+            }
+        } else null
+        fun knock(did:Int)=(knockBatch?.get(did) ?: udsData(did))
+            ?.takeIf{it.size>=4}?.let {
+                val raw=((it[0].toLong()and 255) shl 24) or
+                    ((it[1].toLong()and 255) shl 16) or
+                    ((it[2].toLong()and 255) shl 8) or
+                    (it[3].toLong()and 255)
+                raw*0.05/65536.0
+            }
+        val knockValues=listOf(knock(0x4A37),knock(0x4A38),
+            knock(0x4A39),knock(0x4A3A))
+        val knockPhaseMs=SystemClock.elapsedRealtime()-knockStarted
+        val ignitionStarted=SystemClock.elapsedRealtime()
+        val ignitionBatch=if(mixedBatch!=null) mixedBatch else if(batchEnabled) {
+            udsBatch(DmeBatchParser.ignitionDids,2).also {
+                if(it==null) {
+                    batchErrors++
+                    lastBatchFallback="batch ignition rejected"
+                    batchEnabled=false
+                    connectionEvent("BATCH_FALLBACK",reconnects,connectionStage,
+                        transport,gatewayIp,lastBatchFallback)
+                } else batchOk++
+            }
+        } else null
+        fun ign(did:Int)=(ignitionBatch?.get(did) ?: udsData(did))
+            ?.takeIf{it.size>=2}?.let {
+                val u=((it[0].toInt()and 255) shl 8) or
+                    (it[1].toInt()and 255)
+                val signed=if(u>=0x8000)u-0x10000 else u
+                signed/10.0
+            }
+        val ignitionValues=listOf(ign(0x4A49),ign(0x4A4A),
+            ign(0x4A4C),ign(0x4A4D))
+        val ignitionPhaseMs=SystemClock.elapsedRealtime()-ignitionStarted
+        val fastDmeMs=SystemClock.elapsedRealtime()-fastDmeStarted
+        return FastDmeReadout(
+            pollModeActive,batchEnabled,bPlusRejected,bPlusRejections,
+            batchOk,batchErrors,lastBatchFallback,knockStatus,
+            knockBatch,ignitionBatch,knockValues,ignitionValues,
+            knockStatusMs,knockPhaseMs,ignitionPhaseMs,fastDmeMs)
+    }
+
     private data class RamPollResult(val rpm:Double?,val accepted:Boolean)
 
     /**
