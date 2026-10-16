@@ -14,10 +14,23 @@ android {
 
     defaultConfig {
         applicationId = "com.example.bmwenettest.octane2"
+        manifestPlaceholders["appLabel"] = "BMW OCTANE"
         minSdk = 26
         targetSdk = 35
-        versionCode = 223
+        versionCode = 224
         versionName = "2.0.1-experimental"
+    }
+    flavorDimensions += "edition"
+    productFlavors {
+        create("octane") {
+            dimension = "edition"
+            // Preserve the existing package name and installed user data.
+        }
+        create("lab") {
+            dimension = "edition"
+            applicationIdSuffix = ".lab"
+            manifestPlaceholders["appLabel"] = "BMW OCTANE LAB"
+        }
     }
     testOptions {
         unitTests.isIncludeAndroidResources = false
@@ -26,6 +39,10 @@ android {
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation(project(":core:data"))
+    implementation(project(":core:diagnostics"))
+    implementation(project(":feature:analysis"))
+    add("labImplementation", project(":feature:benchmark"))
     testImplementation("junit:junit:4.13.2")
 }
 

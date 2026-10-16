@@ -146,9 +146,9 @@ class EnetLoggerService : Service() {
     private var highSpeedMetrics:HighSpeedMetrics?=null
     private var passiveRecorder:FastDidPassiveRecorder?=null
     // Only the primary single-owner diagnostic coroutine accesses this.
-    private var fastTimingTrace:FastTimingTrace?=null
+    private var fastTimingTrace:FastTimingPort?=null
     // Benchmark tracing stays on the SAME serialized polling owner; no new socket.
-    private var wireTrace:DiagnosticWireTrace?=null
+    private var benchmarkRuntime:DmeBenchmarkRuntime?=null
     private var wireCycleActive=false
     private var benchmarkRequested=false
     @Volatile private var benchmarkUiVisible=true
@@ -872,30 +872,13 @@ class EnetLoggerService : Service() {
         val ramFrameReader=HsfzReusableReader()
         val highspeed=HighSpeedMetrics()
         highSpeedMetrics=highspeed
-        val suite=if(benchmarkRequested) AutomatedDmeBenchmark(
-            SystemClock.elapsedRealtime()) else null
-        val suiteFile=if(suite!=null)try {
-            File(getExternalFilesDir(null)?:filesDir,
-                "bmw_dme_benchmark_suite_v1_${System.currentTimeMillis()}.csv").apply {
-                writeText("# stationary_read_only=true;ecu_sample_time=unknown;"+
-                    "android_elapsed_includes_suspend=true;parking_gear_unverified=true\n"+
-                    AutomatedDmeBenchmark.HEADER+"\n")
-            }
-        }catch(_:Exception){null} else null
-        val suiteWireFile=if(suiteFile!=null)try {
-            File(suiteFile.parentFile,suiteFile.name.removeSuffix(".csv")+
-                "_wire_v1.csv").apply {
-                writeText("# host_read_timestamps_not_ecu_acquisition=true;ack_is_not_data=true\n"+
-                    DiagnosticWireTrace.HEADER+"\n")
-            }
-        }catch(_:Exception){null} else null
-        val suiteReportFile=if(suiteFile!=null)
-            File(suiteFile.parentFile,suiteFile.name.removeSuffix(".csv")+".txt") else null
+        val suite=DmeBenchmarkRuntimeFactory.create(
+            benchmarkRequested,getExternalFilesDir(null)?:filesDir,
+            SystemClock.elapsedRealtime(),::emitBenchmarkState)
         var appliedSuiteStage=0
-        var lastSuiteExport=0L
-        wireTrace=if(suite!=null)DiagnosticWireTrace() else null
-        if(suite!=null && (suiteFile==null || suiteWireFile==null)) {
-            emitBenchmarkState("Нет доступа к файлу отчёта: тест отменён",terminal=true)
+        benchmarkRuntime=suite
+        if(benchmarkRequested && suite==null) {
+            emitBenchmarkState("Не удалось начать безопасный LAB benchmark",true)
             running=false
         }
         val csvWriter=AsyncCsvWriter(onFailure={ file,error ->
@@ -905,32 +888,9 @@ class EnetLoggerService : Service() {
         })
         // A new trip ID on each LOGGER start. Not equivalent to a separate day.
         val learningTripId=System.currentTimeMillis()
-        // Research-only best-effort logs; preserve old CSV schemas and
-        // prevent timing telemetry from blocking a single ECU read.
-        val timingFiles=try {
-            val dir=getExternalFilesDir(null)?:filesDir
-            val tx=File(dir,"bmw_fast_tx_timing_v1_${learningTripId}.csv")
-            val signal=File(dir,"bmw_fast_signal_timing_v1_${learningTripId}.csv")
-            val cycle=File(dir,"bmw_fast_cycle_timing_v1_${learningTripId}.csv")
-            val note="# host_monotonic_ns=true;ecu_sample_clock=unknown;"+
-                "same_uds_reply_does_not_prove_simultaneous_acquisition=true;"+
-                "dynamic_limits=research_only\n"
-            tx.writeText(note+FastTimingTrace.TX_HEADER+"\n")
-            signal.writeText(note+FastTimingTrace.SIGNAL_HEADER+"\n")
-            cycle.writeText(note+FastTimingTrace.CYCLE_HEADER+"\n")
-            Triple(tx,signal,cycle)
-        }catch(e:Exception) {
-            connectionEvent("FAST_TIMING_UNAVAILABLE",reconnects,"FILE","AUDIT",
-                null,e.javaClass.simpleName)
-            null
-        }
-        fastTimingTrace=timingFiles?.let { files ->
-            FastTimingTrace(
-                onTransactions={lines->csvWriter.offerAudit(files.first,lines)},
-                onSignals={lines->csvWriter.offerAudit(files.second,lines)},
-                onCycle={line->csvWriter.offerAudit(files.third,line)}
-            )
-        }
+        // LAB owns passive FAST transaction traces. OCTANE links no tracing class.
+        fastTimingTrace=FastTimingPortFactory.create(
+            getExternalFilesDir(null)?:filesDir,learningTripId,csvWriter)
         passiveRecorder=openFastDidAudit(csvWriter,learningTripId,reconnects)
         val highSpeedFile=File(getExternalFilesDir(null)?:filesDir,
             "bmw_highspeed_benchmark_v1_${learningTripId}.csv")
@@ -1000,17 +960,6 @@ class EnetLoggerService : Service() {
                     "Per-cycle journal write/flush failed; primary polling continues")
             }
         }
-        var learningSteadySegment=0
-        var learningAccelSegment=0
-        var learningLastSteadyPhaseMs=0L
-        var learningLastAccelPhaseMs=0L
-        var learningLastSteadyWritten=0L
-        var learningLastAccelWritten=0L
-        var learningLastSteadyCell:BaselineLearning.Cell?=null
-        var learningLastAccelRpm:Double?=null
-        var guidedDatasetId=0L
-        var guidedCoverage=GuidedFuelTest.Coverage()
-
         val foctanCache=arrayOfNulls<Double>(20)
         var slowIat:Double?=null; var slowIgn:Double?=null; var slowCoolant:Double?=null
         var slowThrottle:Double?=null; var slowStft:Double?=null; var slowLtft:Double?=null; var slowLambda:Double?=null
@@ -1030,6 +979,9 @@ class EnetLoggerService : Service() {
         var monitorState="WAIT"
         val sampleTimes=java.util.ArrayDeque<Long>(); var validOctaneSamples=0
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        // All evidence comes from completed single-owner DME transactions.
+        val fuelEvidenceRecorder=FuelEvidenceRecorder(
+            prefs,getExternalFilesDir(null)?:filesDir,{message->emit(message)})
         val autoMode=prefs.getString("measurement_mode","AUTO")=="AUTO"
         // v1.7.32 one-time migration: prior B defaults and C/D settings
         // become B+. Explicit later B/A/AUTO choices remain available.
@@ -1195,18 +1147,18 @@ class EnetLoggerService : Service() {
                     // Benchmark configuration is applied only BETWEEN full
                     // diagnostic cycles on this socket's sole owning thread.
                     if(suite!=null) {
-                        val stage=suite.current
+                        val stage=suite.stage
                         if(stage==null){running=false;break}
                         if(appliedSuiteStage!=stage.id) {
                             appliedSuiteStage=stage.id
                             highSpeedProfile=stage.profile
-                            requestedPollMode=stage.pollMode
-                            activatePollingMode(stage.pollMode,activeNet!!,gatewayIp!!,
+                            requestedPollMode=stage.mode
+                            activatePollingMode(stage.mode,activeNet!!,gatewayIp!!,
                                 transport,"benchmark stage ${stage.id}/6")
                             highspeed.reset()
                             slowScheduler.reset()
                             lastHighSpeedExport=0L
-                            wireTrace?.discard()
+                            suite.discardWire()
                             emitBenchmarkState(if(stage.background)
                                 "ЭТАП 6: проверка фона (5 минут). Сверни приложение / "+
                                 "выключи экран. Неполные интервалы будут отмечены."
@@ -1787,137 +1739,18 @@ class EnetLoggerService : Service() {
                             }
                         } catch(_:Exception) { }
                     }
-                    // Experimental baseline collection uses the same already-read
-                    // DME FAST/SLOW values. No new ECU transactions, no mutation
-                    // of the frozen Fuel Score calibration, and no RON estimate.
-                    val baselineRecording=prefs.getBoolean(BaselineLearning.PREF_ENABLED,false) &&
-                        prefs.getInt(BaselineLearning.PREF_FUEL_ID,-1)==fuelSessionId
-                    val guidedId=prefs.getLong(GuidedFuelTest.PREF_ID,0L)
-                    val guidedRecording=guidedId>0L &&
-                        prefs.getBoolean(GuidedFuelTest.PREF_ACTIVE,false) &&
-                        prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)==fuelSessionId
-                    if(autoMode && (baselineRecording || guidedRecording) &&
-                        !fuelQuarantined &&
-                        warm && trimComparable && speed!=null && speed>=15.0 &&
-                        knockMean!=null && knockMean>0.0 && ignSpread!=null &&
-                        knockStatus!=1 && (superKnock==null || superKnock==0) &&
-                        listOf(kz1,kz2,kz3,kz4,iz1,iz2,iz3,iz4).all{it!=null} &&
-                        r!=null && l!=null && m!=null && i!=null && coolant!=null) {
-                        val phase=when {
-                            steadyAuto -> BaselineLearning.Phase.STEADY
-                            accelerationAuto -> BaselineLearning.Phase.ACCEL
-                            else -> null
-                        }
-                        if(phase!=null) {
-                            val chosenCell=BaselineLearning.cell(phase,r,l,m)
-                            if(chosenCell!=null) {
-                                val interval=if(phase==BaselineLearning.Phase.STEADY)2500L else 1500L
-                                val lastWrite=if(phase==BaselineLearning.Phase.STEADY)
-                                    learningLastSteadyWritten else learningLastAccelWritten
-                                if(phase==BaselineLearning.Phase.STEADY) {
-                                    if(learningLastSteadyPhaseMs==0L ||
-                                        now-learningLastSteadyPhaseMs>6000L ||
-                                        chosenCell!=learningLastSteadyCell) learningSteadySegment++
-                                    learningLastSteadyPhaseMs=now
-                                    learningLastSteadyCell=chosenCell
-                                } else {
-                                    if(learningLastAccelPhaseMs==0L ||
-                                        now-learningLastAccelPhaseMs>2500L ||
-                                        (learningLastAccelRpm!=null && r<learningLastAccelRpm!!-180.0))
-                                        learningAccelSegment++
-                                    learningLastAccelPhaseMs=now
-                                    learningLastAccelRpm=r
-                                }
-                                if(lastWrite==0L || now-lastWrite>=interval) {
-                                    val id=prefs.getLong(BaselineLearning.PREF_DATASET,0L)
-                                    if(baselineRecording && id>0) {
-                                        val entry=BaselineLearning.Sample(
-                                            System.currentTimeMillis(),learningTripId,fuelSessionId,
-                                            phase,if(phase==BaselineLearning.Phase.STEADY)
-                                                learningSteadySegment else learningAccelSegment,
-                                            r,l,m,i,coolant,stft1,ltft1,knockMean,ignSpread)
-                                        try {
-                                            val file=File(getExternalFilesDir(null)?:filesDir,
-                                                BaselineLearning.filename(id))
-                                            if(!file.exists()) {
-                                                val label=prefs.getString(BaselineLearning.PREF_LABEL,
-                                                    "Текущее топливо")?:"Текущее топливо"
-                                                val safe=label.replace(",", ";").replace("\n"," ").take(100)
-                                                file.writeText("# observational_baseline=true;ron_unverified=true;fuel=$safe;fuel_session_id=$fuelSessionId;calibration=${OctaneCalibration.VERSION}\n"+
-                                                    BaselineLearning.HEADER+"\n")
-                                            }
-                                            file.appendText(BaselineLearning.serialize(entry)+"\n")
-                                            if(phase==BaselineLearning.Phase.STEADY)
-                                                learningLastSteadyWritten=now
-                                            else learningLastAccelWritten=now
-                                        } catch(_:Exception) {
-                                            // Storage failure never breaks primary DME sampling.
-                                        }
-                                    }
-                                }
-                                // The user-selected fuel test is separate from
-                                // experimental self-baseline training, and is
-                                // never used as its own external reference.
-                                if(guidedRecording) {
-                                    if(guidedDatasetId!=guidedId) {
-                                        guidedDatasetId=guidedId
-                                        guidedCoverage=GuidedFuelTest.Coverage()
-                                        val old=File(getExternalFilesDir(null)?:filesDir,
-                                            GuidedFuelTest.filename(guidedId))
-                                        if(old.isFile)try {
-                                            old.useLines { lines ->
-                                                lines.forEach { line ->
-                                                    BaselineLearning.parse(line)?.let { entry ->
-                                                        if(entry.fuelSessionId==fuelSessionId)
-                                                            guidedCoverage.accept(entry)
-                                                    }
-                                                }
-                                            }
-                                        } catch(_:Exception) {}
-                                    }
-                                    // Update only once per sample phase cadence.
-                                    val didWrite=if(phase==BaselineLearning.Phase.STEADY)
-                                        learningLastSteadyWritten==now else learningLastAccelWritten==now
-                                    // Baseline may be disabled. If so, lastWritten
-                                    // still needs advancing once an accepted entry
-                                    // was durably saved to the guided CSV.
-                                    val due=lastWrite==0L || now-lastWrite>=interval
-                                    if((didWrite || due) &&
-                                        !guidedCoverage.captureReady()) {
-                                        val entry=BaselineLearning.Sample(
-                                            System.currentTimeMillis(),learningTripId,fuelSessionId,
-                                            phase,if(phase==BaselineLearning.Phase.STEADY)
-                                                learningSteadySegment else learningAccelSegment,
-                                            r,l,m,i,coolant,stft1,ltft1,knockMean,ignSpread)
-                                        try {
-                                            val file=File(getExternalFilesDir(null)?:filesDir,
-                                                GuidedFuelTest.filename(guidedId))
-                                            if(!file.exists()) {
-                                                val grade=prefs.getString(GuidedFuelTest.PREF_GRADE,"Другое")?:"Другое"
-                                                val station=prefs.getString(GuidedFuelTest.PREF_STATION,"")?:""
-                                                val safe=station.replace(",", ";").replace("\n"," ").take(100)
-                                                file.writeText("# fuel_test=true;grade=$grade;station=$safe;"+
-                                                    "fuel_session=$fuelSessionId;self_calibration=false;"+
-                                                    "ron_lab_verified=false;model=${OctaneCalibration.VERSION}\n"+
-                                                    BaselineLearning.HEADER+"\n")
-                                            }
-                                            file.appendText(BaselineLearning.serialize(entry)+"\n")
-                                            guidedCoverage.accept(entry)
-                                            if(phase==BaselineLearning.Phase.STEADY)
-                                                learningLastSteadyWritten=now
-                                            else learningLastAccelWritten=now
-                                            if(guidedCoverage.captureReady()) {
-                                                prefs.edit().putBoolean(GuidedFuelTest.PREF_ACTIVE,false)
-                                                    .putBoolean(GuidedFuelTest.PREF_DONE,true).apply()
-                                                emit("Сбор теста топлива завершён: можно просмотреть предварительный результат. Сравнение не определяет лабораторный RON.")
-                                            }
-                                        } catch(_:Exception) { /* Logger must continue safely. */ }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    val b95=if(measurementWindow) baseline95(r,m) else null
+                                        fuelEvidenceRecorder.record(
+                        now=now,learningTripId=learningTripId,fuelSessionId=fuelSessionId,
+                        autoMode=autoMode,fuelQuarantined=fuelQuarantined,
+                        warm=warm,trimComparable=trimComparable,speed=speed,
+                        knockMean=knockMean,ignSpread=ignSpread,
+                        knockStatus=knockStatus,superKnock=superKnock,
+                        allFastValid=kz1!=null && kz2!=null && kz3!=null && kz4!=null &&
+                            iz1!=null && iz2!=null && iz3!=null && iz4!=null,
+                        r=r,l=l,m=m,i=i,coolant=coolant,stft1=stft1,ltft1=ltft1,
+                        steadyAuto=steadyAuto,accelerationAuto=accelerationAuto
+                    )
+                    val b95=if(measurementWindow) LegacyFuelReference.lookup(r,m) else null
                     val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && !fuelQuarantined && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5))) knockMean/b95.v else null
                     if(autoMode && measurementWindow && ratio95!=null) lastQualified=now
                     if(captureActive && measurementWindow && ratio95!=null && (!autoMode || now-lastAutoAcceptedTime>=1200L)) {
@@ -1953,32 +1786,42 @@ class EnetLoggerService : Service() {
                         if(knockStatus==1 && !previousKnock) runKnockEvents++; if(superKnock!=null && superKnock>0 && !previousSuper) runSuperEvents++
                     }
                     previousKnock=knockStatus==1; previousSuper=superKnock!=null && superKnock>0
-                    val liveRunRatio=if(runWeight>0.0) runWeightedRatio/runWeight else null
-                    val liveRunScore=liveRunRatio?.let{(100.0+(1.0-it)*50.0-(runKnockEvents-1).coerceAtLeast(0)*1.5-runSuperEvents*10.0).coerceIn(0.0,120.0)}
-                    val liveRunQuality=((runHighPoints*4+runValidPoints*2).coerceAtMost(100))
-                    val sessionScore=if(autoMode) { if(autoRatioWeight>0.0) (100.0+(1.0-autoRatioSum/autoRatioWeight)*50.0-(autoKnockEvents-1).coerceAtLeast(0)*1.5-autoSuperEvents*10.0).coerceIn(0.0,120.0) else null } else if(sessionQualitySum>0) sessionScoreSum/sessionQualitySum else null
-                    val consistency=if(sessionScores.size>=2){val mean=sessionScores.average(); val sd=kotlin.math.sqrt(sessionScores.sumOf{(it-mean)*(it-mean)}/sessionScores.size); (15.0-sd*3.0).toInt().coerceIn(0,15)}else 0
-                    val steadyConfidence=if(autoMode)
-                        // Only one legacy provisional reference cell is supported by
-                        // independent AI-95 sessions; no independent v0.9 holdout yet.
-                        phaseConfidence(steadyPoints,steadySegments.size,steadyCells.size).coerceAtMost(49)
-                        else 0
-                    val accelConfidence=if(autoMode)phaseConfidence(accelPoints,accelSegments.size,accelCells.size) else 0
-                    val sessionConfidence=if(autoMode) {
-                        val primary=maxOf(steadyConfidence,accelConfidence)
-                        when {
-                            steadyConfidence>=60 && accelConfidence>=60 -> (primary+10).coerceAtMost(95)
-                            steadyPoints>=4 && accelPoints>=4 -> primary.coerceAtMost(82)
-                            else -> primary.coerceAtMost(74)
-                        }
-                    } else ((sessionValidRuns*8).coerceAtMost(40)+(sessionHighPoints*2).coerceAtMost(25)+(coverageBins.size*2).coerceAtMost(20)+consistency).coerceAtMost(100)
-                    val steadyScore=if(steadyRatioWeight>0.0) (100.0+(1.0-steadyRatioSum/steadyRatioWeight)*50.0).coerceIn(0.0,120.0) else null
-                    val accelScore=if(accelRatioWeight>0.0) (100.0+(1.0-accelRatioSum/accelRatioWeight)*50.0).coerceIn(0.0,120.0) else null
-                    val accelV08Score=if(accelV08Weight>0.0)
-                        OctaneCalibration.experimentalScore(accelV08Sum/accelV08Weight) else null
-                    val highRpmMean=if(highRpmPoints>0) highRpmRatioSum/highRpmPoints else null
-                    val highRpmBaselineAvg=if(highRpmPoints>0) highRpmBaselineSum.toDouble()/highRpmPoints else null
-                    val resultState=when { (refuelStore.hasPending() || fuelDetector.pending) -> "REFUEL CHECK"; mixingKm>0.0 -> "MIXING"; sessionConfidence<60 -> "COLLECTING"; sessionScore==null -> "COLLECTING"; sessionScore>=95.0 -> "NORMAL"; sessionScore>=92.0 -> "BORDERLINE"; else -> "BELOW BASELINE" }
+                    // Same frozen math, moved to the pure analysis module.
+                    val calculated=LegacyFuelScoring.evaluate(LegacyFuelScoring.Input(
+                        runWeight=runWeight,runWeightedRatio=runWeightedRatio,
+                        runKnockEvents=runKnockEvents,runSuperEvents=runSuperEvents,
+                        runHighPoints=runHighPoints,runValidPoints=runValidPoints,
+                        autoMode=autoMode,
+                        autoRatioWeight=autoRatioWeight,autoRatioSum=autoRatioSum,
+                        autoKnockEvents=autoKnockEvents,autoSuperEvents=autoSuperEvents,
+                        sessionQualitySum=sessionQualitySum,sessionScoreSum=sessionScoreSum,
+                        sessionScores=sessionScores,
+                        steadyPoints=steadyPoints,steadySegments=steadySegments.size,
+                        steadyCells=steadyCells.size,
+                        accelPoints=accelPoints,accelSegments=accelSegments.size,
+                        accelCells=accelCells.size,
+                        sessionValidRuns=sessionValidRuns,sessionHighPoints=sessionHighPoints,
+                        coverageCells=coverageBins.size,
+                        steadyRatioWeight=steadyRatioWeight,steadyRatioSum=steadyRatioSum,
+                        accelRatioWeight=accelRatioWeight,accelRatioSum=accelRatioSum,
+                        accelV08Weight=accelV08Weight,accelV08Sum=accelV08Sum,
+                        highRpmPoints=highRpmPoints,highRpmRatioSum=highRpmRatioSum,
+                        highRpmBaselineSum=highRpmBaselineSum,
+                        pendingRefuel=refuelStore.hasPending() || fuelDetector.pending,
+                        mixingKm=mixingKm
+                    ))
+                    val liveRunScore=calculated.liveRunScore
+                    val liveRunQuality=calculated.liveRunQuality
+                    val sessionScore=calculated.sessionScore
+                    val steadyConfidence=calculated.steadyConfidence
+                    val accelConfidence=calculated.accelConfidence
+                    val sessionConfidence=calculated.sessionConfidence
+                    val steadyScore=calculated.steadyScore
+                    val accelScore=calculated.accelScore
+                    val accelV08Score=calculated.accelV08Score
+                    val highRpmMean=calculated.highRpmMean
+                    val highRpmBaselineAvg=calculated.highRpmBaselineAvg
+                    val resultState=calculated.resultState
                     // Heartbeat is written regardless of captureActive. Keep measurement
                     // CSV unchanged, but make short connection tests analyzable.
                     if(now-lastTelemetryTime>=2500L) {
@@ -1987,24 +1830,24 @@ class EnetLoggerService : Service() {
                             stft1,ltft1,a)
                         lastTelemetryTime=now
                     }
-                    if(captureActive) csvWriter.append(logFile!!, (listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns,oil?:"",if(autoMode)"AUTO" else "TEST",coverageBins.size,speed?:"",slowFuel?:"",fuelSessionId,drivePhase,steadyPoints,accelPoints,steadyScore?:"",accelScore?:"",if(refuelStore.hasPending())1 else 0,"%.2f".format(java.util.Locale.US,mixingKm),steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,highRpmMean?:"",highRpmPoints,highRpmOver120,highRpmBaselineAvg?:"",acceptedAutoSegments.size,
+                    // The exact legacy schema and field order stay byte-for-byte.
+                    // This pure formatter no longer bloats the suspend state machine.
+                    fun captureCsvLine():String = (listOf(t,r?:"",l?:"",m?:"",i?:"",a?:"",coolant?:"",throttle?:"",stft1?:"",lambdaEq?:"",knockStatus?:"",superKnock?:"",kz1?:"",kz2?:"",kz3?:"",kz4?:"",iz1?:"",iz2?:"",iz3?:"",iz4?:"") + foctanCache.map{it?:""} + listOf(if(testWindow)1 else 0,transport,"%.3f".format(java.util.Locale.US,hz),fuelFactor?:"",ronEquiv?:"",knockMean?:"",ignSpread?:"",confidence,runId,reconnects,if(measurementWindow)1 else 0,if(highConfidenceWindow)1 else 0,b95?.v?:"",b95?.n?:"",ratio95?:"",liveRunScore?:"",liveRunQuality,runValidPoints,sessionScore?:"",sessionConfidence,sessionValidRuns,oil?:"",if(autoMode)"AUTO" else "TEST",coverageBins.size,speed?:"",slowFuel?:"",fuelSessionId,drivePhase,steadyPoints,accelPoints,steadyScore?:"",accelScore?:"",if(refuelStore.hasPending())1 else 0,"%.2f".format(java.util.Locale.US,mixingKm),steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,highRpmMean?:"",highRpmPoints,highRpmOver120,highRpmBaselineAvg?:"",acceptedAutoSegments.size,
                         steadySurveyPoints,steadySurveyCells.size,accelV08Score?:"",accelV08Points,
                         OctaneCalibration.VERSION,steadyRef?.knockMeanVms?:"",accelRef?.knockMeanVms?:"",
                         ltft1?:"",combinedTrim?:"",a?:"",lastFineCell,
                         steadyFineStats.cells(),steadyFineStats.repeatableCells(),
                         lastFineSummary.observations,lastFineSummary.segments,
                         lastFineSummary.medianVms?:"",lastFineSummary.dispersionPct?:"",
-                        "", "")).joinToString(","))
+                        "", "")).joinToString(",")
+                    if(captureActive) csvWriter.append(logFile!!,captureCsvLine())
                     samples++
                     // This broadcast is intentionally every completed FAST cycle.
                     // Dashboard's heavyweight status stays at every fourth cycle.
                     emitFastTelemetry(octane2Rpm,m,l,steadyTargetTracker.progress(now))
                     if(suite!=null) {
-                        val lines=wireTrace?.flush(suite.current?.id?:-1,
-                            reconnects,highSpeedCycle,System.nanoTime())
+                        suite.flushWire(reconnects,highSpeedCycle,System.nanoTime(),csvWriter)
                         wireCycleActive=false
-                        if(lines!=null && suiteWireFile!=null)
-                            csvWriter.offerAudit(suiteWireFile,lines)
                     }
                     val effectiveMode=when {
                         batchEnabled && pollModeActive=="B+" -> "B+"
@@ -2027,7 +1870,8 @@ class EnetLoggerService : Service() {
                     val commandedAge=if(lambdaEq==null)null else if(optimizedSlow)
                         slowScheduler.ageMs(0x44,benchmarkNow) else
                         slowSensorAtMs.takeIf{it>0L}?.let{benchmarkNow-it}
-                    saveComparison(Octane2Cycle(
+                    // Build the same v2 comparison row off the suspend method body.
+                    fun comparisonRow():Octane2Cycle = Octane2Cycle(
                         System.currentTimeMillis(),benchmarkNow-started,
                         learningTripId,fuelSessionId,reconnects,effectiveMode,
                         obdRpm,ramRpm,octane2Rpm,selectedRpmSource,ramPolicy.state.name,
@@ -2041,7 +1885,8 @@ class EnetLoggerService : Service() {
                         steadyTargetTracker.progress(now).targetIndex,
                         steadyTargetTracker.progress(now).dwellMs,
                         sessionScore,sessionConfidence
-                    ))
+                    )
+                    saveComparison(comparisonRow())
                     healthState=LoggerHealthPolicy.cycleFinished(healthState,
                         SystemClock.elapsedRealtime(),r!=null && m!=null)
                     if(r!=null && m!=null)
@@ -2079,51 +1924,23 @@ class EnetLoggerService : Service() {
                     val postFastMs=benchmarkNow-postFastStarted
                     val cycleMs=benchmarkNow-cycleStart
                     previousHighSpeedCycleMs=cycleMs
+
                     if(suite!=null) {
-                        // Speed/temperature ages are diagnostic-observation ages,
-                        // never default zero on missing/unsupported OBD PIDs.
                         val speedAge=if(optimizedSlow)
                             slowScheduler.ageMs(0x0D,benchmarkNow)
-                        else slowSensorAtMs.takeIf{it>0L}?.let{
-                            (benchmarkNow-it).coerceAtLeast(0L)
-                        }
+                        else slowSensorAtMs.takeIf{it>0L}?.let{benchmarkNow-it}
                         val coolantAge=if(optimizedSlow)
                             slowScheduler.ageMs(0x05,benchmarkNow)
-                        else slowSensorAtMs.takeIf{it>0L}?.let{
-                            (benchmarkNow-it).coerceAtLeast(0L)
-                        }
-                        val result=suite.onCycle(AutomatedDmeBenchmark.Cycle(
-                            nowMs=benchmarkNow,wallMs=System.currentTimeMillis(),
-                            speedKmh=speed,speedAgeMs=speedAge,
-                            coolantC=coolant,coolantAgeMs=coolantAge,rpm=r,
-                            actualMode=effectiveMode,actualProfile=highSpeedProfile,
-                            epoch=reconnects,
-                            fastComplete=timingOutcome?.complete == true ||
-                                (timingOutcome==null && r!=null && l!=null && m!=null &&
-                                listOf(kz1,kz2,kz3,kz4,iz1,iz2,iz3,iz4).all{it!=null}),
-                            hostSkewMs=timingOutcome?.hostSkewMs,
-                            cycleMs=cycleMs,uiVisible=benchmarkUiVisible,
-                            csvLost=csvWriter.snapshot().lost
-                        ))
-                        if(result!=null) {
-                            suiteFile?.let {file ->
-                                csvWriter.append(file,suite.csvRow(result.type,
-                                    benchmarkNow,System.currentTimeMillis(),result.summary))
-                            }
-                            emitBenchmarkState(suite.status(benchmarkNow)+
-                                " • "+result.summary,result.terminal)
-                            if(result.terminal)running=false
-                        }
-                        if(running && benchmarkNow-lastSuiteExport>=5_000L) {
-                            lastSuiteExport=benchmarkNow
-                            suiteFile?.let{file->
-                                csvWriter.append(file,suite.csvRow(
-                                    if(suite.state==AutomatedDmeBenchmark.State.WAITING)
-                                        "WAIT" else "PROGRESS",
-                                    benchmarkNow,System.currentTimeMillis(),suite.status(benchmarkNow)))
-                            }
-                            emitBenchmarkState(suite.status(benchmarkNow))
-                        }
+                        else slowSensorAtMs.takeIf{it>0L}?.let{benchmarkNow-it}
+                        val complete=timingOutcome?.complete == true ||
+                            (timingOutcome==null && r!=null && l!=null && m!=null &&
+                                listOf(kz1,kz2,kz3,kz4,iz1,iz2,iz3,iz4).all{it!=null})
+                        val outcome=suite.onCycle(DmeBenchmarkRuntime.Cycle(
+                            benchmarkNow,System.currentTimeMillis(),speed,speedAge,
+                            coolant,coolantAge,r,effectiveMode,highSpeedProfile,
+                            reconnects,complete,timingOutcome?.hostSkewMs,cycleMs,
+                            benchmarkUiVisible,csvWriter.snapshot().lost),csvWriter)
+                        if(outcome)running=false
                     }
                     val fallbackNote=lastBatchFallback.replace(",",";")
                     if(benchmarkNow-lastBenchmarkMs>=3000L) {
@@ -2163,7 +1980,10 @@ class EnetLoggerService : Service() {
                         sendBroadcast(Intent(ACTION_HIGH_SPEED_STATUS).setPackage(packageName)
                             .putExtra(EXTRA_HIGH_SPEED_STATUS,summary))
                     }
-                    if(samples%4==0) { val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v2.0 EXP • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
+                    // Keep the original status payload, without inlining its
+                    // large string/argument construction into the poll coroutine.
+                    fun emitUiStatus() {
+                        val state=if(autoMode) { if(captureActive) "AUTO • УЧАСТОК #$runId" else "AUTO • ПОИСК УЧАСТКА" } else if(captureActive) { if(signaled4500) "ЗАВЕРШЕНИЕ #$runId" else if(armed2000) "ЗАМЕР #$runId" else "ГОТОВ #$runId" } else if(lastSummary.isNotEmpty()) "ЗАВЕРШЁН #$runId" else "ОЖИДАНИЕ"; emit("v2.0 EXP • $state • $transport • ${"%.1f".format(java.util.Locale.US,hz)} Hz • Fuel ${liveRunScore?.let{String.format(java.util.Locale.US,"%.0f",it)}?:"—"} Q$liveRunQuality%",state,r,transport,runId,hz,reconnects,lastSummary.takeIf{it.isNotEmpty()},liveRunScore,liveRunQuality,sessionScore,sessionConfidence,sessionValidRuns,coolant,oil,l,m,i,runValidPoints,runHighPoints,runKnockEvents,runSuperEvents,resultState,if(autoMode)"AUTO" else "TEST",if(autoMode)acceptedAutoSegments.size else sessionValidRuns,coverageBins.size,speed,slowFuel,fuelSessionId,drivePhase,steadyPoints,accelPoints,lastRefuelNote.takeIf{it.isNotEmpty()},mixingKm,
                         steadyConfidence,accelConfidence,steadySegments.size,accelSegments.size,
                         steadyScore,accelScore,highRpmMean,highRpmPoints,highRpmOver120,
                         steadySurveyPoints,steadySurveyCells.size,accelV08Score,accelV08Points,
@@ -2176,7 +1996,9 @@ class EnetLoggerService : Service() {
                             " • DME Monitor "+monitorState+" (OK "+monitorOk+
                             " / ERR "+monitorErrors+")"),
                         DmeReadOnlyProbe.overview(dmeProbeResults,dmeProbeResults.size),
-                        dmeProbeResults.size) }
+                        dmeProbeResults.size)
+                    }
+                    if(samples%4==0)emitUiStatus()
                     // Background history runs only AFTER the complete FAST
                     // cycle and never on a secondary socket. One bounded
                     // request per qualified low-load gap, independent CSV.
@@ -2209,18 +2031,15 @@ class EnetLoggerService : Service() {
                 }
             } catch(e:Exception) {
                 wireCycleActive=false
-                wireTrace?.discard()
+                suite?.discardWire()
                 fastTimingTrace?.abort(System.nanoTime(),
                     "cycle_interrupted:"+e.javaClass.simpleName)
                 if(suite!=null) {
-                    val event=suite.abort(SystemClock.elapsedRealtime(),
-                        "diagnostic/network failure: "+e.javaClass.simpleName)
-                    suiteFile?.let {file->
-                        try{csvWriter.append(file,suite.csvRow(event.type,
-                            SystemClock.elapsedRealtime(),System.currentTimeMillis(),event.summary))}
-                        catch(_:Exception){}
-                    }
-                    emitBenchmarkState(suite.status(SystemClock.elapsedRealtime()),true)
+                    try {
+                        suite.abort(SystemClock.elapsedRealtime(),
+                            "diagnostic/network failure: "+e.javaClass.simpleName,
+                            csvWriter)
+                    }catch(_:Exception){}
                     running=false
                 }
                 if(e is CancellationException)throw e
@@ -2299,24 +2118,12 @@ class EnetLoggerService : Service() {
         fastTimingTrace?.abort(System.nanoTime(),"poll_job_finally")
         fastTimingTrace=null
         wireCycleActive=false
-        wireTrace=null
+        benchmarkRuntime=null
         highSpeedMetrics=null
         // Drain/flush even when the Service is cancelled during a reconnect.
         withContext(NonCancellable) {
         if(suite!=null) {
-            if(!suite.terminal) {
-                val event=suite.abort(SystemClock.elapsedRealtime(),
-                    "LOGGER stopped before benchmark completed")
-                suiteFile?.let{file->try {
-                    csvWriter.append(file,suite.csvRow(event.type,
-                        SystemClock.elapsedRealtime(),System.currentTimeMillis(),event.summary))
-                }catch(_:Exception){}}
-                emitBenchmarkState(suite.status(SystemClock.elapsedRealtime()),true)
-            }
-            try{suiteReportFile?.writeText(suite.reportText()+"\n"+
-                "Raw HOST HSFZ: "+(suiteWireFile?.name?:"unavailable")+"\n"+
-                "FAST traces: bmw_fast_*_timing_v1_${learningTripId}.csv\n"+
-                "High-Speed: "+highSpeedFile.name+"\n")}
+            try{suite.finish(SystemClock.elapsedRealtime(),csvWriter)}
             catch(e:Exception){
                 connectionEvent("DME_BENCHMARK_REPORT_FAILED",reconnects,
                     "FILE","BENCHMARK",null,e.javaClass.simpleName)
@@ -2334,22 +2141,6 @@ class EnetLoggerService : Service() {
     }
     // Octane Engine v0.2: empirical AI-95 baseline from validated v1.7.2 + independent v1.7.3 AI-95 runs.
     // RPM x MAP bins: median knock_mean_vms and number of baseline samples.
-    private data class B95(val v:Double,val n:Int)
-    private fun baseline95(rpm:Double?, map:Double?):B95? {
-        if(rpm==null || map==null) return null
-        val ri=when { rpm<2000->return null; rpm<2500->0; rpm<3000->1; rpm<3500->2; rpm<4000->3; rpm<4500->4; else->5 }
-        val mi=when { map<130->return null; map<160->0; map<180->1; map<200->2; else->3 }
-        val v=arrayOf(
-            arrayOf<B95?>(B95(.073798,12),B95(.070848,1),B95(.069070,2),B95(.071781,2)),
-            arrayOf<B95?>(B95(.074039,19),B95(.071964,10),B95(.074590,5),B95(.081251,9)),
-            arrayOf<B95?>(B95(.076440,10),B95(.082133,4),B95(.082402,6),B95(.093991,7)),
-            arrayOf<B95?>(B95(.079952,8),B95(.086841,3),B95(.097288,2),B95(.097531,10)),
-            arrayOf<B95?>(B95(.085714,9),B95(.095348,3),B95(.104305,2),B95(.114581,9)),
-            arrayOf<B95?>(null,null,null,null)
-        )
-        return v[ri][mi]
-    }
-
     /**
      * One bounded background read on the primary HSFZ socket. Called only
      * from the same polling thread, after a complete FAST cycle. Never
@@ -2473,14 +2264,14 @@ class EnetLoggerService : Service() {
         } finally {
             val end=System.nanoTime()
             if(wireCycleActive)try {
-                wireTrace?.record(DiagnosticWireTrace.Tx(
+                benchmarkRuntime?.recordWire(DmeBenchmarkRuntime.Wire(
                     System.currentTimeMillis(),channel,start,builtAt,sentAt,
                     verifiedAckAt,dataHeaderAt,dataCompleteAt,
                     if(dataCompleteAt!=null)decodedAt else null,valid,failure))
             }catch(_:Exception){}
             try {
                 fastTimingTrace?.transaction(channel,members,
-                    System.currentTimeMillis(),FastTimingTrace.Timing(
+                    System.currentTimeMillis(),FastTimingPort.Timing(
                         requestStartNs=start,sendStartNs=builtAt,
                         sendEndNs=sentAt,firstByteNs=firstAt,
                         responseCompleteNs=if(firstAt!=null)receivedAt else null,

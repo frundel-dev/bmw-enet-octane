@@ -16,7 +16,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,13 +39,13 @@ jobs:
           "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "platform-tools"
 
       - name: Run JVM unit tests
-        run: gradle --no-daemon :app:testDebugUnitTest
+        run: gradle --no-daemon :core:data:test :core:diagnostics:test :feature:analysis:test :feature:benchmark:test :app:testOctaneDebugUnitTest :app:testLabDebugUnitTest
 
       - name: Android Lint (fatal and error checks)
-        run: gradle --no-daemon :app:lintDebug
+        run: gradle --no-daemon :app:lintOctaneDebug :app:lintLabDebug
 
       - name: Build debug APK
-        run: gradle --no-daemon :app:assembleDebug
+        run: gradle --no-daemon :app:assembleOctaneDebug :app:assembleLabDebug
 
       - name: Publish quality reports
         if: always()
@@ -53,17 +53,40 @@ jobs:
         with:
           name: bmw-octane-quality-reports
           path: |
-            app/build/test-results/testDebugUnitTest/**
-            app/build/reports/tests/testDebugUnitTest/**
-            app/build/reports/lint-results-debug.html
-            app/build/reports/lint-results-debug.xml
+            app/build/test-results/test*DebugUnitTest/**
+            app/build/reports/tests/test*DebugUnitTest/**
+            app/build/reports/lint-results-*.html
+            app/build/reports/lint-results-*.xml
+            core/*/build/test-results/test/**
+            feature/*/build/test-results/test/**
           if-no-files-found: warn
           retention-days: 30
 
-      - name: Upload APK
+      - name: Verify benchmark module excluded from OCTANE
+        run: |
+          gradle --no-daemon :app:dependencies --configuration octaneDebugRuntimeClasspath > /tmp/octane-deps.txt
+          gradle --no-daemon :app:dependencies --configuration labDebugRuntimeClasspath > /tmp/lab-deps.txt
+          if grep -F "project :feature:benchmark" /tmp/octane-deps.txt; then
+            echo "FAIL: production variant includes benchmark module"
+            exit 1
+          fi
+          grep -F "project :feature:benchmark" /tmp/lab-deps.txt || {
+            echo "FAIL: LAB variant lacks benchmark module"
+            exit 1
+          }
+
+      - name: Upload OCTANE APK
         uses: actions/upload-artifact@v4
         with:
-          name: BMW-OCTANE-2.0-LAB-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: BMW-OCTANE-224-debug-apk
+          path: app/build/outputs/apk/octane/debug/app-octane-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload LAB APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: BMW-OCTANE-LAB-224-debug-apk
+          path: app/build/outputs/apk/lab/debug/app-lab-debug.apk
           if-no-files-found: error
           retention-days: 30

@@ -89,7 +89,7 @@ class MainActivity : Activity() {
     private lateinit var analysisSummary:TextView
     private lateinit var diagnosticSummary:TextView
     private lateinit var highSpeedStatus:TextView
-    private lateinit var dmeBenchmarkStatus:TextView
+    private lateinit var benchmarkUi:DmeBenchmarkUi
     private var highSpeedLastUpdateAt=0L
     private lateinit var navButtons:List<TextView>
     private lateinit var tabPages:List<android.view.View>
@@ -597,22 +597,47 @@ class MainActivity : Activity() {
         highSpeedCard.addView(action("HIGH-SPEED BENCHMARK CSV"){showHighSpeedBenchmark()})
         addCard(more,highSpeedCard)
 
-        val dmeSuiteCard=card("КОМПЛЕКСНЫЙ ТЕСТ DME")
-        dmeSuiteCard.addView(smallText(
-            "6 последовательных этапов • 15 мин • только стоящий автомобиль с "+
-            "прогретым двигателем. Требуются свежие RPM, скорость 0 и ОЖ ≥70°C. "+
-            "Никаких ускорений.",12f,tertiary))
-        dmeBenchmarkStatus=smallText("Тест не запущен",12f,accentBlue)
-        dmeBenchmarkStatus.setPadding(0,dp(8),0,dp(8))
-        dmeSuiteCard.addView(dmeBenchmarkStatus)
-        dmeSuiteCard.addView(action("КОМПЛЕКСНЫЙ ТЕСТ DME"){
-            showDmeBenchmarkStartDialog()
-        })
-        dmeSuiteCard.addView(action("ПОСЛЕДНИЙ ОТЧЁТ DME"){
-            showLastDmeBenchmarkReport()
-        })
-        addCard(more,dmeSuiteCard)
 
+        // Presentation of the research suite belongs exclusively to LAB.
+        // OCTANE receives a no-op adapter and does not link its code.
+        benchmarkUi=DmeBenchmarkUiFactory.create(
+            this,getExternalFilesDir(null)?:filesDir,
+            canStart={
+                when {
+                    historyBusy || logging || EnetLoggerService.isLoggerActive ->
+                        "Сначала останови обычный LOGGER и чтение истории DME."
+                    !refuelStore.hasCurrentFuel() ->
+                        "Сначала выбери заправленное топливо."
+                    VxscanLocalOnlyWifi.reservationRequired(this) &&
+                        VxscanLocalOnlyWifi.snapshot().phase!=
+                            VxscanLocalOnlyWifi.Phase.READY ->
+                        "Дождись готовности подключения VXSCAN (READY)."
+                    else -> null
+                }
+            },
+            start={
+                logging=true
+                lastFastReceivedAt=0L
+                connection=Octane2UiState.Connection.CONNECTING
+                dashboard.clearEngineReadings()
+                dashboard.setLogging(true)
+                loggerControl?.text="ОСТАНОВИТЬ"
+                loggerControl?.backgroundTintList=ColorStateList.valueOf(
+                    Color.rgb(255,179,126))
+                renderHomeState()
+                startForegroundService(Intent(this,EnetLoggerService::class.java)
+                    .setAction(EnetLoggerService.ACTION_START_BENCHMARK))
+            },
+            export={csv->
+                pendingOctane2Export=csv
+                @Suppress("DEPRECATION")
+                startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type="text/csv"
+                    putExtra(Intent.EXTRA_TITLE,csv.name)
+                },902)
+            })
+        benchmarkUi.panel()?.let{addCard(more,it)}
         val toolsCard=card("ЖУРНАЛЫ И ЭКСПОРТ")
         toolsCard.addView(action("ЭКСПОРТ И СРАВНЕНИЕ CSV"){
             showOctane2ComparisonFiles()
@@ -668,13 +693,9 @@ class MainActivity : Activity() {
                     refreshLocalOnlyWifiStatus()
                     return
                 }
+
                 if(intent?.action==EnetLoggerService.ACTION_BENCHMARK_STATUS) {
-                    dmeBenchmarkStatus.text=intent.getStringExtra(
-                        EnetLoggerService.EXTRA_BENCHMARK_STATUS)?: "Статус недоступен"
-                    if(intent.getBooleanExtra(
-                        EnetLoggerService.EXTRA_BENCHMARK_TERMINAL,false)) {
-                        logging=EnetLoggerService.isLoggerActive
-                    }
+                    benchmarkUi.status(intent)
                     return
                 }
                 if(intent?.action==EnetLoggerService.ACTION_OCTANE2) {
@@ -929,11 +950,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if(EnetLoggerService.isBenchmarkRunning) {
-            startService(Intent(this,EnetLoggerService::class.java)
-                .setAction(EnetLoggerService.ACTION_BENCHMARK_UI_VISIBILITY)
-                .putExtra(EnetLoggerService.EXTRA_BENCHMARK_VISIBLE,true))
-        }
+        if(::benchmarkUi.isInitialized)benchmarkUi.visibility(true)
         main.removeCallbacks(healthHeaderTick)
         main.post(healthHeaderTick)
         autoStartLocalOnlyWifiIfEnabled()
@@ -961,12 +978,7 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
-        if(EnetLoggerService.isBenchmarkRunning) {
-            // Visibility observation only; NEVER pause or restart ECU reads.
-            startService(Intent(this,EnetLoggerService::class.java)
-                .setAction(EnetLoggerService.ACTION_BENCHMARK_UI_VISIBILITY)
-                .putExtra(EnetLoggerService.EXTRA_BENCHMARK_VISIBLE,false))
-        }
+        if(::benchmarkUi.isInitialized)benchmarkUi.visibility(false)
         main.removeCallbacks(healthHeaderTick)
         super.onPause()
     }
@@ -2286,103 +2298,6 @@ class MainActivity : Activity() {
             .setNegativeButton("Отмена",null).show()
     }
 
-
-    private fun showDmeBenchmarkStartDialog() {
-        if(historyBusy || logging || EnetLoggerService.isLoggerActive) {
-            AlertDialog.Builder(this).setTitle("Комплексный тест DME")
-                .setMessage("Сначала останови обычный LOGGER и чтение истории DME. "+
-                    "Для теста используется тот же единственный диагностический сокет.")
-                .setPositiveButton("OK",null).show()
-            return
-        }
-        if(!refuelStore.hasCurrentFuel()) {
-            AlertDialog.Builder(this).setTitle("Не выбрана заправка")
-                .setMessage("Сначала выбери топливо во вкладке «Заправки». "+
-                    "Комплексный тест не должен создавать анонимную топливную сессию.")
-                .setPositiveButton("OK",null).show()
-            return
-        }
-        if(VxscanLocalOnlyWifi.reservationRequired(this) &&
-            VxscanLocalOnlyWifi.snapshot().phase!=VxscanLocalOnlyWifi.Phase.READY) {
-            AlertDialog.Builder(this).setTitle("VXSCAN не готов")
-                .setMessage("Дождись подключения local-only VXSCAN (READY).")
-                .setPositiveButton("OK",null).show()
-            return
-        }
-        AlertDialog.Builder(this).setTitle("КОМПЛЕКСНЫЙ ТЕСТ DME • 15 минут")
-            .setMessage("Проводить только на открытом воздухе или в "+
-                "надлежащим образом вентилируемом месте. Машина стоит, "+
-                "стояночный тормоз включён, коробка в P, двигатель прогрет. "+
-                "Приложение проверит OBD скорость=0, температуру ОЖ ≥70°C "+
-                "и холостой ход, но не может проверить положение селектора "+
-                "или стояночный тормоз.\n\n"+
-                "Шесть этапов: B+/LEGACY → B+/CORE → B+/EXTENDED → B/CORE "+
-                "→ B+/CORE повтор → CORE в фоне (5 мин). "+
-                "Не двигайся и не повышай обороты. "+
-                "На шестом этапе можно свернуть приложение/выключить экран. "+
-                "Фактические паузы будут отмечены. "+
-                "При ошибке или движении тест безопасно прекратится. "+
-                "ОСТАНОВИТЬ на главном экране отменяет тест.")
-            .setPositiveButton("НАЧАТЬ ТЕСТ") { _,_ ->
-                if(logging || EnetLoggerService.isLoggerActive) return@setPositiveButton
-                logging=true
-                lastFastReceivedAt=0L
-                connection=Octane2UiState.Connection.CONNECTING
-                dashboard.clearEngineReadings()
-                dashboard.setLogging(true)
-                loggerControl?.text="ОСТАНОВИТЬ"
-                loggerControl?.backgroundTintList=ColorStateList.valueOf(
-                    Color.rgb(255,179,126))
-                dmeBenchmarkStatus.text="Соединение с DME • проверка условий..."
-                renderHomeState()
-                startForegroundService(Intent(this,EnetLoggerService::class.java)
-                    .setAction(EnetLoggerService.ACTION_START_BENCHMARK))
-            }
-            .setNegativeButton("ОТМЕНА",null).show()
-    }
-
-    private fun showLastDmeBenchmarkReport() {
-        val dir=getExternalFilesDir(null)?:filesDir
-        val report=dir.listFiles()?.filter { it.isFile &&
-            it.name.startsWith("bmw_dme_benchmark_suite_v1_") &&
-            it.name.endsWith(".txt") }?.maxByOrNull{it.lastModified()}
-        if(report==null) {
-            AlertDialog.Builder(this).setTitle("Комплексный тест DME")
-                .setMessage("Отчёт ещё не создан. Запусти тест и дождись "+
-                    "завершения или останови тест для сохранения частичных данных.")
-                .setPositiveButton("OK",null).show()
-            return
-        }
-        executor.execute {
-            val text=try{report.readText().take(20000)}
-                catch(e:Exception){"Ошибка чтения отчёта: ${e.message}"}
-            runOnUiThread {
-                if(isFinishing || isDestroyed)return@runOnUiThread
-                val csv=File(report.parentFile,report.name.removeSuffix(".txt")+".csv")
-                AlertDialog.Builder(this).setTitle("Отчёт DME • "+report.name)
-                    .setMessage(text)
-                    .setPositiveButton("ЭКСПОРТ CSV") { _,_ ->
-                        if(csv.isFile) {
-                            pendingOctane2Export=csv
-                            @Suppress("DEPRECATION")
-                            startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                                addCategory(Intent.CATEGORY_OPENABLE)
-                                type="text/csv"
-                                putExtra(Intent.EXTRA_TITLE,csv.name)
-                            },902)
-                        } else Toast.makeText(this,
-                            "Отчёт CSV не найден",Toast.LENGTH_LONG).show()
-                    }
-                    .setNeutralButton("ПОДЕЛИТЬСЯ ТЕКСТОМ") { _,_ ->
-                        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-                            type="text/plain"
-                            putExtra(Intent.EXTRA_TEXT,text)
-                        },"Отчёт комплексного теста DME"))
-                    }
-                    .setNegativeButton("ЗАКРЫТЬ",null).show()
-            }
-        }
-    }
 
     private fun showHighSpeedBenchmark() {
         val directory=getExternalFilesDir(null)?:filesDir
