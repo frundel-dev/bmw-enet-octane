@@ -1418,10 +1418,10 @@ class EnetLoggerService : Service() {
                     val knockStatusMs=fastDme.knockStatusMs
                     val knockBatch=fastDme.knockBatch
                     val ignitionBatch=fastDme.ignitionBatch
-                    val kz1=fastDme.knock[0];val kz2=fastDme.knock[1]
-                    val kz3=fastDme.knock[2];val kz4=fastDme.knock[3]
-                    val iz1=fastDme.ignition[0];val iz2=fastDme.ignition[1]
-                    val iz3=fastDme.ignition[2];val iz4=fastDme.ignition[3]
+                    val kz1=fastDme.kz1;val kz2=fastDme.kz2
+                    val kz3=fastDme.kz3;val kz4=fastDme.kz4
+                    val iz1=fastDme.iz1;val iz2=fastDme.iz2
+                    val iz3=fastDme.iz3;val iz4=fastDme.iz4
                     val knockPhaseMs=fastDme.knockPhaseMs
                     val ignitionPhaseMs=fastDme.ignitionPhaseMs
                     val fastDmeMs=fastDme.fastDmeMs
@@ -2106,7 +2106,8 @@ class EnetLoggerService : Service() {
         val lastBatchFallback:String,
         val knockStatus:Int?,val knockBatch:Map<Int,ByteArray>?,
         val ignitionBatch:Map<Int,ByteArray>?,
-        val knock:List<Double?>,val ignition:List<Double?>,
+        val kz1:Double?,val kz2:Double?,val kz3:Double?,val kz4:Double?,
+        val iz1:Double?,val iz2:Double?,val iz3:Double?,val iz4:Double?,
         val knockStatusMs:Long,val knockPhaseMs:Long,val ignitionPhaseMs:Long,
         val fastDmeMs:Long
     )
@@ -2168,8 +2169,8 @@ class EnetLoggerService : Service() {
                     (it[3].toLong()and 255)
                 raw*0.05/65536.0
             }
-        val knockValues=listOf(knock(0x4A37),knock(0x4A38),
-            knock(0x4A39),knock(0x4A3A))
+        val kz1=knock(0x4A37);val kz2=knock(0x4A38)
+        val kz3=knock(0x4A39);val kz4=knock(0x4A3A)
         val knockPhaseMs=SystemClock.elapsedRealtime()-knockStarted
         val ignitionStarted=SystemClock.elapsedRealtime()
         val ignitionBatch=if(mixedBatch!=null) mixedBatch else if(batchEnabled) {
@@ -2190,14 +2191,15 @@ class EnetLoggerService : Service() {
                 val signed=if(u>=0x8000)u-0x10000 else u
                 signed/10.0
             }
-        val ignitionValues=listOf(ign(0x4A49),ign(0x4A4A),
-            ign(0x4A4C),ign(0x4A4D))
+        val iz1=ign(0x4A49);val iz2=ign(0x4A4A)
+        val iz3=ign(0x4A4C);val iz4=ign(0x4A4D)
         val ignitionPhaseMs=SystemClock.elapsedRealtime()-ignitionStarted
         val fastDmeMs=SystemClock.elapsedRealtime()-fastDmeStarted
         return FastDmeReadout(
             pollModeActive,batchEnabled,bPlusRejected,bPlusRejections,
             batchOk,batchErrors,lastBatchFallback,knockStatus,
-            knockBatch,ignitionBatch,knockValues,ignitionValues,
+            knockBatch,ignitionBatch,
+            kz1,kz2,kz3,kz4,iz1,iz2,iz3,iz4,
             knockStatusMs,knockPhaseMs,ignitionPhaseMs,fastDmeMs)
     }
 
