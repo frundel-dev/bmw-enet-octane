@@ -7,7 +7,7 @@ package com.example.bmwenettest
  * Must reject all truncated, reordered, extra and negative replies. It is
  * safe to run B+ only when a full reply can be matched unambiguously.
  */
-internal object MixedDidBatch {
+object MixedDidBatch {
     val widths:List<Pair<Int,Int>> =
         DmeBatchParser.knockDids.map { it to 4 } +
         DmeBatchParser.ignitionDids.map { it to 2 }

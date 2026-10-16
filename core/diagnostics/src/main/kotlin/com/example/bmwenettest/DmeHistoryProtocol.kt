@@ -1,7 +1,7 @@
 package com.example.bmwenettest
 
 /** Safe, bounded UDS 0x19 DTC history decoding; DTCs are not knock events. */
-internal object DmeHistoryProtocol {
+object DmeHistoryProtocol {
     const val MAX_DTCS = 12
     const val MAX_RESPONSE_BYTES = 32768
 

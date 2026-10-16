@@ -8,7 +8,7 @@ package com.example.bmwenettest
  * DTC snapshots during driving. Suppress all monitoring after a transport
  * ambiguity until a new logger session.
  */
-internal class DmeMonitorPolicy {
+class DmeMonitorPolicy {
     data class Task(val service:Int,val did:Int,val intervalMs:Long,val idleOnly:Boolean=false) {
         val label:String get()=if(service==0x22)"%04X".format(did) else "DTC_CONFIRMED"
         fun request():ByteArray=if(service==0x22)byteArrayOf(

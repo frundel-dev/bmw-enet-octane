@@ -5,7 +5,7 @@ package com.example.bmwenettest
  * diagnostic coroutine; the watchdog may only close its current socket.
  * Times in milliseconds are from SystemClock.elapsedRealtime().
  */
-internal object LoggerHealthPolicy {
+object LoggerHealthPolicy {
     const val FRESH_MAX_AGE_MS=5_000L
     const val WARN_AFTER_MS=8_000L
     const val RECOVER_AFTER_MS=18_000L

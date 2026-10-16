@@ -4,7 +4,7 @@ package com.example.bmwenettest
  * Experimental single-TCP request budgeting. Does not alter FAST DID lists,
  * transmit parallel requests, or claim ECU sample freshness.
  */
-internal object HighSpeedProfilePolicy {
+object HighSpeedProfilePolicy {
     const val PREF_PROFILE="octane2_highspeed_profile"
     enum class Profile { LEGACY, HIGH_SPEED_CORE, HIGH_SPEED_EXTENDED }
     fun resolve(raw:String?):Profile=Profile.entries.firstOrNull{it.name==raw}

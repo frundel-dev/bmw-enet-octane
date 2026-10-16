@@ -11,7 +11,7 @@ import java.net.SocketTimeoutException
  * two diagnostic addresses. A TCP read is not a complete protocol frame.
  * Parsing and encoding are pure JVM code so framing is tested without a car.
  */
-internal object HsfzCodec {
+object HsfzCodec {
     const val MAX_FRAME_BODY_BYTES=65536
 
     fun encode(request:ByteArray):ByteArray {

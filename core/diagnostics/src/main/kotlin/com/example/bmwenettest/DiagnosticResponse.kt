@@ -5,7 +5,7 @@ package com.example.bmwenettest
  * only the requested service and PID/DID may be accepted as that measurement.
  * Transport framing is validated independently by HsfzCodec.
  */
-internal object DiagnosticResponse {
+object DiagnosticResponse {
     fun obd(payload:ByteArray,pid:Int):ByteArray? {
         // Some supported gateways add a transport prefix before the OBD bytes.
         // Retain legacy framing compatibility, but NEVER accept another PID.

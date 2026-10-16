@@ -9,7 +9,7 @@ import java.net.SocketTimeoutException
  * Reused only by the single owner of the primary ENET socket.
  * Higher-level return values must not retain a view after the next read.
  */
-internal class HsfzReusableReader {
+class HsfzReusableReader {
     private val header=ByteArray(6)
     private val body=ByteArray(HsfzCodec.MAX_FRAME_BODY_BYTES)
     private var lastPayloadSize=0

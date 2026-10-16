@@ -7,7 +7,7 @@ package com.example.bmwenettest
  * Scheduling a request advances its deadline even when the ECU rejects it,
  * avoiding repeated timeouts and starving other PIDs.
  */
-internal class SlowPollScheduler {
+class SlowPollScheduler {
     data class Entry(val did:Int,val intervalMs:Long,val ttlMs:Long)
     companion object {
         val entries=listOf(

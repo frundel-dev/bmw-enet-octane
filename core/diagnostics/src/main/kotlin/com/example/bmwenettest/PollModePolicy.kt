@@ -7,7 +7,7 @@ package com.example.bmwenettest
  * The old AUTO *poll-mode comparator* is removed. This does not affect the
  * unrelated AUTO driving/measurement mode.
  */
-internal object PollModePolicy {
+object PollModePolicy {
     const val DEFAULT = "B+"
     // Same migration key as v1.7.28 to preserve explicit B/A selections.
     const val MIGRATED_KEY = "poll_v1728_bplus_migrated"

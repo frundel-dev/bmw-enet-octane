@@ -8,7 +8,7 @@ import kotlin.math.ceil
  * Pure, bounded, monotonic Android-side timings. None is an ECU acquisition timestamp.
  * Byte changes are OBSERVED RESPONSE changes, not proof of DME internal update rate.
  */
-internal class HighSpeedMetrics(private val historySize:Int=128) {
+class HighSpeedMetrics(private val historySize:Int=128) {
     init { require(historySize in 2..4096) }
     data class Request(
         val setupNs:Long, val sendNs:Long, val firstByteNs:Long?,
@@ -93,7 +93,7 @@ internal class HighSpeedMetrics(private val historySize:Int=128) {
 }
 
 /** Wraps one inbound response to timestamp the FIRST successfully received byte. */
-internal class FirstByteMeasuredStream(
+class FirstByteMeasuredStream(
     source:InputStream, private val firstRead:(Long)->Unit,
     private val clock:()->Long=System::nanoTime
 ):FilterInputStream(source) {

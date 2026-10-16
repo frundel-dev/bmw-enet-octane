@@ -9,7 +9,7 @@ package com.example.bmwenettest
  * via rejected F18x DIDs and must be manually confirmed before the ONE
  * diagnostic memory read. Do not derive a RAM address from a UDS DID.
  */
-internal object RamMemoryProtocol {
+object RamMemoryProtocol {
     const val MAX_READ_BYTES = 8
     const val SERVICE = 0x23
     const val RESPONSE = 0x63
