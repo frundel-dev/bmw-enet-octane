@@ -2061,14 +2061,31 @@ class EnetLoggerService : Service() {
                     }
                 }
             } catch(e:Exception) {
+                // Never discard the in-flight HSFZ transaction. measuredDiagnostic
+                // already recorded the exact request, phase and IOException in
+                // its finally. Persist ALL rows from this interrupted cycle
+                // before closing the socket or writing BENCHMARK_ABORT.
+                if(suite!=null) {
+                    try {
+                        withContext(NonCancellable) {
+                            suite.flushWire(reconnects,highSpeedCycle,
+                                System.nanoTime(),csvWriter)
+                        }
+                    }catch(traceError:Exception) {
+                        connectionEvent("DME_WIRE_TRACE_PERSIST_FAILED",reconnects,
+                            "FILE","BENCHMARK",null,
+                            traceError.javaClass.simpleName+": "+
+                                (traceError.message?:"unknown"))
+                    }
+                }
                 wireCycleActive=false
-                suite?.discardWire()
                 fastTimingTrace?.abort(System.nanoTime(),
                     "cycle_interrupted:"+e.javaClass.simpleName)
                 if(suite!=null) {
                     try {
                         suite.abort(SystemClock.elapsedRealtime(),
-                            "diagnostic/network failure: "+e.javaClass.simpleName,
+                            "diagnostic/network failure: "+e.javaClass.simpleName+
+                                ": "+(e.message?:"no message"),
                             csvWriter)
                     }catch(_:Exception){}
                     markBenchmarkExit(suite,reconnects)
