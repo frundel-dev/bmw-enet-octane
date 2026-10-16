@@ -7,7 +7,7 @@ import kotlinx.coroutines.CancellationException
  * itself fail. Never let that secondary exception crash a Service coroutine.
  * Cancellation retains normal coroutine semantics.
  */
-internal object DiagnosticFailureBoundary {
+object DiagnosticFailureBoundary {
     suspend fun attempt(recover: suspend () -> Unit): Boolean {
         return try {
             recover()

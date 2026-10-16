@@ -9,7 +9,7 @@ import java.util.Locale
  * No DID here may be queried on a vehicle before independent ECU/SWFL-specific
  * evidence has been reviewed and an explicit immutable allowlist is updated.
  */
-internal object FastDidValidation {
+object FastDidValidation {
     enum class Status {
         NOT_VERIFIED, DOCUMENTED, RAW_CONFIRMED, SEMANTICS_VALIDATED, REJECTED
     }

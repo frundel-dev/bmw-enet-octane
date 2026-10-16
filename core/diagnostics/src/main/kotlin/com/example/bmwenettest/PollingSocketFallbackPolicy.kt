@@ -5,7 +5,7 @@ package com.example.bmwenettest
  * reconnect loop. The outer coroutine calls this only after the previous
  * loop() has unwound its writers, never from a second socket reader.
  */
-internal object PollingSocketFallbackPolicy {
+object PollingSocketFallbackPolicy {
     const val WINDOW_MS=300_000L
     const val MAX_ATTEMPTS=2
     enum class Action { RETRY, FAIL, STOP }

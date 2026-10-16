@@ -6,7 +6,7 @@ import kotlin.math.abs
  * BMW OCTANE 2.0: RAM 0x23 only after manual SWFL match and a stationary
  * cross-check against OBD. No arbitrary addresses or scan, no UDS 0x2C.
  */
-internal class Octane2RamPolicy(private val manuallyConfirmed:Boolean) {
+class Octane2RamPolicy(private val manuallyConfirmed:Boolean) {
     enum class State { LOCKED, NEEDS_PARKED_CHECK, ACTIVE, DISABLED_UNTIL_RESTART }
     var state=if(manuallyConfirmed)State.NEEDS_PARKED_CHECK else State.LOCKED
         private set
@@ -58,7 +58,7 @@ internal class Octane2RamPolicy(private val manuallyConfirmed:Boolean) {
 }
 
 /** Standard OBD, NOT the A2L address or the target fuel quality model. */
-internal object Octane2Lambda {
+object Octane2Lambda {
     data class Sample(val lambda:Double,val auxiliary:Double,val sourcePid:Int)
     // PID 20 is an exact 4-byte bitmask for PIDs 21..40 inclusive.
     fun supported(mask:ByteArray?,pid:Int):Boolean {

@@ -7,7 +7,7 @@ package com.example.bmwenettest
  *
  * No network access, ECU writes, timers or Android APIs.
  */
-internal object PollingExitEvidence {
+object PollingExitEvidence {
     enum class StopOrigin { NONE, USER_STOP, SERVICE_DESTROY }
     enum class EndKind { NORMAL_RETURN, HANDLED_EXCEPTION, CANCELLED, FATAL_ERROR, UNSET }
 

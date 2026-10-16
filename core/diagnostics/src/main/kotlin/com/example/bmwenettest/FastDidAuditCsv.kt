@@ -7,7 +7,7 @@ import java.util.Locale
  * No new ECU requests, no ECU timestamp, no claims about knock physics.
  * Null raw data is rendered EMPTY (never as a numeric zero).
  */
-internal object FastDidAuditCsv {
+object FastDidAuditCsv {
     const val VERSION=1
     const val HEADER="wall_time_ms,trip_id,fuel_session_id,connection_epoch,"+
         "app_version,ecu_profile,swfl_evidence,profile,poll_mode,source,did,"+

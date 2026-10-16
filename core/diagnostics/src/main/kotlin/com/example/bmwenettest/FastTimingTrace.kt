@@ -7,7 +7,7 @@ import java.util.Locale
  * No ECU acquisition timestamp can be inferred from these host boundaries.
  * Existing FAST/fuel computation remains unchanged.
  */
-internal class FastTimingTrace(
+class FastTimingTrace(
     private val onTransactions:(String)->Unit,
     private val onSignals:(String)->Unit,
     private val onCycle:(String)->Unit

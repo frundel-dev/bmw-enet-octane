@@ -9,7 +9,7 @@ import java.util.Locale
  * Observed RAW, a PRG-family width match, and variation across rows do NOT
  * validate signal semantics for a specific SWFL, or prove fuel octane.
  */
-internal object SignalEvidenceGate {
+object SignalEvidenceGate {
     const val CONTEXT_FRESH_MAX_MS=2_000L
     enum class Level {
         NO_RAW, FAMILY_WIDTH_CONFLICT, RAW_OBSERVED_WIDTH_UNKNOWN,

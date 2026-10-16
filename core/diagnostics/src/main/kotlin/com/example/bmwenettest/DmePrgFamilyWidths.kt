@@ -8,7 +8,7 @@ package com.example.bmwenettest
  * Decoding/scaling, manual PRG previews and candidate descriptions live only
  * in the offline JVM test sources (DmePrgEvidenceLab).
  */
-internal object DmePrgFamilyWidths {
+object DmePrgFamilyWidths {
     private val expectedWidths: Map<Int, Int> = mapOf(
         0x554C to 1,
         0x5776 to 1,
