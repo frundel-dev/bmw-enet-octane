@@ -4,7 +4,7 @@ package com.example.bmwenettest
  * Independent side-by-side research data. OBD is the legacy 1.7 reference,
  * RAM is 2.0 experimental. These values are not simultaneous ECU snapshots.
  */
-internal data class Octane2Cycle(
+data class Octane2Cycle(
     val wallTimeMs:Long,val elapsedMs:Long,val tripId:Long,val fuelSession:Int,
     val epoch:Int,val pollMode:String,val obdRpm:Double?,val ramRpm:Double?,
     val effectiveRpm:Double?,val rpmSource:String,val ramState:String,
@@ -18,7 +18,7 @@ internal data class Octane2Cycle(
     val controlState:String?,val steadyIndex:Int,val steadyHoldMs:Long,
     val legacySessionScore:Double?,val legacyConfidence:Int
 )
-internal object Octane2CycleCsv {
+object Octane2CycleCsv {
     const val HEADER="wall_time_ms,elapsed_ms,trip_id,fuel_session,epoch,poll_mode,"+
         "obd_rpm,ram_rpm,effective_rpm,rpm_source,ram_state,"+
         "obd_latency_ms,ram_latency_ms,ram_after_obd_ms,cycle_ms,cycle_gap_ms,"+

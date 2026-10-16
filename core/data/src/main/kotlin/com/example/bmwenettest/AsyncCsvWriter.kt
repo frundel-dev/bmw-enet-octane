@@ -21,7 +21,7 @@ import kotlinx.coroutines.launch
  *
  * The caller MUST call closeAndJoin() in NonCancellable before exiting.
  */
-internal class AsyncCsvWriter(
+class AsyncCsvWriter(
     private val onFailure:(File,Throwable)->Unit,
     capacity:Int=512
 ) {

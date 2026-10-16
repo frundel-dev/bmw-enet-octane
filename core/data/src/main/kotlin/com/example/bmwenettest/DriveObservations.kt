@@ -8,7 +8,7 @@ import java.io.Writer
  * scores. Freshness is per sensor: null means unavailable/unverified.
  * This schema is deliberately independent of the existing measurement CSVs.
  */
-internal data class DriveObservation(
+data class DriveObservation(
     val wallTimeMs:Long,
     val elapsedMs:Long,
     val tripId:Long,
@@ -35,7 +35,7 @@ internal data class DriveObservation(
     val ltftAgeMs:Long?=null
 )
 
-internal object DriveObservationCsv {
+object DriveObservationCsv {
     const val VERSION="1"
     const val HEADER="wall_time_ms,elapsed_ms,trip_id,fuel_session_id,connection_epoch,event,transport,poll_mode,"+
         "rpm,map_kpa_abs,load_pct,speed_kmh,iat_c,coolant_c,stft_pct,ltft_pct,"+
@@ -96,7 +96,7 @@ internal object DriveObservationCsv {
  * reorder samples, and no flush per FAST cycle. A failed write disables only
  * this research journal; the primary logger is never interrupted.
  */
-internal class DriveObservationJournal(private val out:Writer,
+class DriveObservationJournal(private val out:Writer,
                                        private val flushIntervalMs:Long=3000L):Closeable {
     private var lastFlushMs=0L
     var failed:Boolean=false
