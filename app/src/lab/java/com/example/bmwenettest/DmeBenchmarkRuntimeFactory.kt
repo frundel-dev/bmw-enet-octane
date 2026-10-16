@@ -30,9 +30,10 @@ private class LabDmeBenchmarkRuntime(
             "android_elapsed_includes_suspend=true;parking_gear_unverified=true\n"+
             AutomatedDmeBenchmark.HEADER+"\n")
     }
-    private val wireFile=File(directory,stem+"_wire_v1.csv").apply {
-        writeText("# host_read_timestamps_not_ecu_acquisition=true;"+
-            "ack_is_not_data=true\n"+DiagnosticWireTrace.HEADER+"\n")
+    private val wireFile=File(directory,stem+"_wire_v2.csv").apply {
+        writeText("# wire_schema=2;host_read_timestamps_not_ecu_acquisition=true;"+
+            "ack_is_not_data=true;incomplete_transactions_preserved=true\n"+
+            DiagnosticWireTrace.HEADER+"\n")
     }
     private val textFile=File(directory,stem+".txt")
     private val wire=DiagnosticWireTrace()
