@@ -1893,7 +1893,8 @@ class EnetLoggerService : Service() {
                     // Dashboard's heavyweight status stays at every fourth cycle.
                     emitFastTelemetry(octane2Rpm,m,l,steadyTargetTracker.progress(now))
                     if(suite!=null) {
-                        suite.flushWire(appliedSuiteStage,reconnects,highSpeedCycle,System.nanoTime(),csvWriter)
+                        flushBenchmarkWireEvidence(suite,csvWriter,
+                            appliedSuiteStage,reconnects,highSpeedCycle)
                         wireCycleActive=false
                     }
                     val effectiveMode=when {
