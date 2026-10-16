@@ -1900,7 +1900,7 @@ class EnetLoggerService : Service() {
                             }
                         }
                     }
-                    val b95=if(measurementWindow) baseline95(r,m) else null
+                    val b95=if(measurementWindow) LegacyFuelReference.lookup(r,m) else null
                     val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && !fuelQuarantined && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5))) knockMean/b95.v else null
                     if(autoMode && measurementWindow && ratio95!=null) lastQualified=now
                     if(captureActive && measurementWindow && ratio95!=null && (!autoMode || now-lastAutoAcceptedTime>=1200L)) {
@@ -2271,22 +2271,6 @@ class EnetLoggerService : Service() {
     }
     // Octane Engine v0.2: empirical AI-95 baseline from validated v1.7.2 + independent v1.7.3 AI-95 runs.
     // RPM x MAP bins: median knock_mean_vms and number of baseline samples.
-    private data class B95(val v:Double,val n:Int)
-    private fun baseline95(rpm:Double?, map:Double?):B95? {
-        if(rpm==null || map==null) return null
-        val ri=when { rpm<2000->return null; rpm<2500->0; rpm<3000->1; rpm<3500->2; rpm<4000->3; rpm<4500->4; else->5 }
-        val mi=when { map<130->return null; map<160->0; map<180->1; map<200->2; else->3 }
-        val v=arrayOf(
-            arrayOf<B95?>(B95(.073798,12),B95(.070848,1),B95(.069070,2),B95(.071781,2)),
-            arrayOf<B95?>(B95(.074039,19),B95(.071964,10),B95(.074590,5),B95(.081251,9)),
-            arrayOf<B95?>(B95(.076440,10),B95(.082133,4),B95(.082402,6),B95(.093991,7)),
-            arrayOf<B95?>(B95(.079952,8),B95(.086841,3),B95(.097288,2),B95(.097531,10)),
-            arrayOf<B95?>(B95(.085714,9),B95(.095348,3),B95(.104305,2),B95(.114581,9)),
-            arrayOf<B95?>(null,null,null,null)
-        )
-        return v[ri][mi]
-    }
-
     /**
      * One bounded background read on the primary HSFZ socket. Called only
      * from the same polling thread, after a complete FAST cycle. Never
