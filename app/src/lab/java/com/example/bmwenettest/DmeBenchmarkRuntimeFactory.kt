@@ -55,12 +55,17 @@ private class LabDmeBenchmarkRuntime(
         wire.record(DiagnosticWireTrace.Tx(
             tx.wallMs,tx.channel,tx.requestStartNs,tx.sendStartNs,tx.sendEndNs,
             tx.ackVerifiedNs,tx.dataHeaderFirstReadNs,tx.dataCompleteNs,
-            tx.decodeEndNs,tx.valid,tx.error))
+            tx.decodeEndNs,tx.valid,tx.error,
+            tx.requestedIds,tx.requestSid,tx.recvPhase,tx.phaseAtNs,
+            tx.failedAtNs,tx.exceptionClass,tx.exceptionMessage,tx.unfinished))
     }
     override fun discardWire()=wire.discard()
-    override fun flushWire(epoch:Int,cycle:Long,publishNs:Long,writer:AsyncCsvWriter) {
-        wire.flush(stage?.id?:-1,epoch,cycle,publishNs)?.let{
-            writer.offerAudit(wireFile,it) // queue loss is separately exposed
+    override suspend fun flushWire(epoch:Int,cycle:Long,publishNs:Long,writer:AsyncCsvWriter) {
+        wire.flush(stage?.id?:-1,epoch,cycle,publishNs)?.let {
+            // Unlike optional FAST metrics, a failed/incomplete transaction is
+            // safety-critical diagnostic evidence: enqueue with backpressure.
+            if(!writer.append(wireFile,it))
+                emit("HSFZ wire journal write failed: "+wireFile.name,true)
         }
     }
     override suspend fun onCycle(cycle:DmeBenchmarkRuntime.Cycle,
