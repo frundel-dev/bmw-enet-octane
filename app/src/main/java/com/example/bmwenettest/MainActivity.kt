@@ -648,26 +648,13 @@ class MainActivity : Activity() {
         highSpeedCard.addView(action("HIGH-SPEED BENCHMARK CSV"){showHighSpeedBenchmark()})
         addCard(more,highSpeedCard)
 
-        val labCard=card("ЭКСПЕРИМЕНТАЛЬНЫЕ ИНСТРУМЕНТЫ")
-        labCard.addView(smallText(
-            "FAST DID / RAM не активируются без доказанного соответствия SWFL. "+
-            "PRG и RAW доступны для offline-проверки.",12f,tertiary))
-        labCard.addView(action("RAM / SWFL • ПРОФИЛЬ"){showOctane2RamProfile()})
-        labCard.addView(action("КАНДИДАТЫ DID И KNOCK-СЕМАНТИКА"){
-            showFastDidCandidateAudit()
-        })
-        labCard.addView(action("RAW FAST DID • CSV / OFFLINE"){showFastDidAuditCsv()})
-        labCard.addView(action("DME PRG • RAW OFFLINE (БЕЗ ECU)"){showPrgOfflineLab()})
-        addCard(more,labCard)
-
         val toolsCard=card("ЖУРНАЛЫ И ЭКСПОРТ")
-        toolsCard.addView(action("OFFLINE REPLAY"){showObservationReplay()})
         toolsCard.addView(action("ЭКСПОРТ И СРАВНЕНИЕ CSV"){
             showOctane2ComparisonFiles()
         })
-        toolsCard.addView(action("ВСЕ ДОПОЛНИТЕЛЬНЫЕ ИНСТРУМЕНТЫ"){
-            showAdditionalMenu()
-        })
+        toolsCard.addView(action("ЖУРНАЛ ПОДКЛЮЧЕНИЯ"){showConnectionHistory()})
+        toolsCard.addView(action("ИСТОРИЯ ИЗМЕРЕНИЙ"){showMeasurementHistory()})
+        toolsCard.addView(action("ПРОИЗВОДИТЕЛЬНОСТЬ ОПРОСА"){showPollingPerformance()})
         addCard(more,toolsCard)
 
         tabPages=listOf(collect,progress,refuels,more).map { section ->
