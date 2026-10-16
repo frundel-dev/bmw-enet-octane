@@ -146,7 +146,7 @@ class EnetLoggerService : Service() {
     private var highSpeedMetrics:HighSpeedMetrics?=null
     private var passiveRecorder:FastDidPassiveRecorder?=null
     // Only the primary single-owner diagnostic coroutine accesses this.
-    private var fastTimingTrace:FastTimingTrace?=null
+    private var fastTimingTrace:FastTimingPort?=null
     // Benchmark tracing stays on the SAME serialized polling owner; no new socket.
     private var benchmarkRuntime:DmeBenchmarkRuntime?=null
     private var wireCycleActive=false
@@ -888,32 +888,9 @@ class EnetLoggerService : Service() {
         })
         // A new trip ID on each LOGGER start. Not equivalent to a separate day.
         val learningTripId=System.currentTimeMillis()
-        // Research-only best-effort logs; preserve old CSV schemas and
-        // prevent timing telemetry from blocking a single ECU read.
-        val timingFiles=try {
-            val dir=getExternalFilesDir(null)?:filesDir
-            val tx=File(dir,"bmw_fast_tx_timing_v1_${learningTripId}.csv")
-            val signal=File(dir,"bmw_fast_signal_timing_v1_${learningTripId}.csv")
-            val cycle=File(dir,"bmw_fast_cycle_timing_v1_${learningTripId}.csv")
-            val note="# host_monotonic_ns=true;ecu_sample_clock=unknown;"+
-                "same_uds_reply_does_not_prove_simultaneous_acquisition=true;"+
-                "dynamic_limits=research_only\n"
-            tx.writeText(note+FastTimingTrace.TX_HEADER+"\n")
-            signal.writeText(note+FastTimingTrace.SIGNAL_HEADER+"\n")
-            cycle.writeText(note+FastTimingTrace.CYCLE_HEADER+"\n")
-            Triple(tx,signal,cycle)
-        }catch(e:Exception) {
-            connectionEvent("FAST_TIMING_UNAVAILABLE",reconnects,"FILE","AUDIT",
-                null,e.javaClass.simpleName)
-            null
-        }
-        fastTimingTrace=timingFiles?.let { files ->
-            FastTimingTrace(
-                onTransactions={lines->csvWriter.offerAudit(files.first,lines)},
-                onSignals={lines->csvWriter.offerAudit(files.second,lines)},
-                onCycle={line->csvWriter.offerAudit(files.third,line)}
-            )
-        }
+        // LAB owns passive FAST transaction traces. OCTANE links no tracing class.
+        fastTimingTrace=FastTimingPortFactory.create(
+            getExternalFilesDir(null)?:filesDir,learningTripId,csvWriter)
         passiveRecorder=openFastDidAudit(csvWriter,learningTripId,reconnects)
         val highSpeedFile=File(getExternalFilesDir(null)?:filesDir,
             "bmw_highspeed_benchmark_v1_${learningTripId}.csv")
@@ -2401,7 +2378,7 @@ class EnetLoggerService : Service() {
             }catch(_:Exception){}
             try {
                 fastTimingTrace?.transaction(channel,members,
-                    System.currentTimeMillis(),FastTimingTrace.Timing(
+                    System.currentTimeMillis(),FastTimingPort.Timing(
                         requestStartNs=start,sendStartNs=builtAt,
                         sendEndNs=sentAt,firstByteNs=firstAt,
                         responseCompleteNs=if(firstAt!=null)receivedAt else null,
