@@ -238,7 +238,7 @@ internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
         }
         fun compare(a:StageReport?,b:StageReport?,title:String) {
             if(a==null || b==null || a.cycles<10 || b.cycles<10) {
-                append(title).append(": insufficient cycles for comparison\\n")
+                append(title).append(": insufficient cycles for comparison\n")
                 return
             }
             val ratio=if(a.observedHz>0.0)b.observedHz/a.observedHz else null
@@ -248,7 +248,7 @@ internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
                 .append(" • host-skew p95 delta ms=")
                 .append(f(if(a.skewP95!=null && b.skewP95!=null)
                     b.skewP95-a.skewP95 else null))
-                .append("\\n")
+                .append("\n")
         }
         compare(completed.firstOrNull{it.stage.id==1},
             completed.firstOrNull{it.stage.id==2},"B+/CORE versus B+/LEGACY")
