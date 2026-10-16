@@ -960,17 +960,6 @@ class EnetLoggerService : Service() {
                     "Per-cycle journal write/flush failed; primary polling continues")
             }
         }
-        var learningSteadySegment=0
-        var learningAccelSegment=0
-        var learningLastSteadyPhaseMs=0L
-        var learningLastAccelPhaseMs=0L
-        var learningLastSteadyWritten=0L
-        var learningLastAccelWritten=0L
-        var learningLastSteadyCell:BaselineLearning.Cell?=null
-        var learningLastAccelRpm:Double?=null
-        var guidedDatasetId=0L
-        var guidedCoverage=GuidedFuelTest.Coverage()
-
         val foctanCache=arrayOfNulls<Double>(20)
         var slowIat:Double?=null; var slowIgn:Double?=null; var slowCoolant:Double?=null
         var slowThrottle:Double?=null; var slowStft:Double?=null; var slowLtft:Double?=null; var slowLambda:Double?=null
@@ -990,6 +979,9 @@ class EnetLoggerService : Service() {
         var monitorState="WAIT"
         val sampleTimes=java.util.ArrayDeque<Long>(); var validOctaneSamples=0
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        // All evidence comes from completed single-owner DME transactions.
+        val fuelEvidenceRecorder=FuelEvidenceRecorder(
+            prefs,getExternalFilesDir(null)?:filesDir,{message->emit(message)})
         val autoMode=prefs.getString("measurement_mode","AUTO")=="AUTO"
         // v1.7.32 one-time migration: prior B defaults and C/D settings
         // become B+. Explicit later B/A/AUTO choices remain available.
@@ -1747,136 +1739,17 @@ class EnetLoggerService : Service() {
                             }
                         } catch(_:Exception) { }
                     }
-                    // Experimental baseline collection uses the same already-read
-                    // DME FAST/SLOW values. No new ECU transactions, no mutation
-                    // of the frozen Fuel Score calibration, and no RON estimate.
-                    val baselineRecording=prefs.getBoolean(BaselineLearning.PREF_ENABLED,false) &&
-                        prefs.getInt(BaselineLearning.PREF_FUEL_ID,-1)==fuelSessionId
-                    val guidedId=prefs.getLong(GuidedFuelTest.PREF_ID,0L)
-                    val guidedRecording=guidedId>0L &&
-                        prefs.getBoolean(GuidedFuelTest.PREF_ACTIVE,false) &&
-                        prefs.getInt(GuidedFuelTest.PREF_FUEL_SESSION,-1)==fuelSessionId
-                    if(autoMode && (baselineRecording || guidedRecording) &&
-                        !fuelQuarantined &&
-                        warm && trimComparable && speed!=null && speed>=15.0 &&
-                        knockMean!=null && knockMean>0.0 && ignSpread!=null &&
-                        knockStatus!=1 && (superKnock==null || superKnock==0) &&
-                        listOf(kz1,kz2,kz3,kz4,iz1,iz2,iz3,iz4).all{it!=null} &&
-                        r!=null && l!=null && m!=null && i!=null && coolant!=null) {
-                        val phase=when {
-                            steadyAuto -> BaselineLearning.Phase.STEADY
-                            accelerationAuto -> BaselineLearning.Phase.ACCEL
-                            else -> null
-                        }
-                        if(phase!=null) {
-                            val chosenCell=BaselineLearning.cell(phase,r,l,m)
-                            if(chosenCell!=null) {
-                                val interval=if(phase==BaselineLearning.Phase.STEADY)2500L else 1500L
-                                val lastWrite=if(phase==BaselineLearning.Phase.STEADY)
-                                    learningLastSteadyWritten else learningLastAccelWritten
-                                if(phase==BaselineLearning.Phase.STEADY) {
-                                    if(learningLastSteadyPhaseMs==0L ||
-                                        now-learningLastSteadyPhaseMs>6000L ||
-                                        chosenCell!=learningLastSteadyCell) learningSteadySegment++
-                                    learningLastSteadyPhaseMs=now
-                                    learningLastSteadyCell=chosenCell
-                                } else {
-                                    if(learningLastAccelPhaseMs==0L ||
-                                        now-learningLastAccelPhaseMs>2500L ||
-                                        (learningLastAccelRpm!=null && r<learningLastAccelRpm!!-180.0))
-                                        learningAccelSegment++
-                                    learningLastAccelPhaseMs=now
-                                    learningLastAccelRpm=r
-                                }
-                                if(lastWrite==0L || now-lastWrite>=interval) {
-                                    val id=prefs.getLong(BaselineLearning.PREF_DATASET,0L)
-                                    if(baselineRecording && id>0) {
-                                        val entry=BaselineLearning.Sample(
-                                            System.currentTimeMillis(),learningTripId,fuelSessionId,
-                                            phase,if(phase==BaselineLearning.Phase.STEADY)
-                                                learningSteadySegment else learningAccelSegment,
-                                            r,l,m,i,coolant,stft1,ltft1,knockMean,ignSpread)
-                                        try {
-                                            val file=File(getExternalFilesDir(null)?:filesDir,
-                                                BaselineLearning.filename(id))
-                                            if(!file.exists()) {
-                                                val label=prefs.getString(BaselineLearning.PREF_LABEL,
-                                                    "Текущее топливо")?:"Текущее топливо"
-                                                val safe=label.replace(",", ";").replace("\n"," ").take(100)
-                                                file.writeText("# observational_baseline=true;ron_unverified=true;fuel=$safe;fuel_session_id=$fuelSessionId;calibration=${OctaneCalibration.VERSION}\n"+
-                                                    BaselineLearning.HEADER+"\n")
-                                            }
-                                            file.appendText(BaselineLearning.serialize(entry)+"\n")
-                                            if(phase==BaselineLearning.Phase.STEADY)
-                                                learningLastSteadyWritten=now
-                                            else learningLastAccelWritten=now
-                                        } catch(_:Exception) {
-                                            // Storage failure never breaks primary DME sampling.
-                                        }
-                                    }
-                                }
-                                // The user-selected fuel test is separate from
-                                // experimental self-baseline training, and is
-                                // never used as its own external reference.
-                                if(guidedRecording) {
-                                    if(guidedDatasetId!=guidedId) {
-                                        guidedDatasetId=guidedId
-                                        guidedCoverage=GuidedFuelTest.Coverage()
-                                        val old=File(getExternalFilesDir(null)?:filesDir,
-                                            GuidedFuelTest.filename(guidedId))
-                                        if(old.isFile)try {
-                                            old.useLines { lines ->
-                                                lines.forEach { line ->
-                                                    BaselineLearning.parse(line)?.let { entry ->
-                                                        if(entry.fuelSessionId==fuelSessionId)
-                                                            guidedCoverage.accept(entry)
-                                                    }
-                                                }
-                                            }
-                                        } catch(_:Exception) {}
-                                    }
-                                    // Update only once per sample phase cadence.
-                                    val didWrite=if(phase==BaselineLearning.Phase.STEADY)
-                                        learningLastSteadyWritten==now else learningLastAccelWritten==now
-                                    // Baseline may be disabled. If so, lastWritten
-                                    // still needs advancing once an accepted entry
-                                    // was durably saved to the guided CSV.
-                                    val due=lastWrite==0L || now-lastWrite>=interval
-                                    if((didWrite || due) &&
-                                        !guidedCoverage.captureReady()) {
-                                        val entry=BaselineLearning.Sample(
-                                            System.currentTimeMillis(),learningTripId,fuelSessionId,
-                                            phase,if(phase==BaselineLearning.Phase.STEADY)
-                                                learningSteadySegment else learningAccelSegment,
-                                            r,l,m,i,coolant,stft1,ltft1,knockMean,ignSpread)
-                                        try {
-                                            val file=File(getExternalFilesDir(null)?:filesDir,
-                                                GuidedFuelTest.filename(guidedId))
-                                            if(!file.exists()) {
-                                                val grade=prefs.getString(GuidedFuelTest.PREF_GRADE,"Другое")?:"Другое"
-                                                val station=prefs.getString(GuidedFuelTest.PREF_STATION,"")?:""
-                                                val safe=station.replace(",", ";").replace("\n"," ").take(100)
-                                                file.writeText("# fuel_test=true;grade=$grade;station=$safe;"+
-                                                    "fuel_session=$fuelSessionId;self_calibration=false;"+
-                                                    "ron_lab_verified=false;model=${OctaneCalibration.VERSION}\n"+
-                                                    BaselineLearning.HEADER+"\n")
-                                            }
-                                            file.appendText(BaselineLearning.serialize(entry)+"\n")
-                                            guidedCoverage.accept(entry)
-                                            if(phase==BaselineLearning.Phase.STEADY)
-                                                learningLastSteadyWritten=now
-                                            else learningLastAccelWritten=now
-                                            if(guidedCoverage.captureReady()) {
-                                                prefs.edit().putBoolean(GuidedFuelTest.PREF_ACTIVE,false)
-                                                    .putBoolean(GuidedFuelTest.PREF_DONE,true).apply()
-                                                emit("Сбор теста топлива завершён: можно просмотреть предварительный результат. Сравнение не определяет лабораторный RON.")
-                                            }
-                                        } catch(_:Exception) { /* Logger must continue safely. */ }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                                        fuelEvidenceRecorder.record(
+                        now=now,learningTripId=learningTripId,fuelSessionId=fuelSessionId,
+                        autoMode=autoMode,fuelQuarantined=fuelQuarantined,
+                        warm=warm,trimComparable=trimComparable,speed=speed,
+                        knockMean=knockMean,ignSpread=ignSpread,
+                        knockStatus=knockStatus,superKnock=superKnock,
+                        allFastValid=kz1!=null && kz2!=null && kz3!=null && kz4!=null &&
+                            iz1!=null && iz2!=null && iz3!=null && iz4!=null,
+                        r=r,l=l,m=m,i=i,coolant=coolant,stft1=stft1,ltft1=ltft1,
+                        steadyAuto=steadyAuto,accelerationAuto=accelerationAuto
+                    )
                     val b95=if(measurementWindow) LegacyFuelReference.lookup(r,m) else null
                     val ratio95=if(b95!=null && knockMean!=null && b95.v>0.0 && !fuelQuarantined && (!autoMode || ((accelerationAuto || stableAuto) && b95.n>=5))) knockMean/b95.v else null
                     if(autoMode && measurementWindow && ratio95!=null) lastQualified=now
