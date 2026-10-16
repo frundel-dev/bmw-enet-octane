@@ -16,8 +16,19 @@ android {
         applicationId = "com.example.bmwenettest.octane2"
         minSdk = 26
         targetSdk = 35
-        versionCode = 223
+        versionCode = 224
         versionName = "2.0.1-experimental"
+    }
+    flavorDimensions += "edition"
+    productFlavors {
+        create("octane") {
+            dimension = "edition"
+            // Preserve the existing package name and installed user data.
+        }
+        create("lab") {
+            dimension = "edition"
+            applicationIdSuffix = ".lab"
+        }
     }
     testOptions {
         unitTests.isIncludeAndroidResources = false
@@ -29,7 +40,7 @@ dependencies {
     implementation(project(":core:data"))
     implementation(project(":core:diagnostics"))
     implementation(project(":feature:analysis"))
-    implementation(project(":feature:benchmark"))
+    labImplementation(project(":feature:benchmark"))
     testImplementation("junit:junit:4.13.2")
 }
 
