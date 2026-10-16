@@ -46,7 +46,7 @@ internal object SignalEvidenceGate {
             rawValues.add(raw)
             trips.add(c[1])
             fuelSessions.add(c[2])
-            val familyWidth=DmePrgEvidenceLab.spec(did)?.width
+            val familyWidth=DmePrgFamilyWidths.width(did)
             if(familyWidth!=null && raw.length/2!=familyWidth)widthConflicts++
             val age=c[20].toLongOrNull()
             val rpm=c[17].toDoubleOrNull()
@@ -62,7 +62,7 @@ internal object SignalEvidenceGate {
         }
 
         fun finish():DidEvidence {
-            val width=DmePrgEvidenceLab.spec(did)?.width
+            val width=DmePrgFamilyWidths.width(did)
             val level=when {
                 rawRows==0 -> Level.NO_RAW
                 widthConflicts>0 -> Level.FAMILY_WIDTH_CONFLICT

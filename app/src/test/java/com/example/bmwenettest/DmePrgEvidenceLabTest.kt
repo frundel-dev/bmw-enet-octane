@@ -18,6 +18,16 @@ class DmePrgEvidenceLabTest {
         assertNull(DmePrgEvidenceLab.spec(0x4035)?.width)
     }
 
+    @Test fun productionRawEvidenceUsesExactlyTheOfflinePrgFamilyWidths() {
+        for(spec in DmePrgEvidenceLab.specs) {
+            assertEquals("0x%04X family width".format(spec.did),
+                spec.width,DmePrgFamilyWidths.width(spec.did))
+        }
+        assertNull(DmePrgFamilyWidths.width(0x9999))
+        assertNull(DmePrgFamilyWidths.width(0x4035))
+        assertNull(DmePrgFamilyWidths.width(0x407F))
+    }
+
     @Test fun noNewDmeDidCanReachVehicleEvenWithAllUserAcknowledgements() {
         for(spec in DmePrgEvidenceLab.specs) {
             assertFalse(DmePrgEvidenceLab.canIssueNewDidRequest(spec.did,true,true))

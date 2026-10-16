@@ -28,7 +28,6 @@ import java.io.InputStream
 import java.net.*
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.Executors
-import java.security.MessageDigest
 
 class MainActivity : Activity() {
     private lateinit var status: TextView
@@ -66,7 +65,6 @@ class MainActivity : Activity() {
     private lateinit var targetPointsTwo:TextView
     private lateinit var targetProgressOne:ProgressBar
     private lateinit var targetProgressTwo:ProgressBar
-    private lateinit var targetHint:TextView
     private lateinit var livePanelBorder:android.graphics.drawable.GradientDrawable
     private lateinit var liveMapValue:TextView
     private lateinit var liveRpmValue:TextView
@@ -130,6 +128,21 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // One-time, non-destructive retirement: saved CSV, fuel sessions and
+        // baseline dataset metadata remain on disk. Stop only hidden legacy
+        // manual capture and prevent previously selected TEST from staying
+        // active after its UI switch is removed.
+        val retiredPrefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
+        if(!retiredPrefs.getBoolean(DiagnosticMenu.RETIREMENT_MIGRATED_KEY,false)) {
+            val legacy=DiagnosticMenu.retiredDefaults(
+                retiredPrefs.getString(DiagnosticMenu.MODE_KEY,null),
+                retiredPrefs.getBoolean(BaselineLearning.PREF_ENABLED,false))
+            retiredPrefs.edit()
+                .putString(DiagnosticMenu.MODE_KEY,legacy.measurementMode)
+                .putBoolean(BaselineLearning.PREF_ENABLED,legacy.baselineRecording)
+                .putBoolean(DiagnosticMenu.RETIREMENT_MIGRATED_KEY,true)
+                .commit()
+        }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val scale=resources.displayMetrics.density
         fun dp(v:Int)=(scale*v+0.5f).toInt()
@@ -227,18 +240,6 @@ class MainActivity : Activity() {
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         logging=EnetLoggerService.isLoggerActive
         connection=if(logging)Octane2UiState.Connection.CONNECTING else Octane2UiState.Connection.DISCONNECTED
-        val modeButton=Button(this).apply {
-            text="НОВАЯ ЗАПРАВКА"
-            textSize=13f
-            isAllCaps=false
-            minHeight=dp(52)
-            setTextColor(Color.WHITE)
-            backgroundTintList=ColorStateList.valueOf(Color.rgb(41,60,84))
-            setOnClickListener { showFuelTestOverview() }
-        }
-        controls.addView(modeButton,LinearLayout.LayoutParams(0,dp(54),1f).apply {
-            rightMargin=dp(7)
-        })
         val startButton=Button(this).apply {
             text=if(logging)"ОСТАНОВИТЬ" else "НАЧАТЬ СБОР"
             textSize=15f
@@ -296,23 +297,7 @@ class MainActivity : Activity() {
             }
         }
         loggerControl=startButton
-        controls.addView(startButton,LinearLayout.LayoutParams(0,dp(54),1.15f).apply {
-            rightMargin=dp(5)
-        })
-        // Compact overflow replaces the full-width footer button.
-        controls.addView(Button(this).apply {
-            text="⋮"
-            textSize=26f
-            isAllCaps=false
-            contentDescription="Дополнительно"
-            minWidth=0
-            minHeight=dp(52)
-            setPadding(0,0,0,dp(3))
-            setTextColor(Color.WHITE)
-            backgroundTintList=ColorStateList.valueOf(Color.rgb(41,60,84))
-            setOnClickListener { showAdditionalMenu() }
-        },LinearLayout.LayoutParams(dp(47),dp(54)))
-        root.addView(controls)
+        controls.addView(startButton,LinearLayout.LayoutParams(-1,dp(54)))
 
         // Fixed in the visible area: no scrolling or 1.5-second score refresh
         // is needed to follow the next complete RPM/MAP diagnostic sample.
@@ -384,9 +369,6 @@ class MainActivity : Activity() {
             setPadding(0,dp(3),0,0)
         }
         quickPanel.addView(octane2LambdaStatus)
-        root.addView(quickPanel,LinearLayout.LayoutParams(-1,-2).apply {
-            topMargin=dp(6);bottomMargin=dp(3)
-        })
 
         // A compact permanent benchmark replaces the old full-size fuel-test
         // card. A fuel evaluation is available only after tapping "НОВАЯ ЗАПРАВКА".
@@ -426,15 +408,6 @@ class MainActivity : Activity() {
         targetPointsOne=one.first;targetProgressOne=one.second
         val two=targetRow("3000–3499 об/мин")
         targetPointsTwo=two.first;targetProgressTwo=two.second
-        targetHint=TextView(this).apply {
-            text="Запусти обычный LOGGER в AUTO. Тест заправки не требуется."
-            textSize=11f;setTextColor(muted)
-            setPadding(0,dp(7),0,0)
-        }
-        targetPanel.addView(targetHint)
-        root.addView(targetPanel,LinearLayout.LayoutParams(-1,-2).apply {
-            topMargin=dp(5);bottomMargin=dp(4)
-        })
         guidedPanel=LinearLayout(this).apply {
             orientation=LinearLayout.VERTICAL
             setPadding(dp(12),dp(8),dp(12),dp(9))
@@ -480,12 +453,6 @@ class MainActivity : Activity() {
         status=dashboard.connectionView
         // Use the original, live-connected views; only their hierarchy
         // changes. The diagnostic service, receiver and fuel storage remain.
-        root.removeView(controls)
-        // Refuelling is controlled from its own card, technical tools from Settings.
-        controls.removeView(modeButton)
-        if(controls.childCount>1)controls.removeViewAt(controls.childCount-1)
-        root.removeView(quickPanel)
-        root.removeView(targetPanel)
         quickPanel.removeView(octane2LiveStatus)
         quickPanel.removeView(octane2LambdaStatus)
         fun smallText(t:String,size:Float=13f,color:Int=Color.WHITE)=TextView(this).apply {
@@ -555,7 +522,6 @@ class MainActivity : Activity() {
         addCard(collect,quickPanel)
 
         // Keep the next suggested regime inside the existing coverage card.
-        targetHint.visibility=android.view.View.GONE
         homeNextMode=smallText("Ожидаю подходящего режима",13f,Color.WHITE).apply {
             setPadding(0,dp(9),0,0)
             maxLines=3
@@ -648,25 +614,15 @@ class MainActivity : Activity() {
         highSpeedCard.addView(action("HIGH-SPEED BENCHMARK CSV"){showHighSpeedBenchmark()})
         addCard(more,highSpeedCard)
 
-        val labCard=card("ЭКСПЕРИМЕНТАЛЬНЫЕ ИНСТРУМЕНТЫ")
-        labCard.addView(smallText(
-            "FAST DID / RAM не активируются без доказанного соответствия SWFL. "+
-            "PRG и RAW доступны для offline-проверки.",12f,tertiary))
-        labCard.addView(action("RAM / SWFL • ПРОФИЛЬ"){showOctane2RamProfile()})
-        labCard.addView(action("КАНДИДАТЫ DID И KNOCK-СЕМАНТИКА"){
-            showFastDidCandidateAudit()
-        })
-        labCard.addView(action("RAW FAST DID • CSV / OFFLINE"){showFastDidAuditCsv()})
-        labCard.addView(action("DME PRG • RAW OFFLINE (БЕЗ ECU)"){showPrgOfflineLab()})
-        addCard(more,labCard)
-
         val toolsCard=card("ЖУРНАЛЫ И ЭКСПОРТ")
-        toolsCard.addView(action("OFFLINE REPLAY"){showObservationReplay()})
         toolsCard.addView(action("ЭКСПОРТ И СРАВНЕНИЕ CSV"){
             showOctane2ComparisonFiles()
         })
-        toolsCard.addView(action("ВСЕ ДОПОЛНИТЕЛЬНЫЕ ИНСТРУМЕНТЫ"){
+        toolsCard.addView(action("ЖУРНАЛЫ / ИСТОРИЯ DME"){
             showAdditionalMenu()
+        })
+        toolsCard.addView(action("ДЛЯ РАЗРАБОТЧИКА • FAST / RAM"){
+            showResearchToolsMenu()
         })
         addCard(more,toolsCard)
 
@@ -1333,111 +1289,41 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showPrgOfflineLab() {
-        val entries=DmePrgEvidenceLab.specs
-        val names=entries.map { spec ->
-            "0x"+spec.didHex+" • "+spec.label+
-                if(spec.width==null)" • LOCKED" else
-                    " • PRG; SWFL не проверен"
-        }.toTypedArray()
+    /** Day-to-day operational diagnostics. No retired laboratory entry points. */
+    private fun showAdditionalMenu() {
+        val tools=DiagnosticMenu.operations
         AlertDialog.Builder(this)
-            .setTitle("DME8FF_R • PRG Signal Lab (OFFLINE)")
-            .setMessage("22 определения PRG. Только ручная проверка уже сохранённого RAW. " +
-                "Никаких новых DID/UDS запросов и никаких изменений Fuel Score.")
-            .setPositiveButton("Выбрать DID") { _,_ ->
-                AlertDialog.Builder(this)
-                    .setTitle("PRG • выбери сигнал")
-                    .setItems(names) { _,index ->
-                        showPrgOfflineSample(entries[index])
-                    }
-                    .setNegativeButton("Закрыть",null)
-                    .show()
+            .setTitle("Журналы и диагностика")
+            .setItems(tools.map { it.label }.toTypedArray()) { _,index ->
+                when(tools[index]) {
+                    DiagnosticMenu.Tool.MEASUREMENT_HISTORY -> showMeasurementHistory()
+                    DiagnosticMenu.Tool.CONNECTION_EVENTS -> showConnectionHistory()
+                    DiagnosticMenu.Tool.ANDROID_EVENTS -> showConnectionHistory("ANDROID")
+                    DiagnosticMenu.Tool.TCP_RECONNECTS -> showConnectionHistory("TCP")
+                    DiagnosticMenu.Tool.POLLING_PERFORMANCE -> showPollingPerformance()
+                    DiagnosticMenu.Tool.DME_HISTORY_READ -> showDmeHistoryScan()
+                    DiagnosticMenu.Tool.DME_HISTORY_FILES -> showDmeHistoryFiles()
+                    DiagnosticMenu.Tool.DME_MONITOR_LOG -> showDmeMonitorLog()
+                    DiagnosticMenu.Tool.FUEL_HISTORY -> showGuidedFuelHistory()
+                    DiagnosticMenu.Tool.COMPARISON_EXPORT -> showOctane2ComparisonFiles()
+                    else -> Unit
+                }
             }
             .setNegativeButton("Закрыть",null)
             .show()
     }
 
-    private fun showPrgOfflineSample(spec:DmePrgEvidenceLab.Spec) {
-        if(spec.width==null) {
-            AlertDialog.Builder(this)
-                .setTitle("0x"+spec.didHex+" • OFFLINE LOCKED")
-                .setMessage("PRG содержит структурированные результаты, но не доказана " +
-                    "полная форма ответа этого ECU. Простой UDS 22 и авто-декодер " +
-                    "запрещены. Никакого запроса DME не выполняется.")
-                .setPositiveButton("OK",null).show()
-            return
-        }
-        val input=EditText(this).apply {
-            hint="Полный UDS payload без HSFZ: 62 "+spec.didHex.take(2)+
-                " "+spec.didHex.takeLast(2)+" ..."
-            setSingleLine(false)
-            maxLines=4
-            setPadding(24,18,24,18)
-        }
+    /** Research-only access, never part of the normal measurement workflow. */
+    private fun showResearchToolsMenu() {
+        val tools=DiagnosticMenu.research
         AlertDialog.Builder(this)
-            .setTitle("0x"+spec.didHex+" • только OFFLINE")
-            .setMessage(spec.label+"\nФормат PRG: "+spec.width+
-                " байт; SWFL НЕ подтверждён. Вставь сохранённый UDS payload " +
-                "с SID 0x62 или NRC 0x7F 0x22.")
-            .setView(input)
-            .setPositiveButton("Проверить offline") { _,_ ->
-                val result=DmePrgEvidenceLab.interpretHex(
-                    spec.did,input.text?.toString().orEmpty())
-                val text="Статус: "+result.status.name+"\n"+
-                    "RAW: "+result.rawHex.ifEmpty { "нет достоверного RAW" }+"\n"+
-                    (result.value?.let { "Предварительное значение: "+it+"\n" } ?: "")+
-                    "\n"+result.detail+"\n\n"+
-                    "Не считается измерением с автомобиля без доказанного источника."
-                AlertDialog.Builder(this)
-                    .setTitle("PRG RAW • 0x"+spec.didHex)
-                    .setMessage(text)
-                    .setPositiveButton("Закрыть",null)
-                    .show()
-            }
-            .setNegativeButton("Отмена",null)
-            .show()
-    }
-
-    private fun showAdditionalMenu() {
-        val items=arrayOf("Импорт BMW DME .PRG", "История замеров", "Журнал VXSCAN + Android",
-            "События сети Android", "Только TCP-реконнекты",
-            "Резервный режим DME (B+ / B / A)", "Производительность опроса",
-            "Считать историю и адаптации DME (LOGGER STOP)",
-            "Сохранённые снимки истории DME", "Фоновый DME Monitor • журнал",
-            "Обучение эталона • RPM × нагрузка", "Режим замеров AUTO / TEST",
-            "История тестов топлива", "Offline replay • наблюдения",
-            "BMW OCTANE 2.0 • RAM/SWFL", "BMW OCTANE 2.0 • экспорт сравнения")
-        AlertDialog.Builder(this)
-            .setTitle("Дополнительно")
-            .setItems(items) { _,which ->
-                when(which) {
-                    0 -> {
-                        val i=Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                            addCategory(Intent.CATEGORY_OPENABLE)
-                            type="application/octet-stream"
-                        }
-                        startActivityForResult(i,901)
-                    }
-                    1 -> showMeasurementHistory()
-                    2 -> showConnectionHistory()
-                    3 -> showConnectionHistory("ANDROID")
-                    4 -> showConnectionHistory("TCP")
-                    5 -> showPollingModeDialog()
-                    6 -> showPollingPerformance()
-                    7 -> showDmeHistoryScan()
-                    8 -> showDmeHistoryFiles()
-                    9 -> showDmeMonitorLog()
-                    10 -> showBaselineLearning()
-                    11 -> {
-                        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
-                        val next=if(prefs.getString("measurement_mode","AUTO")=="AUTO")"TEST" else "AUTO"
-                        prefs.edit().putString("measurement_mode",next).apply()
-                        Toast.makeText(this,"Режим: $next. Вступит в силу после перезапуска LOGGER.",Toast.LENGTH_LONG).show()
-                    }
-                    12 -> showGuidedFuelHistory()
-                    13 -> showObservationReplay()
-                    14 -> showOctane2RamProfile()
-                    15 -> showOctane2ComparisonFiles()
+            .setTitle("Исследование DME • ECU/SWFL требуется проверка")
+            .setItems(tools.map { it.label }.toTypedArray()) { _,index ->
+                when(tools[index]) {
+                    DiagnosticMenu.Tool.FAST_DID_CANDIDATES -> showFastDidCandidateAudit()
+                    DiagnosticMenu.Tool.FAST_RAW_EVIDENCE -> showFastDidAuditCsv()
+                    DiagnosticMenu.Tool.RAM_SWFL -> showOctane2RamProfile()
+                    else -> Unit
                 }
             }
             .setNegativeButton("Закрыть",null)
@@ -1532,54 +1418,6 @@ class MainActivity : Activity() {
                         }
                     }.show()
             }.setNegativeButton("Отмена",null).show()
-    }
-
-    private fun showObservationReplay() {
-        if(logging || EnetLoggerService.isLoggerActive) {
-            AlertDialog.Builder(this).setTitle("Offline replay")
-                .setMessage("Останови LOGGER, чтобы журнал был полностью сохранён.")
-                .setPositiveButton("OK",null).show()
-            return
-        }
-        val dir=getExternalFilesDir(null)?:filesDir
-        val files=dir.listFiles()?.filter { it.isFile &&
-            it.name.startsWith("bmw_observations_v1_") && it.name.endsWith(".csv") }
-            ?.sortedByDescending { it.lastModified() } ?: emptyList()
-        if(files.isEmpty()) {
-            AlertDialog.Builder(this).setTitle("Offline replay")
-                .setMessage("Журналов наблюдений пока нет. Запусти LOGGER, затем останови его.")
-                .setPositiveButton("OK",null).show()
-            return
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Выбери журнал наблюдений")
-            .setItems(files.take(30).map { it.name }.toTypedArray()) { _,index ->
-                val file=files[index]
-                executor.execute {
-                    val outcome=try {
-                        file.useLines { lines ->
-                            Pair(DriveObservationReplay.run(lines),null as String?)
-                        }
-                    } catch(e:Exception) {
-                        Pair(null,"Ошибка чтения: ${e.javaClass.simpleName}: ${e.message}")
-                    }
-                    main.post {
-                        if(isFinishing || isDestroyed)return@post
-                        val summary=outcome.first
-                        val message=if(summary==null) outcome.second ?: "Невозможно прочитать файл"
-                        else "FAST циклов: ${summary.samples} • строк с ошибками: ${summary.malformed}\n"+
-                            "STEADY: ${summary.steady} • ACCEL: ${summary.accel}\n"+
-                            "TRANSIENT: ${summary.transient} • недостаточно данных: ${summary.insufficient}\n"+
-                            "Целевые STEADY 2500–2999: ${summary.steadyTargetA}\n"+
-                            "Целевые STEADY 3000–3499: ${summary.steadyTargetB}\n"+
-                            "Реконнекты: ${summary.reconnects} • сессий топлива: ${summary.sessions}\n"+
-                            "Запусков LOGGER: ${summary.loggerStarts}\n\n"+
-                            "Экспериментальная классификация; эти циклы НЕ являются независимыми измерениями, подтверждённым покрытием или оценкой RON."
-                        AlertDialog.Builder(this).setTitle("Offline replay • ${file.name}")
-                            .setMessage(message).setPositiveButton("Закрыть",null).show()
-                    }
-                }
-            }.setNegativeButton("Закрыть",null).show()
     }
 
     private fun showDmeHistoryScan() {
@@ -1766,7 +1604,6 @@ class MainActivity : Activity() {
         targetPointsTwo.text=textFor(b)
         targetProgressOne.progress=a[4].coerceIn(0,100)
         targetProgressTwo.progress=b[4].coerceIn(0,100)
-        targetHint.text=hint?:"Ожидаю устойчивые RPM и MAP"
         firstTarget=Octane2UiState.target(a)
         secondTarget=Octane2UiState.target(b)
         renderHomeState()
@@ -2303,235 +2140,6 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showBaselineLearning() {
-        val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
-        fun dp(v:Int)=(resources.displayMetrics.density*v+0.5f).toInt()
-        fun title(s:String,size:Float=15f)=TextView(this).apply {
-            text=s; textSize=size; setTextColor(Color.WHITE)
-            setPadding(0,dp(6),0,dp(6))
-        }
-        val content=LinearLayout(this).apply {
-            orientation=LinearLayout.VERTICAL
-            setPadding(dp(12),dp(8),dp(12),dp(10))
-        }
-        val scroll=ScrollView(this).apply { addView(content) }
-        val actions=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
-        val newButton=Button(this).apply { text="Новый набор";isAllCaps=false;textSize=12f }
-        val toggleButton=Button(this).apply { text="Пауза";isAllCaps=false;textSize=12f }
-        val refreshButton=Button(this).apply { text="Обновить";isAllCaps=false;textSize=12f }
-        actions.addView(newButton,LinearLayout.LayoutParams(0,dp(52),1.25f))
-        actions.addView(toggleButton,LinearLayout.LayoutParams(0,dp(52),1f))
-        actions.addView(refreshButton,LinearLayout.LayoutParams(0,dp(52),1f))
-        val root=LinearLayout(this).apply {
-            orientation=LinearLayout.VERTICAL
-            addView(actions)
-            addView(scroll,LinearLayout.LayoutParams(-1,
-                (resources.displayMetrics.heightPixels-dp(220)).coerceIn(dp(260),dp(530))))
-        }
-        val dialog=AlertDialog.Builder(this).setTitle("Обучение эталона • v1.7.32")
-            .setView(root).setPositiveButton("Закрыть",null).create()
-
-        fun grid(phase:BaselineLearning.Phase,stats:BaselineLearning.Coverage) {
-            val rpm=if(phase==BaselineLearning.Phase.STEADY)
-                BaselineLearning.steadyRpm else BaselineLearning.accelRpm
-            val loads=if(phase==BaselineLearning.Phase.STEADY)
-                BaselineLearning.steadyLoad else BaselineLearning.accelLoad
-            content.addView(title(if(phase==BaselineLearning.Phase.STEADY)
-                "STEADY · ровный режим" else "ACCEL · допустимые разгоны",17f))
-            val heading=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
-            heading.addView(TextView(this).apply {
-                text="RPM / LOAD";textSize=10f;setTextColor(Color.LTGRAY)
-                gravity=android.view.Gravity.CENTER
-            },LinearLayout.LayoutParams(dp(82),dp(29)))
-            for(j in 0 until loads.size-1) {
-                heading.addView(TextView(this).apply {
-                    text="${loads[j]}–${loads[j+1]-1}%"
-                    textSize=11f;setTextColor(Color.LTGRAY)
-                    gravity=android.view.Gravity.CENTER
-                },LinearLayout.LayoutParams(0,dp(29),1f))
-            }
-            content.addView(heading)
-            for(i in 0 until rpm.size-1) {
-                val row=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
-                row.addView(TextView(this).apply {
-                    text="${rpm[i]}–${rpm[i+1]-1}"
-                    textSize=10f;setTextColor(Color.WHITE)
-                    gravity=android.view.Gravity.CENTER
-                },LinearLayout.LayoutParams(dp(82),dp(49)))
-                for(j in 0 until loads.size-1) {
-                    val cell=BaselineLearning.Cell(phase,i,j)
-                    val stat=stats.stats(cell)
-                    val color=when {
-                        stat.readyForReview -> Color.rgb(28,112,99)
-                        stat.count>=12 -> Color.rgb(49,101,154)
-                        stat.count>0 -> Color.rgb(121,87,50)
-                        else -> Color.rgb(36,48,63)
-                    }
-                    val bg=android.graphics.drawable.GradientDrawable().apply {
-                        setColor(color);cornerRadius=dp(6).toFloat()
-                    }
-                    val tile=TextView(this).apply {
-                        text=if(stat.readyForReview)"✓ ${stat.count}"
-                            else if(stat.count>0)"${stat.count}\n${stat.progress}%"
-                            else "—"
-                        textSize=12f;setTextColor(Color.WHITE)
-                        gravity=android.view.Gravity.CENTER
-                        background=bg
-                        setOnClickListener {
-                            AlertDialog.Builder(this@MainActivity)
-                                .setTitle(BaselineLearning.label(cell))
-                                .setMessage("Записей: ${stat.count}\nУчастков: ${stat.segments}\n"+
-                                    "Запусков LOGGER: ${stat.trips}\n"+
-                                    "Диапазонов IAT (6 °C): ${stat.iatBuckets}\n"+
-                                    "Первичный объём: ${stat.progress}%\n"+
-                                    "Предварительная медиана: "+
-                                    (stat.provisionalMedianVms?.let{
-                                        String.format(java.util.Locale.US,"%.6f V·ms",it)
-                                    }?:"недостаточно независимых запусков")+"\n"+
-                                    "Разброс между запусками (MAD): "+
-                                    (stat.betweenTripMadPct?.let{
-                                        String.format(java.util.Locale.US,"%.1f%%",it)
-                                    }?:"—")+"\n\n"+
-                                    "24 точки, 4 участка, 2 запуска — лишь допуск к "+
-                                    "независимой проверке, не подтверждение RON.")
-                                .setPositiveButton("OK",null).show()
-                        }
-                    }
-                    row.addView(tile,LinearLayout.LayoutParams(0,dp(44),1f).apply {
-                        setMargins(dp(2),dp(2),dp(2),dp(2))
-                    })
-                }
-                content.addView(row)
-            }
-            content.addView(title("Ячеек с объёмом для проверки: ${stats.reviewed(phase)} / ${stats.cells(phase).size}",12f))
-            val advice=stats.advice(phase,liveLearningRpm,liveLearningLoad)
-            content.addView(title("→ "+advice.text,12.5f))
-        }
-
-        fun refresh() {
-            val id=prefs.getLong(BaselineLearning.PREF_DATASET,0L)
-            val enabled=prefs.getBoolean(BaselineLearning.PREF_ENABLED,false)
-            val label=prefs.getString(BaselineLearning.PREF_LABEL,"Текущее топливо")?:"Текущее топливо"
-            val fuel=prefs.getInt(BaselineLearning.PREF_FUEL_ID,-1)
-            val carFuel=prefs.getInt("fuel_session_id",1)
-            toggleButton.text=if(enabled)"Пауза" else "Продолжить"
-            executor.execute {
-                val coverage=BaselineLearning.Coverage()
-                if(id>0) try {
-                    val file=File(getExternalFilesDir(null)?:filesDir,BaselineLearning.filename(id))
-                    if(file.isFile)file.useLines { lines ->
-                        lines.forEach { line ->
-                            BaselineLearning.parse(line)?.let { sample ->
-                                if(sample.fuelSessionId==fuel)coverage.accept(sample)
-                            }
-                        }
-                    }
-                }catch(_:Exception) { /* Show available counts on read failure. */ }
-                runOnUiThread {
-                    if(isFinishing || isDestroyed || !dialog.isShowing ||
-                        prefs.getLong(BaselineLearning.PREF_DATASET,0L)!=id)return@runOnUiThread
-                    content.removeAllViews()
-                    content.addView(title("Набор: "+if(id==0L)"не создан" else label,16f))
-                    content.addView(title(
-                        "Топливо: НЕ подтверждено как эталонное • MG Flasher ST1\n"+
-                        "Запись: "+when {
-                            id==0L -> "сначала создай набор"
-                            fuel!=carFuel -> "ПРИОСТАНОВЛЕНО: изменилась топливная сессия"
-                            enabled -> "ВКЛЮЧЕНА"
-                            else -> "ПАУЗА"
-                        }+" • точек ${coverage.accepted}",12f))
-                    if(prefs.getString("measurement_mode","AUTO")!="AUTO") {
-                        content.addView(title(
-                            "Для записи перейди в режим замеров AUTO и перезапусти LOGGER.",12f))
-                    }
-                    if(prefs.getFloat("mixing_remaining_km",0f)>0f) {
-                        content.addView(title("Топливо смешивается: до завершения MIXING новые точки не принимаются.",12f))
-                    }
-                    content.addView(title(
-                        "Сначала заполняем повторяемые ячейки. Цвет: серый — нет данных; "+
-                        "янтарный — мало; синий — идёт набор; зелёный — можно проверять.",12f))
-                    grid(BaselineLearning.Phase.STEADY,coverage)
-                    grid(BaselineLearning.Phase.ACCEL,coverage)
-                    content.addView(Button(this).apply {
-                        text="Экспортировать черновую модель (CSV)"
-                        isAllCaps=false
-                        isEnabled=coverage.reviewed(BaselineLearning.Phase.STEADY)+
-                            coverage.reviewed(BaselineLearning.Phase.ACCEL)>0
-                        setOnClickListener {
-                            val candidate=coverage.exportCandidate()
-                            executor.execute {
-                                val out=File(getExternalFilesDir(null)?:filesDir,
-                                    "bmw_baseline_candidate_v1730_${id}.csv")
-                                val ok=try { out.writeText(candidate);true }catch(_:Exception){false}
-                                runOnUiThread {
-                                    if(!isFinishing && !isDestroyed)
-                                        Toast.makeText(this@MainActivity,if(ok)
-                                            "Черновая модель сохранена: ${out.name}"
-                                            else "Не удалось сохранить CSV",
-                                            Toast.LENGTH_LONG).show()
-                                }
-                            }
-                        }
-                    })
-                    content.addView(title(
-                        "Это предварительная база реакции двигателя на текущую смесь, "+
-                        "а не калибровка октанового числа. Смена топлива требует нового набора. "+
-                        "Fuel Score 0.9 не меняется. Подсказки применяй только при безопасных и разрешённых условиях движения.",12f))
-                }
-            }
-        }
-
-        newButton.setOnClickListener {
-            if(EnetLoggerService.isLoggerActive) {
-                Toast.makeText(this,"Останови LOGGER перед созданием нового набора",Toast.LENGTH_LONG).show()
-            } else {
-                val label=EditText(this).apply {
-                    setSingleLine(true)
-                    setText("MG Flasher ST1 • текущее топливо (RON не проверен)")
-                    setSelection(text.length)
-                }
-                AlertDialog.Builder(this)
-                    .setTitle("Новая серия обучения")
-                    .setMessage("Старые CSV сохраняются. Новая серия не меняет Fuel Score. "+
-                        "Подтверди топливо/прошивку и выполняй измерения в AUTO.")
-                    .setView(label)
-                    .setNegativeButton("Отмена",null)
-                    .setPositiveButton("Создать") { _,_ ->
-                        val name=label.text.toString().trim().ifBlank{"Текущее топливо (RON не проверен)"}
-                        prefs.edit()
-                            .putLong(BaselineLearning.PREF_DATASET,System.currentTimeMillis())
-                            .putInt(BaselineLearning.PREF_FUEL_ID,prefs.getInt("fuel_session_id",1))
-                            .putString(BaselineLearning.PREF_LABEL,name.take(100))
-                            .putBoolean(BaselineLearning.PREF_ENABLED,true).apply()
-                        refresh()
-                    }.show()
-            }
-        }
-        toggleButton.setOnClickListener {
-            val id=prefs.getLong(BaselineLearning.PREF_DATASET,0L)
-            if(id==0L)newButton.performClick()
-            else if(prefs.getInt(BaselineLearning.PREF_FUEL_ID,-1)!=prefs.getInt("fuel_session_id",1)) {
-                Toast.makeText(this,"Топливная сессия изменилась: создай отдельный набор при остановленном LOGGER",Toast.LENGTH_LONG).show()
-            } else {
-                prefs.edit().putBoolean(BaselineLearning.PREF_ENABLED,
-                    !prefs.getBoolean(BaselineLearning.PREF_ENABLED,false)).apply()
-                refresh()
-            }
-        }
-        refreshButton.setOnClickListener { refresh() }
-        dialog.show()
-        val periodic=object:Runnable {
-            override fun run() {
-                if(!dialog.isShowing)return
-                refresh()
-                main.postDelayed(this,4500L)
-            }
-        }
-        dialog.setOnDismissListener { main.removeCallbacks(periodic) }
-        refresh()
-        main.postDelayed(periodic,4500L)
-    }
-
     private fun showPollingModeDialog() {
         val prefs=getSharedPreferences("bmw_native",MODE_PRIVATE)
         val migrated=prefs.getBoolean(PollModePolicy.MIGRATED_KEY,false)
@@ -2869,93 +2477,28 @@ class MainActivity : Activity() {
     }
 
 
+    // Existing SAF export callback stays intact. PRG import lab (request 901)
+    // was a one-off research tool; old imported metadata/files are untouched.
     override fun onActivityResult(requestCode:Int, resultCode:Int, data:Intent?) {
         super.onActivityResult(requestCode,resultCode,data)
-        if(requestCode==902) {
-            val source=pendingOctane2Export
-            pendingOctane2Export=null
-            val dest=data?.data
-            if(resultCode==RESULT_OK && source!=null && dest!=null &&
-                source.isFile) {
-                executor.execute {
-                    val result=try {
-                        contentResolver.openOutputStream(dest)?.use{out ->
-                            source.inputStream().use{input->input.copyTo(out)}
-                        } ?: throw IllegalStateException("Export stream unavailable")
-                        "CSV экспортирован: ${source.name}"
-                    }catch(e:Exception){"Ошибка экспорта: ${e.message}"}
-                    runOnUiThread {
-                        if(!isFinishing && !isDestroyed)
-                            Toast.makeText(this,result,Toast.LENGTH_LONG).show()
-                    }
+        if(requestCode!=902)return
+        val source=pendingOctane2Export
+        pendingOctane2Export=null
+        val dest=data?.data
+        if(resultCode==RESULT_OK && source!=null && dest!=null && source.isFile) {
+            executor.execute {
+                val result=try {
+                    contentResolver.openOutputStream(dest)?.use{out ->
+                        source.inputStream().use{input->input.copyTo(out)}
+                    } ?: throw IllegalStateException("Export stream unavailable")
+                    "CSV экспортирован: ${source.name}"
+                }catch(e:Exception){"Ошибка экспорта: ${e.message}"}
+                runOnUiThread {
+                    if(!isFinishing && !isDestroyed)
+                        Toast.makeText(this,result,Toast.LENGTH_LONG).show()
                 }
             }
-            return
         }
-        if(requestCode!=901 || resultCode!=RESULT_OK) return
-        val uri=data?.data ?: return
-        try {
-            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        } catch(_:Exception) {}
-        try {
-            val name=queryName(uri) ?: "dme.prg"
-            if(!name.lowercase().endsWith(".prg")) throw IllegalArgumentException("Select a BMW .PRG file")
-            val dst=File(filesDir,"ecu").apply{mkdirs()}.resolve(name)
-            contentResolver.openInputStream(uri)!!.use { input -> dst.outputStream().use { input.copyTo(it) } }
-            if(dst.length()<1024) { dst.delete(); throw IllegalArgumentException("PRG file is too small") }
-            val lower=name.lowercase()
-            val profile=when {
-                lower=="dme8ff_r.prg" -> "DME8FF_R"
-                lower=="dme_bx8.prg" -> "DME_BX8"
-                else -> "UNVERIFIED"
-            }
-            val sha=sha256(dst)
-            val expectedSize=when(profile) {
-                "DME8FF_R" -> 7458486L
-                "DME_BX8" -> 4254857L
-                else -> -1L
-            }
-            val freshMatch=expectedSize==dst.length()
-            getSharedPreferences("bmw_native",MODE_PRIVATE).edit()
-                .putString("prg_path",dst.absolutePath).putString("prg_name",name)
-                .putString("prg_profile",profile).putString("prg_sha256",sha)
-                .putBoolean("fresh_ecu_match",freshMatch).apply()
-            status.text="""BMW DME PRG imported ✓
-File: $name
-Profile: $profile
-Size: ${dst.length()} bytes
-Fresh ECU.zip size match: ${if(freshMatch)"YES ✓" else "NO / unknown"}
-SHA-256: $sha
-
-v1.1 priority:
-1. DME8FF_R — preferred G20/B48 profile
-2. DME_BX8 — fallback/comparison profile
-
-Native target set:
-• STATUS_SUPERKLOPFER / STAT_STATUS_KLOPFEN
-• STAT_KLOPFWERT_ZYL1…4_SPANNUNG_WERT
-• STAT_ZUENDWINKEL_ZYL1…4_WERT
-• STAT_INFOFOCTAN_*
-
-PRG is stored privately. READ-ONLY.
-Unknown DIDs are never probed."""
-        } catch(e:Exception) { status.text="PRG IMPORT ERROR: ${e.message}" }
-    }
-
-    private fun sha256(file:File):String {
-        val md=MessageDigest.getInstance("SHA-256")
-        file.inputStream().use { input ->
-            val b=ByteArray(65536)
-            while(true) { val n=input.read(b); if(n<=0) break; md.update(b,0,n) }
-        }
-        return md.digest().joinToString("") { "%02x".format(it) }
-    }
-
-    private fun queryName(uri:android.net.Uri):String? {
-        contentResolver.query(uri,arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),null,null,null)?.use { c ->
-            if(c.moveToFirst()) return c.getString(0)
-        }
-        return null
     }
 
     private data class LiveSample(
