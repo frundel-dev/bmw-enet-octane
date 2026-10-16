@@ -35,7 +35,7 @@ internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
             String.format(Locale.US,"%.3f",it)
         }?:""
     }
-    enum class State { WAITING, RUNNING, COMPLETED, ABORTED }
+    enum class State { WAITING, PENDING_STAGE, RUNNING, COMPLETED, ABORTED }
     data class Cycle(
         val nowMs:Long,val wallMs:Long,
         val speedKmh:Double?,val speedAgeMs:Long?,
@@ -81,6 +81,7 @@ internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
         val stage=current
         val prefix=when(state) {
             State.WAITING -> "Проверка стоянки и прогрева"
+            State.PENDING_STAGE -> "Переключение • этап ${stage?.id}/6"
             State.RUNNING -> "Этап ${stage?.id}/6 • ${stage?.label}"
             State.COMPLETED -> "Завершено • 6/6"
             State.ABORTED -> "Остановлено • ${failure?:"ошибка"}"
@@ -126,8 +127,8 @@ internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
             return abort(x.nowMs,"vehicle speed above zero; stationary test cancelled")
         if(x.coolantC!=null && x.coolantC>115.0)
             return abort(x.nowMs,"coolant temperature too high")
-        if(state==State.WAITING) {
-            if(x.nowMs-startedAtMs>MAX_WAIT_FOR_PARKED_MS)
+        if(state==State.WAITING || state==State.PENDING_STAGE) {
+            if(state==State.WAITING && x.nowMs-startedAtMs>MAX_WAIT_FOR_PARKED_MS)
                 return abort(x.nowMs,"no fresh stationary/warm DME evidence within 90 seconds")
             if(!parked(x))return null
             if(x.actualMode!=current!!.pollMode ||
@@ -174,8 +175,8 @@ internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
                     if(summary.backgroundCycles>0)"observed" else "NOT observed",true)
             }
             // All mode changes are applied by the owner before the NEXT cycle.
-            state=State.RUNNING
-            stageStartMs=x.nowMs
+            state=State.PENDING_STAGE
+            stageStartMs=0L
             acc=Acc()
             return Event("STAGE_END","finished ${s.id}; next ${current!!.label}")
         }
@@ -185,8 +186,8 @@ internal class AutomatedDmeBenchmark(private val startedAtMs:Long) {
         val r=completed.lastOrNull()
         val s=if(event=="START" || event=="WAIT" || event=="PROGRESS")
             current else r?.stage ?: current
-        val elapsed=if(state==State.RUNNING)nowMs-stageStartMs else
-            r?.let{it.finishedMs-it.startedMs}?:0L
+        val elapsed=if(event=="PROGRESS" && state==State.RUNNING)
+            nowMs-stageStartMs else r?.let{it.finishedMs-it.startedMs}?:0L
         val base=listOf(event,wallMs,s?.id?:"",csvText(s?.label?:""),
             s?.pollMode?:"",s?.profile?.name?:"",s?.durationMs?:"",elapsed)
         val metrics=if(event=="PROGRESS") {
