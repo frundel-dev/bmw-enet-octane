@@ -61,8 +61,9 @@ private class LabDmeBenchmarkRuntime(
             tx.failedAtNs,tx.exceptionClass,tx.exceptionMessage,tx.unfinished))
     }
     override fun discardWire()=wire.discard()
-    override suspend fun flushWire(epoch:Int,cycle:Long,publishNs:Long,writer:AsyncCsvWriter) {
-        wire.flush(stage?.id?:-1,epoch,cycle,publishNs)?.let {
+    override suspend fun flushWire(stageId:Int,epoch:Int,cycle:Long,publishNs:Long,
+                                   writer:AsyncCsvWriter) {
+        wire.flush(stageId,epoch,cycle,publishNs)?.let {
             // Unlike optional FAST metrics, a failed/incomplete transaction is
             // safety-critical diagnostic evidence: enqueue with backpressure.
             if(!writer.append(wireFile,it))
