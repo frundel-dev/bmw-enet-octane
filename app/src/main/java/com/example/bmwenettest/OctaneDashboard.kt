@@ -54,6 +54,11 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
     private lateinit var dmeProbeStatus:TextView
     private lateinit var pollingStatus:TextView
     val connectionView:TextView
+    /** The original six engine tiles have one owner and one parent: the Сбор tab. */
+    val engineReadingsView:LinearLayout
+    private var coolantReceivedAtMs=0L
+    private var oilReceivedAtMs=0L
+    private var iatReceivedAtMs=0L
 
     private fun dp(value:Int)=(value*resources.displayMetrics.density+0.5f).toInt()
 
@@ -73,7 +78,7 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
             setStroke(dp(1),stroke)
         }
 
-    private fun card(title:String):LinearLayout {
+    private fun card(title:String,attach:Boolean=true):LinearLayout {
         val box=LinearLayout(context).apply {
             orientation=VERTICAL
             background=round(panel)
@@ -83,7 +88,7 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
             box.addView(text(title,12f,muted,true))
             box.addView(View(context),LayoutParams(1,dp(10)))
         }
-        addView(box,LayoutParams(LayoutParams.MATCH_PARENT,LayoutParams.WRAP_CONTENT).apply {
+        if(attach) addView(box,LayoutParams(LayoutParams.MATCH_PARENT,LayoutParams.WRAP_CONTENT).apply {
             bottomMargin=dp(10)
         })
         return box
@@ -152,7 +157,9 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         }
         hero.addView(fuel)
 
-        val driving=card("ПОКАЗАНИЯ ДВИГАТЕЛЯ")
+        // Rendered once, on the collection screen, not duplicated in Diagnostics.
+        val driving=card("ПОКАЗАНИЯ ДВИГАТЕЛЯ",attach=false)
+        engineReadingsView=driving
         // Three equal-width columns line up with the three temperature
         // tiles beneath them, without wasting space on vehicle speed.
         val readings=row()
@@ -169,6 +176,9 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         addTile(temp,"МАСЛО") { oil=it }
         addTile(temp,"ВПУСК") { iat=it }
         driving.addView(temp)
+        driving.addView(text("FAST: обороты / нагрузка / MAP  •  SLOW: температуры\n— = нет свежих показаний",10f,muted).apply {
+            setPadding(0,dp(10),0,0)
+        })
 
         val measurement=card("РЕЖИМЫ ИЗМЕРЕНИЙ")
         phaseLabel=text("AUTO • ожидание подходящего участка",12f,blue)
@@ -260,6 +270,34 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         load.text=if(l.isFinite()) format(l)+"%" else "—"
     }
 
+    /** Clear stale slow readings independently of the FAST signal stream. */
+    fun expireEngineTemperatures(nowMs:Long, dmeFresh:Boolean) {
+        if(!dmeFresh || !EngineReadingsFreshness.isFresh(coolantReceivedAtMs,nowMs,
+                EngineReadingsFreshness.TEMPERATURE_MAX_AGE_MS)) coolant.text="—"
+        if(!dmeFresh || !EngineReadingsFreshness.isFresh(oilReceivedAtMs,nowMs,
+                EngineReadingsFreshness.TEMPERATURE_MAX_AGE_MS)) oil.text="—"
+        if(!dmeFresh || !EngineReadingsFreshness.isFresh(iatReceivedAtMs,nowMs,
+                EngineReadingsFreshness.TEMPERATURE_MAX_AGE_MS)) iat.text="—"
+        if(!dmeFresh) {
+            coolantReceivedAtMs=0L;oilReceivedAtMs=0L;iatReceivedAtMs=0L
+        }
+    }
+
+    fun clearEngineReadings() {
+        updateFastReadings(null,null,null)
+        coolant.text="—";oil.text="—";iat.text="—"
+        coolantReceivedAtMs=0L;oilReceivedAtMs=0L;iatReceivedAtMs=0L
+    }
+
+    private fun renderTemperature(intent:Intent,key:String,view:TextView,nowMs:Long,
+                                  markFresh:(Long)->Unit) {
+        if(!intent.hasExtra(key))return // Unsupported/absent data is not zero.
+        val value=intent.getDoubleExtra(key,Double.NaN)
+        val valid=value.isFinite()
+        view.text=if(valid)format(value)+"°C" else "—"
+        markFresh(if(valid)nowMs else 0L)
+    }
+
     fun render(intent:Intent) {
         fun number(key:String)=intent.getDoubleExtra(key,Double.NaN)
         fun count(key:String)=intent.getIntExtra(key,0)
@@ -276,11 +314,18 @@ class OctaneDashboard(context: Context) : LinearLayout(context) {
         val conf=count(EnetLoggerService.EXTRA_SESSION_CONFIDENCE).coerceIn(0,100)
         confidence.text="— (2.0 не валидирована)"
         progress.progress=0
-        updateFastReadings(number(EnetLoggerService.EXTRA_RPM),
-            number(EnetLoggerService.EXTRA_MAP),number(EnetLoggerService.EXTRA_LOAD))
-        coolant.text=format(number(EnetLoggerService.EXTRA_COOLANT)) + "°"
-        oil.text=format(number(EnetLoggerService.EXTRA_OIL)) + "°"
-        iat.text=format(number(EnetLoggerService.EXTRA_IAT)) + "°"
+        // FAST readings have their own broadcast and 2.5s expiry in MainActivity.
+        // The slower status packet must never resurrect an expired FAST sample.
+        val receivedAtMs=android.os.SystemClock.elapsedRealtime()
+        renderTemperature(intent,EnetLoggerService.EXTRA_COOLANT,coolant,receivedAtMs) {
+            coolantReceivedAtMs=it
+        }
+        renderTemperature(intent,EnetLoggerService.EXTRA_OIL,oil,receivedAtMs) {
+            oilReceivedAtMs=it
+        }
+        renderTemperature(intent,EnetLoggerService.EXTRA_IAT,iat,receivedAtMs) {
+            iatReceivedAtMs=it
+        }
 
         val phase=intent.getStringExtra(EnetLoggerService.EXTRA_PHASE) ?: "—"
         val mode=intent.getStringExtra(EnetLoggerService.EXTRA_MODE) ?: "AUTO"
