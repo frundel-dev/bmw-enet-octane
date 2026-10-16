@@ -1872,7 +1872,7 @@ class EnetLoggerService : Service() {
                     // Dashboard's heavyweight status stays at every fourth cycle.
                     emitFastTelemetry(octane2Rpm,m,l,steadyTargetTracker.progress(now))
                     if(suite!=null) {
-                        suite.flushWire(reconnects,highSpeedCycle,System.nanoTime(),csvWriter)
+                        suite.flushWire(appliedSuiteStage,reconnects,highSpeedCycle,System.nanoTime(),csvWriter)
                         wireCycleActive=false
                     }
                     val effectiveMode=when {
@@ -2055,7 +2055,7 @@ class EnetLoggerService : Service() {
                             // A MONITOR read happens AFTER the regular FAST
                             // trace flush. Persist it before the stage changes.
                             if(suite!=null)withContext(NonCancellable) {
-                                suite.flushWire(reconnects,highSpeedCycle,
+                                suite.flushWire(appliedSuiteStage,reconnects,highSpeedCycle,
                                     System.nanoTime(),csvWriter)
                             }
                             if(outcome.failure!=null) {
@@ -2074,7 +2074,7 @@ class EnetLoggerService : Service() {
                 if(suite!=null) {
                     try {
                         withContext(NonCancellable) {
-                            suite.flushWire(reconnects,highSpeedCycle,
+                            suite.flushWire(appliedSuiteStage,reconnects,highSpeedCycle,
                                 System.nanoTime(),csvWriter)
                         }
                     }catch(traceError:Exception) {
