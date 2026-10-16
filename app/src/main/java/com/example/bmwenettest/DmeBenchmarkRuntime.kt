@@ -32,7 +32,7 @@ internal interface DmeBenchmarkRuntime {
     fun status(nowMs:Long):String
     fun recordWire(tx:Wire)
     fun discardWire()
-    suspend fun flushWire(epoch:Int,cycle:Long,publishNs:Long,writer:AsyncCsvWriter)
+    suspend fun flushWire(stageId:Int,epoch:Int,cycle:Long,publishNs:Long,writer:AsyncCsvWriter)
     suspend fun onCycle(cycle:Cycle,writer:AsyncCsvWriter):Boolean
     suspend fun abort(nowMs:Long,reason:String,writer:AsyncCsvWriter)
     suspend fun finish(nowMs:Long,writer:AsyncCsvWriter)
