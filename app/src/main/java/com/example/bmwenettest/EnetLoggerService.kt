@@ -2296,7 +2296,7 @@ class EnetLoggerService : Service() {
                     if(task.service==0x22)listOf(task.did) else emptyList(),
                     task.service,phase,phaseAtNs,failedAtNs,
                     exceptionClass,exceptionMessage,
-                    failedAtNs!=null && dataCompleteAtNs==null))
+                    failedAtNs!=null && !valid))
             }catch(_:Exception){}
             s.soTimeout=savedTimeout
         }
@@ -2413,7 +2413,7 @@ class EnetLoggerService : Service() {
                     valid,failure,
                     members.toList(),requestSid,recvPhase,phaseAtNs,
                     failedAtNs,exceptionClass,exceptionMessage,
-                    failedAtNs!=null && dataCompleteAt==null))
+                    failedAtNs!=null && !valid))
             }catch(_:Exception){}
             try {
                 fastTimingTrace?.transaction(channel,members,
