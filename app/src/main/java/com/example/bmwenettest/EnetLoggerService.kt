@@ -1240,7 +1240,6 @@ class EnetLoggerService : Service() {
                     fastTimingTrace?.begin(learningTripId,fuelSessionId,reconnects,
                         highSpeedCycle,highSpeedProfile.name,pollModeActive,
                         System.nanoTime(),transport=transport)
-                    var slowRequestCount=0
                     val obdStarted=SystemClock.elapsedRealtime()
                     fun pid(id:Int):ByteArray? =
                         measuredDiagnostic("OBD_%02X".format(java.util.Locale.US,id),listOf(id), {
@@ -1262,60 +1261,37 @@ class EnetLoggerService : Service() {
                     } else emptyPolls=0
                     val now=SystemClock.elapsedRealtime()
                     val slowStarted=SystemClock.elapsedRealtime()
-                    val optimizedSlow=pollModeActive=="B" || pollModeActive=="B+"
-                    if(optimizedSlow) {
-                        // B/B+ stay single-threaded on one socket. Optional
-                        // SLOW reads are spread over FAST cycles (max 2 each).
-                        val budget=HighSpeedProfilePolicy.optionalBudget(
-                            highSpeedProfile,highSpeedCycle,previousHighSpeedCycleMs,
-                            consecutiveFailures>0)
-                        // Read-only stationary guard probes have priority in LAB:
-                        // CORE's ordinary zero SLOW budget must not starve them.
-                        // All transactions remain sequential on the SAME socket.
-                        val due=if(suite!=null)
-                            slowScheduler.dueForBenchmark(SystemClock.elapsedRealtime(),budget)
-                            else if(budget>0)
-                                slowScheduler.due(SystemClock.elapsedRealtime(),budget)
-                            else emptyList()
-                        for(slowId in due) {
-                            val data=if(slowId==0x5728)udsData(0x5728)
-                                else obd(pid(slowId),slowId)
-                            slowRequestCount++
-                            slowScheduler.record(slowId,SystemClock.elapsedRealtime(),
-                                data?.isNotEmpty()==true)
-                            val first=data?.firstOrNull()?.toInt()?.and(255)
-                            when(slowId) {
-                                0x0D -> slowSpeed=first?.toDouble()
-                                0x0F -> slowIat=first?.minus(40)?.toDouble()
-                                0x0E -> slowIgn=first?.div(2.0)?.minus(64.0)
-                                0x05 -> slowCoolant=first?.minus(40)?.toDouble()
-                                0x11 -> slowThrottle=first?.times(100.0/255.0)
-                                0x06 -> slowStft=first?.minus(128)?.times(100.0/128.0)
-                                0x07 -> slowLtft=first?.minus(128)?.times(100.0/128.0)
-                                0x44 -> slowLambda=data?.takeIf { it.size==2 }?.let {
-                                    (((it[0].toInt() and 255)*256)+(it[1].toInt() and 255))*2.0/65535.0
-                                }
-                                0x5C -> slowOil=first?.minus(40)?.toDouble()
-                                0x5728 -> slowSuperKnock=first
-                            }
-                        }
-
-                    } else if(now-lastSlow>=2000L) {
-                        slowSpeed=obd(pid(0x0D),0x0D)?.firstOrNull()?.let{(it.toInt() and 255).toDouble()}
-                        slowIat=obd(pid(0x0F),0x0F)?.let{((it[0].toInt()and 255)-40).toDouble()}
-                        slowIgn=obd(pid(0x0E),0x0E)?.let{(it[0].toInt()and 255)/2.0-64.0}
-                        slowCoolant=obd(pid(0x05),0x05)?.let{((it[0].toInt()and 255)-40).toDouble()}
-                        slowThrottle=obd(pid(0x11),0x11)?.let{(it[0].toInt()and 255)*100.0/255.0}
-                        slowStft=obd(pid(0x06),0x06)?.firstOrNull()?.let{((it.toInt()and 255)-128)*100.0/128.0}
-                        slowLtft=obd(pid(0x07),0x07)?.firstOrNull()?.let{((it.toInt()and 255)-128)*100.0/128.0}
-                        slowLambda=obd(pid(0x44),0x44)?.takeIf{it.size>=2}?.let{
-                            (((it[0].toInt()and 255)*256)+(it[1].toInt()and 255))*2.0/65535.0
-                        }
-                        slowOil=obd(pid(0x5C),0x5C)?.firstOrNull()?.let{((it.toInt()and 255)-40).toDouble()}
-                        slowSuperKnock=udsData(0x5728)?.firstOrNull()?.let{it.toInt() and 255}
-                        slowSensorAtMs=SystemClock.elapsedRealtime()
-                        lastSlow=now
-                    }
+                    // Same in-order reads, moved outside the large suspend
+                    // coroutine. Callbacks execute synchronously on THIS owner.
+                    val slowResult=SlowPollEngine.poll(
+                        mode=pollModeActive,profile=highSpeedProfile,
+                        cycle=highSpeedCycle,
+                        previousCycleMs=previousHighSpeedCycleMs,
+                        hadFailures=consecutiveFailures>0,
+                        benchmark=suite!=null,scheduler=slowScheduler,
+                        nowMs=now,
+                        previous=SlowPollEngine.Values(
+                            slowSpeed,slowIat,slowIgn,slowCoolant,slowThrottle,
+                            slowStft,slowLtft,slowLambda,slowOil,slowSuperKnock),
+                        lastSlowMs=lastSlow,
+                        sensorReceivedAtMs=slowSensorAtMs,
+                        clockMs={SystemClock.elapsedRealtime()},
+                        readObd={id->obd(pid(id),id)},
+                        readUds={id->udsData(id)})
+                    val optimizedSlow=slowResult.optimized
+                    val slowRequestCount=slowResult.slowRequests
+                    slowSpeed=slowResult.values.speed
+                    slowIat=slowResult.values.iat
+                    slowIgn=slowResult.values.ignition
+                    slowCoolant=slowResult.values.coolant
+                    slowThrottle=slowResult.values.throttle
+                    slowStft=slowResult.values.stft
+                    slowLtft=slowResult.values.ltft
+                    slowLambda=slowResult.values.lambda
+                    slowOil=slowResult.values.oil
+                    slowSuperKnock=slowResult.values.superKnock
+                    lastSlow=slowResult.lastSlowMs
+                    slowSensorAtMs=slowResult.sensorReceivedAtMs
                     // Adopt user-confirmed session on the one diagnostic thread.
                     // Never issue a second DME connection or merge different fills.
                     val newConfirmedId=prefs.getInt("fuel_session_id",fuelSessionId)
