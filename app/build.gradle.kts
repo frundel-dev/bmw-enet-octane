@@ -17,8 +17,8 @@ android {
         manifestPlaceholders["appLabel"] = "BMW OCTANE"
         minSdk = 26
         targetSdk = 35
-        versionCode = 226
-        versionName = "2.0.226"
+        versionCode = 227
+        versionName = "2.0.227"
     }
     flavorDimensions += "edition"
     productFlavors {

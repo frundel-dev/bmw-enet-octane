@@ -933,6 +933,8 @@ class EnetLoggerService : Service() {
         // LAB owns passive FAST transaction traces. OCTANE links no tracing class.
         fastTimingTrace=FastTimingPortFactory.create(
             getExternalFilesDir(null)?:filesDir,learningTripId,csvWriter)
+        val fastPhasePort=FastPhasePortFactory.create(
+            getExternalFilesDir(null)?:filesDir,learningTripId,csvWriter)
         passiveRecorder=openFastDidAudit(csvWriter,learningTripId,reconnects)
         val highSpeedFile=File(getExternalFilesDir(null)?:filesDir,
             "bmw_highspeed_benchmark_v1_${learningTripId}.csv")
@@ -976,6 +978,7 @@ class EnetLoggerService : Service() {
         // oversized suspend loop state machine; only this thread calls it.
         val lambdaPoller=Octane2LambdaPoller()
         var lastCycleComplete=0L
+        var lastPhaseCompletedNs:Long?=null
         var lastRamRequestMs=0L
         // Owned by this polling thread, opened once per LOGGER start.
         // No second socket or extra DME requests.
@@ -1164,6 +1167,7 @@ class EnetLoggerService : Service() {
                 sampleTimes.clear()
                 // Support masks and sensor timestamps are scoped to the TCP session.
                 lambdaPoller.reset()
+                lastPhaseCompletedNs=null
                 val gap=outageFrom?.let { (SystemClock.elapsedRealtime()-it).coerceAtLeast(0L) } ?: 0L
                 connectionEvent(if(gap>0)"RECOVERED" else "CONNECTED",reconnects,connectionStage,
                     transport,gatewayIp,if(viaFastPath)"cached TCP" else "UDP discovery + TCP",gap)
@@ -1223,65 +1227,6 @@ class EnetLoggerService : Service() {
                             transport,gatewayIp,"profile=${highSpeedProfile.name}")
                     }
                     }
-                    val cycleStart=SystemClock.elapsedRealtime()
-                    healthState=LoggerHealthPolicy.cycleStarted(healthState,cycleStart)
-                    highSpeedCycle++
-                    wireCycleActive=suite!=null
-                    fastTimingTrace?.begin(learningTripId,fuelSessionId,reconnects,
-                        highSpeedCycle,highSpeedProfile.name,pollModeActive,
-                        System.nanoTime(),transport=transport)
-                    val obdStarted=SystemClock.elapsedRealtime()
-                    fun pid(id:Int):ByteArray? =
-                        measuredDiagnostic("OBD_%02X".format(java.util.Locale.US,id),listOf(id), {
-                            hsfz(byteArrayOf(0x01,id.toByte()))
-                        }) { replies ->
-                            replies.firstOrNull { DiagnosticResponse.obd(it,id)!=null }
-                        }
-                    fun obd(p:ByteArray?,id:Int)=p?.let{DiagnosticResponse.obd(it,id)}
-                    val rpmObdStarted=SystemClock.elapsedRealtime()
-                    val obdRpm=obd(pid(0x0C),0x0C)?.takeIf{it.size==2}
-                        ?.let{(((it[0].toInt()and 255)*256)+(it[1].toInt()and 255))/4.0}
-                    val obdRpmLatency=SystemClock.elapsedRealtime()-rpmObdStarted
-                    val l=obd(pid(0x04),0x04)?.let{(it[0].toInt()and 255)*100.0/255.0}
-                    val m=obd(pid(0x0B),0x0B)?.let{(it[0].toInt()and 255).toDouble()}
-                    val obdMs=SystemClock.elapsedRealtime()-obdStarted
-                    if(obdRpm==null && l==null && m==null) {
-                        emptyPolls++
-                        if(emptyPolls>=3) throw IOException("No ECU OBD reply for 3 consecutive polls")
-                    } else emptyPolls=0
-                    val now=SystemClock.elapsedRealtime()
-                    val slowStarted=SystemClock.elapsedRealtime()
-                    // Same in-order reads, moved outside the large suspend
-                    // coroutine. Callbacks execute synchronously on THIS owner.
-                    val slowResult=SlowPollEngine.poll(
-                        mode=pollModeActive,profile=highSpeedProfile,
-                        cycle=highSpeedCycle,
-                        previousCycleMs=previousHighSpeedCycleMs,
-                        hadFailures=consecutiveFailures>0,
-                        benchmark=suite!=null,scheduler=slowScheduler,
-                        nowMs=now,
-                        previous=SlowPollEngine.Values(
-                            slowSpeed,slowIat,slowIgn,slowCoolant,slowThrottle,
-                            slowStft,slowLtft,slowLambda,slowOil,slowSuperKnock),
-                        lastSlowMs=lastSlow,
-                        sensorReceivedAtMs=slowSensorAtMs,
-                        clockMs={SystemClock.elapsedRealtime()},
-                        readObd={id->obd(pid(id),id)},
-                        readUds={id->udsData(id)})
-                    val optimizedSlow=slowResult.optimized
-                    val slowRequestCount=slowResult.slowRequests
-                    slowSpeed=slowResult.values.speed
-                    slowIat=slowResult.values.iat
-                    slowIgn=slowResult.values.ignition
-                    slowCoolant=slowResult.values.coolant
-                    slowThrottle=slowResult.values.throttle
-                    slowStft=slowResult.values.stft
-                    slowLtft=slowResult.values.ltft
-                    slowLambda=slowResult.values.lambda
-                    slowOil=slowResult.values.oil
-                    slowSuperKnock=slowResult.values.superKnock
-                    lastSlow=slowResult.lastSlowMs
-                    slowSensorAtMs=slowResult.sensorReceivedAtMs
                     // Adopt user-confirmed session on the one diagnostic thread.
                     // Never issue a second DME connection or merge different fills.
                     val newConfirmedId=prefs.getInt("fuel_session_id",fuelSessionId)
@@ -1313,7 +1258,7 @@ class EnetLoggerService : Service() {
                             lastAutoAcceptedTime=0L; lastQualified=0L; previousSampleTime=0L; previousRpm=null; previousMap=null
                         recordObservation(DriveObservation(
                             wallTimeMs=System.currentTimeMillis(),
-                            elapsedMs=now-started,
+                            elapsedMs=SystemClock.elapsedRealtime()-started,
                             tripId=learningTripId,
                             fuelSessionId=fuelSessionId,
                             connectionEpoch=reconnects,
@@ -1325,6 +1270,137 @@ class EnetLoggerService : Service() {
                             "FUEL",transport,null,"session=$fuelSessionId;heuristic_mixing=$mixingKm")
                         emit(lastRefuelNote)
                     }
+                    val cycleStart=SystemClock.elapsedRealtime()
+                    healthState=LoggerHealthPolicy.cycleStarted(healthState,cycleStart)
+                    highSpeedCycle++
+                    wireCycleActive=suite!=null
+                    // BENCHMARK GUARD EXCEPTION: missing/stale speed or coolant
+                    // is polled before FAST, using the SAME existing SLOW budget.
+                    // All other SLOW stays outside the contiguous FAST region.
+                    fun pid(id:Int):ByteArray? =
+                        measuredDiagnostic("OBD_%02X".format(java.util.Locale.US,id),listOf(id), {
+                            hsfz(byteArrayOf(0x01,id.toByte()))
+                        }) { replies ->
+                            replies.firstOrNull { DiagnosticResponse.obd(it,id)!=null }
+                        }
+                    fun obd(p:ByteArray?,id:Int)=p?.let{DiagnosticResponse.obd(it,id)}
+                    fun scheduledSlow(atMs:Long):SlowPollEngine.Result = SlowPollEngine.poll(
+                        mode=pollModeActive,profile=highSpeedProfile,
+                        cycle=highSpeedCycle,
+                        previousCycleMs=previousHighSpeedCycleMs,
+                        hadFailures=consecutiveFailures>0,
+                        benchmark=suite!=null,scheduler=slowScheduler,
+                        nowMs=atMs,
+                        previous=SlowPollEngine.Values(
+                            slowSpeed,slowIat,slowIgn,slowCoolant,slowThrottle,
+                            slowStft,slowLtft,slowLambda,slowOil,slowSuperKnock),
+                        lastSlowMs=lastSlow,
+                        sensorReceivedAtMs=slowSensorAtMs,
+                        clockMs={SystemClock.elapsedRealtime()},
+                        readObd={id->obd(pid(id),id)},
+                        readUds={id->udsData(id)})
+                    val preflightNeeded=FastGuardPreflight.required(
+                        suite!=null,slowScheduler,SystemClock.elapsedRealtime())
+                    val preflightStartNs=if(preflightNeeded)System.nanoTime() else null
+                    val preflightStartMs=if(preflightNeeded)SystemClock.elapsedRealtime() else null
+                    val preflightResult=if(preflightNeeded)
+                        scheduledSlow(preflightStartMs!!) else null
+                    val preflightEndNs=if(preflightNeeded)System.nanoTime() else null
+                    val preflightDurationMs=if(preflightNeeded)
+                        (SystemClock.elapsedRealtime()-preflightStartMs!!).coerceAtLeast(0L)
+                        else null
+                    val fastBeginNs=System.nanoTime()
+                    fastTimingTrace?.begin(learningTripId,fuelSessionId,reconnects,
+                        highSpeedCycle,highSpeedProfile.name,pollModeActive,
+                        fastBeginNs,transport=transport)
+                    // BEGIN contiguous FAST slice: 01 0C, 01 04, 01 0B,
+                    // then unchanged knock and ignition. No SLOW inside.
+                    val collectedFast=FastCriticalSlice.collect(
+                        clockMs={SystemClock.elapsedRealtime()},
+                        readObd={id->obd(pid(id),id)},
+                        afterObd={o->
+                            if(o.rpm==null && o.load==null && o.map==null) {
+                                emptyPolls++
+                                if(emptyPolls>=3)
+                                    throw IOException("No ECU OBD reply for 3 consecutive polls")
+                            } else emptyPolls=0
+                        },
+                        readFastDme={
+                            readFastDmeCycle(
+                                pollModeActive,batchEnabled,bPlusRejected,bPlusRejections,
+                                batchOk,batchErrors,lastBatchFallback,reconnects,
+                                connectionStage,transport,gatewayIp)
+                        })
+                    val obdRpm=collectedFast.obd.rpm
+                    val l=collectedFast.obd.load
+                    val m=collectedFast.obd.map
+                    val rpmObdStarted=collectedFast.obd.rpmStartedMs
+                    val obdRpmLatency=collectedFast.obd.rpmLatencyMs
+                    val obdMs=collectedFast.obd.obdDurationMs
+                    val fastDme=collectedFast.dme
+                    pollModeActive=fastDme.activeMode
+                    batchEnabled=fastDme.batchEnabled
+                    bPlusRejected=fastDme.bPlusRejected
+                    bPlusRejections=fastDme.bPlusRejections
+                    batchOk=fastDme.batchOk
+                    batchErrors=fastDme.batchErrors
+                    lastBatchFallback=fastDme.lastBatchFallback
+                    val knockStatus=fastDme.knockStatus
+                    val knockStatusMs=fastDme.knockStatusMs
+                    val knockBatch=fastDme.knockBatch
+                    val ignitionBatch=fastDme.ignitionBatch
+                    val kz1=fastDme.kz1;val kz2=fastDme.kz2
+                    val kz3=fastDme.kz3;val kz4=fastDme.kz4
+                    val iz1=fastDme.iz1;val iz2=fastDme.iz2
+                    val iz3=fastDme.iz3;val iz4=fastDme.iz4
+                    val knockPhaseMs=fastDme.knockPhaseMs
+                    val ignitionPhaseMs=fastDme.ignitionPhaseMs
+                    val fastDmeMs=fastDme.fastDmeMs
+                    // Close FAST timing at the last FAST response, not after
+                    // fuel scoring, SLOW/Monitor work or UI publication.
+                    val fastEndNs=System.nanoTime()
+                    val fastEndMs=SystemClock.elapsedRealtime()
+                    val timingOutcome=fastTimingTrace?.finish(fastEndNs,mapOf(
+                        0x0C to (obdRpm!=null),0x04 to (l!=null),0x0B to (m!=null),
+                        0x4A37 to (kz1!=null),0x4A38 to (kz2!=null),
+                        0x4A39 to (kz3!=null),0x4A3A to (kz4!=null),
+                        0x4A49 to (iz1!=null),0x4A4A to (iz2!=null),
+                        0x4A4C to (iz3!=null),0x4A4D to (iz4!=null)))
+                    // A typed, immutable LAB snapshot of decoded scalars;
+                    // precise per-DID request/reply times remain in FAST Timing.
+                    val fastSnapshot=if(fastPhasePort!=null || suite!=null)
+                        FastCycleSnapshot.create(
+                            learningTripId,fuelSessionId,reconnects,highSpeedCycle,
+                            fastBeginNs,fastEndNs,mapOf(
+                                0x0C to obdRpm,0x04 to l,0x0B to m,
+                                0x4A37 to kz1,0x4A38 to kz2,
+                                0x4A39 to kz3,0x4A3A to kz4,
+                                0x4A49 to iz1,0x4A4A to iz2,
+                                0x4A4C to iz3,0x4A4D to iz4))
+                    else null
+                    // SLOW reads retain their existing PIDs, deadlines and policy,
+                    // but can no longer stretch the host FAST sampling window.
+                    val now=SystemClock.elapsedRealtime()
+                    val slowStartNs=preflightStartNs ?: System.nanoTime()
+                    val slowStarted=preflightStartMs ?: SystemClock.elapsedRealtime()
+                    // SLOW always executes exactly once. LAB guard preflight,
+                    // when required, was performed BEFORE the FAST trace began.
+                    val slowResult=preflightResult ?: scheduledSlow(now)
+                    val optimizedSlow=slowResult.optimized
+                    val slowRequestCount=slowResult.slowRequests
+                    slowSpeed=slowResult.values.speed
+                    slowIat=slowResult.values.iat
+                    slowIgn=slowResult.values.ignition
+                    slowCoolant=slowResult.values.coolant
+                    slowThrottle=slowResult.values.throttle
+                    slowStft=slowResult.values.stft
+                    slowLtft=slowResult.values.ltft
+                    slowLambda=slowResult.values.lambda
+                    slowOil=slowResult.values.oil
+                    slowSuperKnock=slowResult.values.superKnock
+                    lastSlow=slowResult.lastSlowMs
+                    slowSensorAtMs=slowResult.sensorReceivedAtMs
+                    val slowEndNs=preflightEndNs ?: System.nanoTime()
                     // Tank level is a slow optional OBD parameter. No value means unsupported/unavailable.
                     if(now-lastFuelPoll>=15000L) {
                         slowFuel=obd(pid(0x2F),0x2F)?.firstOrNull()?.let {
@@ -1387,34 +1463,12 @@ class EnetLoggerService : Service() {
                         slowStft=null; slowLtft=null; slowLambda=null
                         slowSuperKnock=null; slowOil=null; slowSpeed=null
                     }
-                    val slowMs=SystemClock.elapsedRealtime()-slowStarted
+                    val slowMs=preflightDurationMs ?: (SystemClock.elapsedRealtime()-slowStarted)
                     val speed=slowSpeed; val i=slowIat; val a=slowIgn; val coolant=slowCoolant; val oil=slowOil; val throttle=slowThrottle; val stft1=slowStft; val ltft1=slowLtft; val lambdaEq=slowLambda
                     // Legacy 1.7 measurements remain grounded in original OBD RPM.
                     val r=obdRpm
                     val combinedTrim=if(stft1!=null && ltft1!=null)
                         ((1.0+stft1/100.0)*(1.0+ltft1/100.0)-1.0)*100.0 else null
-                    val fastDme=readFastDmeCycle(
-                        pollModeActive,batchEnabled,bPlusRejected,bPlusRejections,
-                        batchOk,batchErrors,lastBatchFallback,reconnects,
-                        connectionStage,transport,gatewayIp)
-                    pollModeActive=fastDme.activeMode
-                    batchEnabled=fastDme.batchEnabled
-                    bPlusRejected=fastDme.bPlusRejected
-                    bPlusRejections=fastDme.bPlusRejections
-                    batchOk=fastDme.batchOk
-                    batchErrors=fastDme.batchErrors
-                    lastBatchFallback=fastDme.lastBatchFallback
-                    val knockStatus=fastDme.knockStatus
-                    val knockStatusMs=fastDme.knockStatusMs
-                    val knockBatch=fastDme.knockBatch
-                    val ignitionBatch=fastDme.ignitionBatch
-                    val kz1=fastDme.kz1;val kz2=fastDme.kz2
-                    val kz3=fastDme.kz3;val kz4=fastDme.kz4
-                    val iz1=fastDme.iz1;val iz2=fastDme.iz2
-                    val iz3=fastDme.iz3;val iz4=fastDme.iz4
-                    val knockPhaseMs=fastDme.knockPhaseMs
-                    val ignitionPhaseMs=fastDme.ignitionPhaseMs
-                    val fastDmeMs=fastDme.fastDmeMs
                     val superKnock=slowSuperKnock
                     val foctanStarted=SystemClock.elapsedRealtime()
                     if(now-lastFoctan>=10000L) {
@@ -1739,6 +1793,7 @@ class EnetLoggerService : Service() {
                     // This broadcast is intentionally every completed FAST cycle.
                     // Dashboard's heavyweight status stays at every fourth cycle.
                     emitFastTelemetry(octane2Rpm,m,l,steadyTargetTracker.progress(now))
+                    val firstPublishNs=System.nanoTime()
                     if(suite!=null) {
                         flushBenchmarkWireEvidence(suite,csvWriter,
                             appliedSuiteStage,reconnects,highSpeedCycle)
@@ -1750,12 +1805,6 @@ class EnetLoggerService : Service() {
                         else -> "A"
                     }
                     val benchmarkNow=SystemClock.elapsedRealtime()
-                    val timingOutcome=fastTimingTrace?.finish(System.nanoTime(),mapOf(
-                        0x0C to (r!=null),0x04 to (l!=null),0x0B to (m!=null),
-                        0x4A37 to (kz1!=null),0x4A38 to (kz2!=null),
-                        0x4A39 to (kz3!=null),0x4A3A to (kz4!=null),
-                        0x4A49 to (iz1!=null),0x4A4A to (iz2!=null),
-                        0x4A4C to (iz3!=null),0x4A4D to (iz4!=null)))
                     // Side-by-side 2.0/1.7 reading metrics, not a RON score.
                     val cycleGap=if(lastCycleComplete>0L)
                         (cycleStart-lastCycleComplete).coerceAtLeast(0L) else null
@@ -1830,8 +1879,7 @@ class EnetLoggerService : Service() {
                             slowScheduler.lastValidAgeMs(0x05,benchmarkNow)
                         else slowSensorAtMs.takeIf{it>0L}?.let{benchmarkNow-it}
                         val complete=timingOutcome?.complete == true ||
-                            (timingOutcome==null && r!=null && l!=null && m!=null &&
-                                listOf(kz1,kz2,kz3,kz4,iz1,iz2,iz3,iz4).all{it!=null})
+                            (timingOutcome==null && fastSnapshot?.complete==true)
                         val outcome=suite.onCycle(DmeBenchmarkRuntime.Cycle(
                             benchmarkNow,System.currentTimeMillis(),speed,speedAge,
                             coolant,coolantAge,r,effectiveMode,highSpeedProfile,
@@ -1904,6 +1952,8 @@ class EnetLoggerService : Service() {
                     // request per qualified low-load gap, independent CSV.
                     // The earlier fast benchmark deliberately excludes monitor
                     // IO, while the next FAST frequency includes its latency.
+                    var monitorStartNs:Long?=null
+                    var monitorEndNs:Long?=null
                     if(running && !monitorPolicy.suspended &&
                         pollModeActive in listOf("B+","B") &&
                         !vxscanWifiBlocked) {
@@ -1913,11 +1963,13 @@ class EnetLoggerService : Service() {
                             completedFast,cycleMs,r,l,m,speed)
                         if(task!=null) {
                             val readStarted=SystemClock.elapsedRealtime()
+                            monitorStartNs=System.nanoTime()
                             monitorPolicy.issued(task,readStarted)
                             val outcome=executeDmeMonitorTask(task,monitorPolicy,
                                 dmeProbeResults,readStarted,started,cycleStart,
                                 transport,pollModeActive,r,l,m,speed,hz,
                                 reconnects,connectionStage,gatewayIp)
+                            monitorEndNs=System.nanoTime()
                             monitorLastDuration=outcome.durationMs
                             monitorLastId=task.label
                             monitorState=outcome.status
@@ -1932,6 +1984,24 @@ class EnetLoggerService : Service() {
                             if(outcome.status=="OK") monitorOk++
                         }
                     }
+                    val phaseEndedNs=System.nanoTime()
+                    // One observational LAB row per completed polling cycle.
+                    // Its queue loss is counted; failure evidence uses wire_v2.
+                    fastPhasePort?.record(FastPhaseTiming.Sample(
+                        wallMs=System.currentTimeMillis(),
+                        tripId=learningTripId,fuelSessionId=fuelSessionId,
+                        epoch=reconnects,cycleId=highSpeedCycle,
+                        profile=highSpeedProfile.name,mode=pollModeActive,
+                        transport=transport,fastStartNs=fastBeginNs,
+                        obdCompleteNs=collectedFast.obd.obdCompleteNs,
+                        fastEndNs=fastEndNs,slowStartNs=slowStartNs,
+                        slowEndNs=slowEndNs,firstPublishNs=firstPublishNs,
+                        monitorStartNs=monitorStartNs,monitorEndNs=monitorEndNs,
+                        cycleEndNs=phaseEndedNs,
+                        previousCycleEndNs=lastPhaseCompletedNs,
+                        fullFast=timingOutcome?.complete ?: (fastSnapshot?.complete==true)
+                    ))
+                    lastPhaseCompletedNs=phaseEndedNs
                     return true
                 }
                 while(running && socket?.isClosed==false) {
