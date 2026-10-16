@@ -40,7 +40,7 @@ dependencies {
     implementation(project(":core:data"))
     implementation(project(":core:diagnostics"))
     implementation(project(":feature:analysis"))
-    labImplementation(project(":feature:benchmark"))
+    add("labImplementation", project(":feature:benchmark"))
     testImplementation("junit:junit:4.13.2")
 }
 
