@@ -25,10 +25,14 @@ class SlowPollScheduler {
     }
     private val deadlines=HashMap<Int,Long>()
     private val received=HashMap<Int,Long>()
+    // Diagnostic evidence: retain the time of the last successful guard read
+    // even after an invalid response (which must NOT remain a valid reading).
+    private val lastValid=HashMap<Int,Long>()
 
     fun reset() {
         deadlines.clear()
         received.clear()
+        lastValid.clear()
     }
 
     fun due(nowMs:Long,limit:Int=2):List<Int> {
@@ -45,9 +49,54 @@ class SlowPollScheduler {
         return available.map { it.did }
     }
 
-    fun record(did:Int,atMs:Long,valid:Boolean) {
-        if(valid)received[did]=atMs else received.remove(did)
+    /**
+     * A stationary DME benchmark MUST observe speed and coolant even if CORE
+     * would normally budget zero SLOW reads. All requests remain serialized on
+     * the existing polling owner, with at most TWO SLOW transactions per cycle.
+     * Optional SLOW budget may be 0; it never cancels mandatory safety polling.
+     *
+     * Bounded scheduling is not a guarantee of ECU/network response time:
+     * the suite separately aborts when either guard signal becomes stale.
+     */
+    fun dueForBenchmark(nowMs:Long,optionalBudget:Int):List<Int> {
+        require(optionalBudget in 0..2)
+        val guards=listOf(0x0D,0x05)
+        val requested=ArrayList<Int>(2)
+        for(did in guards) {
+            val e=entries.first { it.did==did }
+            if(nowMs >= (deadlines[did]?:0L)) {
+                requested.add(did)
+                deadlines[did]=nowMs+e.intervalMs
+            }
+        }
+        // Only the remaining slots may be used by ordinary optional signals.
+        val extra=entries.filter { it.did !in guards &&
+            nowMs >= (deadlines[it.did]?:0L) }
+            .sortedWith(compareByDescending<Entry> {
+                val next=deadlines[it.did]?:0L
+                if(next==0L)Long.MAX_VALUE else nowMs-next
+            }.thenBy { entries.indexOf(it) })
+            .take(minOf(optionalBudget,2-requested.size))
+        for(e in extra) {
+            requested.add(e.did)
+            deadlines[e.did]=nowMs+e.intervalMs
+        }
+        return requested
     }
+
+    fun record(did:Int,atMs:Long,valid:Boolean) {
+        if(valid) {
+            received[did]=atMs
+            lastValid[did]=atMs
+        } else received.remove(did)
+    }
+
+    /** Actual age since the last successful reply, INCLUDING stale/failed data.
+     * Null means no successful reply in this stage/connection, not zero age.
+     * Not a substitute for fresh(): a failed read is always invalid.
+     */
+    fun lastValidAgeMs(did:Int,nowMs:Long):Long? =
+        lastValid[did]?.takeIf { it>0L && nowMs>=it }?.let{ nowMs-it }
 
     /** Age of the last valid read, or null if missing/stale. */
     fun ageMs(did:Int,nowMs:Long):Long? =
