@@ -19,10 +19,11 @@ Before:
 After:
 ```
 cycle-boundary fuel session confirmation
+-> mandatory safety SLOW preflight ONLY if benchmark guard is missing/stale
 -> FAST BEGIN -> 01 0C -> 01 04 -> 01 0B
 -> 22 4A36 -> unchanged knock x4 / ignition x4, existing B+ batch
 -> FAST END (record signal presence + per-transaction Android host timing)
--> original bounded SLOW scheduling, fuel-level read, refuel and analytics
+-> same bounded SLOW pass if no preflight was needed; optional fuel-level read and analytics
 -> reporting -> existing serial DME Monitor -> cycle end
 ```
 `FastCriticalSlice.collect` executes all three OBD reads and DME FAST without
@@ -34,14 +35,16 @@ change between the three OBD reads and DME knock/ignition.
 ### Safety exception and limits
 
 - The **mandatory stationary guard** speed OBD `01 0D` and coolant `01 05`
-  retain their established deadlines/TTL and the two-requests-per-cycle limit
-  in `SlowPollScheduler.dueForBenchmark`, even if CORE optional budget is 0.
-  For this stage, the mandatory guard reads are placed immediately **after**
-  the contiguous FAST read; benchmark assessment still fails closed on
-  missing/stale/moving/hot data after those reads. This can move recognition
-  of a newly unsafe condition later by one FAST set relative to build 226.
-  The system does **not** certify an automatic safety intervention and must
-  be tested parked under supervision. Do not relax guard TTL or requests.
+  retain their original deadlines/TTL and the two-requests-per-cycle
+  limit in `SlowPollScheduler.dueForBenchmark`, even if CORE optional budget
+  is zero. At benchmark start, stage reset or after guard expiry/failure,
+  the entire scheduled SLOW pass runs **before** FAST, then is NOT repeated.
+  Otherwise the normal scheduled SLOW pass runs immediately after FAST.
+  This explicit exception avoids starting an unguarded stationary benchmark
+  on missing/stale signals; the benchmark still fails closed on
+  missing/stale/moving/hot readings and must remain parked.
+- Safety preflight shares the **same** existing read-only scheduler and socket;
+  no duplicate requests, no relaxed TTL and no separate poller.
 - B+/B/A, packet format, HSFZ verification and socket ownership are unchanged.
 - Historical Fuel Score, fuel session storage, primary/legacy CSV schemas,
   existing FAST Timing v1 and wire_v2 formats are unchanged.
