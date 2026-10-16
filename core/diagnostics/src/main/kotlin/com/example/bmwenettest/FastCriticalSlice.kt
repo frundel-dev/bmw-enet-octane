@@ -15,7 +15,8 @@ object FastCriticalSlice {
         val map:Double?,
         val rpmStartedMs:Long,
         val rpmLatencyMs:Long,
-        val obdDurationMs:Long
+        val obdDurationMs:Long,
+        val obdCompleteNs:Long
     ) {
         val complete:Boolean get()=rpm!=null && load!=null && map!=null
     }
@@ -23,6 +24,7 @@ object FastCriticalSlice {
 
     fun <T> collect(
         clockMs:()->Long,
+        clockNs:()->Long={System.nanoTime()},
         readObd:(Int)->ByteArray?,
         afterObd:(Obd)->Unit,
         readFastDme:()->T
@@ -40,7 +42,7 @@ object FastCriticalSlice {
             (it.toInt() and 255).toDouble()
         }
         val obd=Obd(rpm,load,map,rpmStarted,rpmLatency,
-            (clockMs()-start).coerceAtLeast(0L))
+            (clockMs()-start).coerceAtLeast(0L),clockNs())
         // The OBD no-response gate runs before any additional DME request.
         afterObd(obd)
         return Capture(obd,readFastDme())
