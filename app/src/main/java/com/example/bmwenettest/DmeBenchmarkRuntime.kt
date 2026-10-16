@@ -19,8 +19,12 @@ internal interface DmeBenchmarkRuntime {
         val ackVerifiedNs:Long?,val dataHeaderFirstReadNs:Long?,
         val dataCompleteNs:Long?,val decodeEndNs:Long?,
         val valid:Boolean,val error:String)
+    enum class Termination { COMPLETED, ABORTED }
     val stage:Stage?
     val terminated:Boolean
+    /** Exact terminal cause from the suite, not the coroutine completion cause. */
+    val termination:Termination?
+    val stopReason:String?
     fun status(nowMs:Long):String
     fun recordWire(tx:Wire)
     fun discardWire()
