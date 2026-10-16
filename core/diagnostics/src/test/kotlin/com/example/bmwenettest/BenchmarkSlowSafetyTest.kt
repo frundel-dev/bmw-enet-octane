@@ -53,8 +53,8 @@ class BenchmarkSlowSafetyTest {
             for(id in due) s.record(id,t+25L,true)
             assertTrue(due.size<=2)
             if(t>7_100L) {
-                assertTrue(s.lastValidAgeMs(0x0D,t)!!<=1_525L)
-                assertTrue(s.lastValidAgeMs(0x05,t)!!<=6_025L)
+                assertTrue(s.lastValidAgeMs(0x0D,t+25L)!!<=1_525L)
+                assertTrue(s.lastValidAgeMs(0x05,t+25L)!!<=6_025L)
             }
         }
         assertTrue(0x0D in observed && 0x05 in observed)
