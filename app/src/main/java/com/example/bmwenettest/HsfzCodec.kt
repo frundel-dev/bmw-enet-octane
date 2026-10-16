@@ -81,7 +81,8 @@ internal object HsfzCodec {
             try {
                 var headerFirstReadNs:Long?=null
                 val header=exact(input,6,idleHeader=true,
-                    firstReceived={headerFirstReadNs=it})
+                    firstReceived=if(onDataHeaderAtNs!=null)
+                        { t -> headerFirstReadNs=t } else null)
                     ?: throw IOException("HSFZ EOF before diagnostic response")
                 val length=bodyLength(header)
                 if(length !in 0..MAX_FRAME_BODY_BYTES || length==1)
