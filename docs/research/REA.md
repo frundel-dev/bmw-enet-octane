@@ -33,6 +33,15 @@ JDK-компилятор, procps `ps`, SHA-256 JAR и APK. REA запускае�
 сохраняется в диагностический отчёт, но только фактический результат операций
 с APK может завершить работу со статусом PASS.
 
+## Проверенный автоматический запуск (2026-10-17)
+
+- **ПРОВЕРЕНО — GitHub Actions SUCCESS:** https://github.com/frundel-dev/bmw-enet-octane/actions/runs/39047573878
+- SHA тестируемого кода: `c73dc364d6e78068b8adf3db60fb6e03a63ccddb`; событие `push`, исключительно ветка `research/rea-actions-manual`.
+- **Artifact:** https://github.com/frundel-dev/bmw-enet-octane/actions/runs/39047573878/artifacts/12105514444, `rea-public-apidemos-39047573878` (30 файлов, 99 222 байта; из GitHub API и job log).
+- Реальный лог содержит `PASS: real REA CLI/JADX APK, class inventory and onCreate method`; npm/JVM/JADX/fixture preparation и заключительный анализ завершились успешно.
+- Проверены именно операции `inspect_android_package`, `search_android_classes`, `inspect_android_class`, `inspect_android_method`; итоговый отчёт `acceptance.json` и Evidence сохраняются в Artifact. Встроенный проверочный скрипт требует соответствующий APK SHA-256 и фактическое Java-тело.
+- **Не проверено:** bootmod3, MG Flasher, большие multi-DEX APK и частная изолированная загрузка закрытых APK. Этот запуск не является испытанием автомобильных диагностических функций.
+
 ## Как запустить
 
 **Важное ограничение GitHub:** `workflow_dispatch` может вызываться,
