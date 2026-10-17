@@ -72,7 +72,7 @@ object GroupedUds22Research {
     /** Only the nine already-read B+ family widths are known locally. */
     fun knownSchema():Schema=Schema(catalog.filter { it.familyWidth!=null }
         .map { it.did to it.familyWidth!! })
-    fun unresolved():List<Candidate>=catalog.filter { it.familyWidth==null }
+    fun unresolved():List<Candidate> = catalog.filter { it.familyWidth==null }
 
     /** No guesses of signedness, physical units or equivalence to OBD. */
     fun valueOfCandidate(did:Int,bytes:ByteArray):Double?=null
