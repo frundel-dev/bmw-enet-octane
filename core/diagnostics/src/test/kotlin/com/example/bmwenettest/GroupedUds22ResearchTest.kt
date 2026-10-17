@@ -60,7 +60,7 @@ class GroupedUds22ResearchTest {
         assertEquals("SID_OR_NRC",reason(byteArrayOf(0x7F,0x23,0x31)))
         val negative=GroupedUds22Research.decodeOffline(byteArrayOf(0x7F,0x22,0x31),s)
         assertEquals(0x31,(negative as FastDidValidation.RawReply.Negative).nrc)
-        assertEquals("LENGTH",reason(byteArrayOf(0x7F,0x22,0x31,0)))
+        assertEquals("SID_OR_NRC",reason(byteArrayOf(0x7F,0x22,0x31,0)))
         try {
             GroupedUds22Research.Schema(listOf(0x4A36 to 1,0x4A36 to 1))
             fail("duplicate DID not allowed")
