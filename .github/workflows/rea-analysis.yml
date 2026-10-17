@@ -1,0 +1,138 @@
+name: Manual REA Android Static Analysis
+
+# Intentionally never triggered by push/PR; no automated analysis of uploads.
+# GitHub requires workflow_dispatch workflows on the default branch.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rea-static-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  analyze-public-fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      REA_JADX_HEAP_MIB: "2048"
+      REA_JADX_OPERATION_TIMEOUT_MS: "180000"
+      REA_JADX_MCP_JAR: ${{ github.workspace }}/rea-input/jadx-headless-mcp-0.7.1-all.jar
+      REA_TEST_APK: ${{ github.workspace }}/rea-input/ApiDemos-debug.apk
+      REA_REPORT_DIR: ${{ github.workspace }}/rea-results
+
+    steps:
+      - name: Checkout research workflow without GitHub credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Create artifact diagnostics folder
+        run: |
+          mkdir -p rea-results rea-input
+          printf 'STARTED\n' > rea-results/status.txt
+          date -u +%Y-%m-%dT%H:%M:%SZ > rea-results/start-time.txt
+
+      - name: Set up exact supported Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.11.1"
+
+      - name: Set up full JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Verify REA Linux/JVM prerequisites
+        run: |
+          set -euo pipefail
+          node --version | tee rea-results/node-version.txt
+          npm --version | tee rea-results/npm-version.txt
+          java -version 2>&1 | tee rea-results/java-version.txt
+          java --list-modules > rea-results/java-modules.txt
+          grep -q '^jdk.compiler@' rea-results/java-modules.txt
+          command -v ps
+          ps -p "$$" -o pid=,comm= | tee rea-results/procps-check.txt
+          command -v sha256sum
+          command -v curl
+
+      - name: Install pinned REA from official npm distribution
+        run: |
+          set -euo pipefail
+          npm install --global --no-audit --no-fund rea-agents@6.5.0 \
+            > rea-results/npm-install.log 2>&1 || {
+              cat rea-results/npm-install.log
+              echo 'REA_INSTALL_FAILED' > rea-results/status.txt
+              exit 1
+            }
+          command -v rea | tee rea-results/rea-path.txt
+          rea --help > rea-results/rea-help.txt 2> rea-results/rea-help.stderr.txt || {
+            cat rea-results/rea-help.stderr.txt
+            echo 'REA_CLI_FAILED' > rea-results/status.txt
+            exit 1
+          }
+          npm ls --global rea-agents --json > rea-results/rea-npm-installed.json
+          rea doctor --json > rea-results/rea-doctor.json \
+            2> rea-results/rea-doctor.stderr.txt || true
+          echo 'REA_CLI_READY' > rea-results/status.txt
+
+      - name: Download pinned headless JADX JAR and public Appium fixture
+        run: |
+          set -euo pipefail
+          curl -fL --retry 2 --max-time 180 \
+            --output rea-input/jadx-headless-mcp-0.7.1-all.jar \
+            https://github.com/1013503897/jadx-headless-mcp/releases/download/v0.7.1/jadx-headless-mcp-0.7.1-all.jar \
+            > rea-results/jadx-download.log 2>&1 || {
+              cat rea-results/jadx-download.log
+              echo 'JADX_DOWNLOAD_FAILED' > rea-results/status.txt
+              exit 1
+            }
+          echo '6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75  rea-input/jadx-headless-mcp-0.7.1-all.jar' | \
+            sha256sum -c - | tee rea-results/jadx-sha256-check.txt
+          curl -fL --retry 2 --max-time 180 \
+            --output rea-input/ApiDemos-debug.apk \
+            https://github.com/appium/android-apidemos/releases/download/v6.0.18/ApiDemos-debug.apk \
+            > rea-results/apk-download.log 2>&1 || {
+              cat rea-results/apk-download.log
+              echo 'PUBLIC_APK_DOWNLOAD_FAILED' > rea-results/status.txt
+              exit 1
+            }
+          echo 'a9eecf37b26cd084855c530db81c2bb1b91f4c1b095a04f47aa7c20e2791f686  rea-input/ApiDemos-debug.apk' | \
+            sha256sum -c - | tee rea-results/apk-sha256-check.txt
+          echo 'FIXTURES_VERIFIED' > rea-results/status.txt
+
+      - name: Verify real REA Android operations
+        run: |
+          set -euo pipefail
+          node scripts/research/rea/verify-public-apk.mjs \
+            > rea-results/verification.log 2>&1 || {
+              cat rea-results/verification.log
+              echo 'REA_ANDROID_ANALYSIS_FAILED' > rea-results/status.txt
+              exit 1
+            }
+          cat rea-results/verification.log
+          echo 'PASS' > rea-results/status.txt
+
+      - name: Publish diagnostic summary
+        if: always()
+        run: |
+          echo "### REA static Android analysis" >> "$GITHUB_STEP_SUMMARY"
+          echo "Status: $(cat rea-results/status.txt 2>/dev/null || echo SETUP_FAILED)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Official REA: rea-agents@6.5.0; JADX headless MCP 0.7.1." >> "$GITHUB_STEP_SUMMARY"
+          echo "Fixture: public Appium ApiDemos 6.0.18; SHA-256 verified before REA." >> "$GITHUB_STEP_SUMMARY"
+          echo "Results are static; the APK is never executed." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload REA reports (public fixture only)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rea-public-apidemos-${{ github.run_id }}
+          path: rea-results/
+          if-no-files-found: warn
+          retention-days: 14
