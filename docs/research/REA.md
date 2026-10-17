@@ -2,14 +2,14 @@
 
 ## Назначение
 
-Ручной эксперимент GitHub Actions, не являющийся частью сборки BMW OCTANE.
+Изолированный эксперимент GitHub Actions, не являющийся частью сборки BMW OCTANE. Для тестирования PR #52 временно разрешён узкий автоматический триггер `push` только в ветке `research/rea-actions-manual` и только при изменении workflow или проверочного скрипта; ручной `workflow_dispatch` сохранён.
 Используется **официальный REA**: https://github.com/morluto/rea;
 распространение через npm `rea-agents@6.5.0`.
 REA работает на временном GitHub Linux runner и анализирует APK статически,
 не запускает приложение, не обращается к DME и не меняет сборку Android.
 
 Файлы:
-- `.github/workflows/rea-analysis.yml` — только `workflow_dispatch`;
+- `.github/workflows/rea-analysis.yml` — `workflow_dispatch` + временный `push` для `research/rea-actions-manual` с фильтром двух исследовательских файлов;
 - `scripts/research/rea/verify-public-apk.mjs` — реальные REA CLI проверки;
 - `docs/research/REA.md` — этот документ.
 
@@ -50,6 +50,8 @@ JDK-компилятор, procps `ps`, SHA-256 JAR и APK. REA запускае�
    со страницы **Artifacts** (хранится 14 дней).
 5. Проверьте `status.txt=PASS`, `acceptance.json` с `status=PASS`,
    а также `classes.txt`, `method-onCreate.java.txt` и JSON Evidence.
+
+Для первого тестирования без объединения с `main`: изменение файла `.github/workflows/rea-analysis.yml` или `scripts/research/rea/verify-public-apk.mjs` в ветке `research/rea-actions-manual` запускает автоматический `push`-run; убедитесь, что загрузились реальные REA Evidence и итоговый статус `PASS`. Этот тестовый триггер нужно убрать отдельным коммитом после подтверждения работоспособности, оставив ручной запуск. Он не выполняет тест на произвольных APK и не действует при изменениях `main` или в других ветках.
 
 **До первой завершённой реальной GitHub Actions проверки нельзя считать
 REA установленным или Android-анализ подтверждённым.** Успех
@@ -96,7 +98,7 @@ workflow получает красный статус, но `upload-artifact` з
   спецификация семантики или доказательство поведения runtime.
 - Нет MCP-сервера, постоянного runner или интеграции с ChatGPT.
 - Приоритет задач APK-build CI, данные, алгоритмы топлива и пользовательские
-  CSV не меняются; запуск исследования исключительно ручной.
+  CSV не меняются; в рабочем `main` запуск исследования предусмотрен вручную; временный автоматический тестовый запуск ограничен одной исследовательской веткой.
 
 ## Как отменить
 
