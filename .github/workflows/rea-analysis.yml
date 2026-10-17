@@ -1,9 +1,16 @@
 name: Manual REA Android Static Analysis
 
-# Intentionally never triggered by push/PR; no automated analysis of uploads.
-# GitHub requires workflow_dispatch workflows on the default branch.
+# Manual operation remains available after this file reaches the default branch.
+# Temporary acceptance trigger: only direct changes to REA research code on
+# this one branch. No ordinary main/PR commits and no third-party APK inputs.
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - research/rea-actions-manual
+    paths:
+      - .github/workflows/rea-analysis.yml
+      - scripts/research/rea/verify-public-apk.mjs
 
 permissions:
   contents: read
